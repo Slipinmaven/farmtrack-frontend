@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { router, useLocalSearchParams } from "expo-router";
 import { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -21,13 +22,15 @@ import { useTheme } from "@/providers/theme-provider";
 
 export default function UnitsScreen() {
   return (
-    <SessionGate>
+    <SessionGate allowIncompleteSetup>
       <UnitsContent />
     </SessionGate>
   );
 }
 
 function UnitsContent() {
+  const params = useLocalSearchParams<{ returnToProductForm?: string }>();
+  const returnToProductForm = params.returnToProductForm === "true";
   const { user } = useAuth();
   const { theme } = useTheme();
   const dialog = useAppDialog();
@@ -86,13 +89,13 @@ function UnitsContent() {
           : "Your measurement unit is ready to use.",
         tone: "success",
       });
+      if (!editingId && returnToProductForm) {
+        router.back();
+        return;
+      }
       clearForm();
     } catch (submitError) {
-      await dialog.showDialog({
-        title: "Couldn’t save unit",
-        message: normalizeApiError(submitError).message,
-        tone: "error",
-      });
+      setError(normalizeApiError(submitError).message);
     }
   }
 
@@ -124,6 +127,19 @@ function UnitsContent() {
             }}
           />
         </View>
+        {returnToProductForm ? (
+          <Card style={styles.returnNote}>
+            <Ionicons
+              name="information-circle-outline"
+              size={20}
+              color={theme.primary}
+            />
+            <AppText size="small" style={styles.returnCopy}>
+              Create a unit to use as your product’s main counting unit. We’ll
+              return you to product setup after it’s saved.
+            </AppText>
+          </Card>
+        ) : null}
 
         {formOpen ? (
           <Card style={styles.form}>
@@ -136,7 +152,10 @@ function UnitsContent() {
                   label="Unit name"
                   placeholder="e.g. Kilogram"
                   value={name}
-                  onChangeText={setName}
+                  onChangeText={(value) => {
+                    setName(value);
+                    setError(null);
+                  }}
                   maxLength={80}
                 />
               </View>
@@ -146,7 +165,10 @@ function UnitsContent() {
                   placeholder="e.g. kg"
                   autoCapitalize="none"
                   value={abbreviation}
-                  onChangeText={setAbbreviation}
+                  onChangeText={(value) => {
+                    setAbbreviation(value);
+                    setError(null);
+                  }}
                   maxLength={16}
                 />
               </View>
@@ -182,9 +204,25 @@ function UnitsContent() {
               </View>
             </View>
             {error ? (
-              <AppText size="small" style={{ color: theme.danger }}>
-                {error}
-              </AppText>
+              <View
+                accessibilityRole="alert"
+                style={[
+                  styles.saveError,
+                  {
+                    borderColor: theme.danger,
+                    backgroundColor: theme.backgroundElement,
+                  },
+                ]}
+              >
+                <Ionicons
+                  name="alert-circle-outline"
+                  size={18}
+                  color={theme.danger}
+                />
+                <AppText size="small" style={{ color: theme.danger, flex: 1 }}>
+                  {error}
+                </AppText>
+              </View>
             ) : null}
             <View style={styles.formActions}>
               <Button label="Cancel" variant="secondary" onPress={clearForm} />
@@ -329,6 +367,13 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   headingCopy: { flex: 1, gap: 3 },
+  returnNote: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 9,
+    padding: 12,
+  },
+  returnCopy: { flex: 1, lineHeight: 19 },
   form: { gap: 14 },
   fields: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
   nameField: { flex: 1 },
@@ -352,6 +397,14 @@ const styles = StyleSheet.create({
   },
   previewCopy: { flex: 1, gap: 1 },
   formActions: { flexDirection: "row", justifyContent: "flex-end", gap: 8 },
+  saveError: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 11,
+  },
   listHeading: {
     flexDirection: "row",
     alignItems: "center",

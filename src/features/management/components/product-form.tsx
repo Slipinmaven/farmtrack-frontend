@@ -1,4 +1,4 @@
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Switch, View } from "react-native";
@@ -6,7 +6,6 @@ import { Pressable, ScrollView, StyleSheet, Switch, View } from "react-native";
 import { useAppDialog } from "@/components/ui/app-dialog";
 import { AppText } from "@/components/ui/app-text";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { TextField } from "@/components/ui/text-field";
 import { productTypeOptions } from "@/features/management/product-options";
 import type {
@@ -14,7 +13,7 @@ import type {
   Product,
   ProductType,
 } from "@/features/management/api";
-import { normalizeApiError } from "@/lib/api/errors";
+import { normalizeApiError, type ApiError } from "@/lib/api/errors";
 import { useAuth } from "@/providers/auth-provider";
 import { useTheme } from "@/providers/theme-provider";
 import { useUnits } from "@/features/management/hooks";
@@ -36,14 +35,35 @@ type ProductFormProps = {
   onSubmit: (payload: CreateProductPayload) => Promise<void>;
 };
 
-const productTypeIcons: Record<ProductType, keyof typeof Ionicons.glyphMap> = {
-  chickens: "paw-outline",
-  eggs: "egg-outline",
-  feed: "leaf-outline",
-  medication: "medkit-outline",
-  equipment: "construct-outline",
-  other: "cube-outline",
+type ProductTypeIconName =
+  | { library: "material"; name: keyof typeof MaterialCommunityIcons.glyphMap }
+  | { library: "ion"; name: keyof typeof Ionicons.glyphMap };
+
+const productTypeIcons: Record<ProductType, ProductTypeIconName> = {
+  chickens: { library: "material", name: "bird" },
+  eggs: { library: "ion", name: "egg-outline" },
+  feed: { library: "ion", name: "leaf-outline" },
+  medication: { library: "ion", name: "medkit-outline" },
+  equipment: { library: "ion", name: "construct-outline" },
+  other: { library: "ion", name: "cube-outline" },
 };
+
+function ProductTypeIcon({
+  type,
+  size,
+  color,
+}: {
+  type: ProductType;
+  size: number;
+  color: string;
+}) {
+  const icon = productTypeIcons[type];
+  return icon.library === "material" ? (
+    <MaterialCommunityIcons name={icon.name} size={size} color={color} />
+  ) : (
+    <Ionicons name={icon.name} size={size} color={color} />
+  );
+}
 
 export function ProductForm({
   initialProduct,
@@ -80,6 +100,7 @@ export function ProductForm({
   );
   const [openUnitRow, setOpenUnitRow] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<ApiError | null>(null);
   const defaultUnitRows: ProductUnitDraft[] =
     !initialProduct && unitQuery.data?.length
       ? [
@@ -104,6 +125,7 @@ export function ProductForm({
   const baseUnitName = baseUnitDefinition?.name ?? "main counting unit";
 
   function updateUnitRow(key: string, update: Partial<ProductUnitDraft>) {
+    clearFormErrors();
     setUnitRows((rows) =>
       (rows.length ? rows : defaultUnitRows).map((row) =>
         row.key === key ? { ...row, ...update } : row,
@@ -128,7 +150,7 @@ export function ProductForm({
         conversionFactor: row.key === key ? "1" : "",
       })),
     );
-    setError(null);
+    clearFormErrors();
   }
 
   function addUnitRow() {
@@ -141,10 +163,11 @@ export function ProductForm({
         isBaseUnit: false,
       },
     ]);
-    setError(null);
+    clearFormErrors();
   }
 
   async function submit() {
+    setSubmitError(null);
     if (!name.trim()) {
       setError("Enter a product name.");
       return;
@@ -194,15 +217,22 @@ export function ProductForm({
         })),
       });
     } catch (submitError) {
-      await dialog.showDialog({
-        title: initialProduct
-          ? "Couldn’t update product"
-          : "Couldn’t create product",
-        message: normalizeApiError(submitError).message,
-        tone: "error",
-      });
+      setSubmitError(normalizeApiError(submitError));
     }
   }
+
+  function clearFormErrors() {
+    setError(null);
+    setSubmitError(null);
+  }
+
+  const submitErrorLines = submitError
+    ? submitError.details.length
+      ? submitError.details.map(({ field, message }) =>
+          field ? `${field}: ${message}` : message,
+        )
+      : [submitError.message]
+    : [];
 
   return (
     <ScrollView
@@ -218,22 +248,62 @@ export function ProductForm({
               { backgroundColor: theme.backgroundSelected },
             ]}
           >
-            <Ionicons
-              name={productTypeIcons[productType]}
+            <ProductTypeIcon
+              type={productType}
               size={22}
               color={theme.primary}
             />
           </View>
           <View style={styles.formIntroCopy}>
             <AppText size="heading" weight="semibold">
-              {initialProduct ? "Edit product" : "Set up a product"}
+              {initialProduct ? "Product profile" : "Set up a product"}
             </AppText>
             <AppText size="small" tone="secondary">
               Add the details and stock units you use to track this item.
             </AppText>
           </View>
         </View>
-        <Card style={styles.sectionCard}>
+        {submitError ? (
+          <View
+            accessibilityRole="alert"
+            style={[
+              styles.submitError,
+              {
+                borderColor: theme.danger,
+                backgroundColor: theme.backgroundElement,
+              },
+            ]}
+          >
+            <Ionicons
+              name="alert-circle"
+              size={20}
+              color={theme.danger}
+            />
+            <View style={styles.submitErrorCopy}>
+              <AppText weight="semibold" style={{ color: theme.danger }}>
+                {initialProduct
+                  ? "Product could not be updated"
+                  : "Product could not be created"}
+              </AppText>
+              {submitErrorLines.map((line, index) => (
+                <AppText key={`${index}-${line}`} size="small">
+                  {line}
+                </AppText>
+              ))}
+              {submitError.requestId ? (
+                <AppText size="small" tone="secondary">
+                  Reference: {submitError.requestId}
+                </AppText>
+              ) : null}
+            </View>
+          </View>
+        ) : null}
+        <View
+          style={[
+            styles.sectionCard,
+            { borderColor: theme.border, backgroundColor: theme.backgroundElement },
+          ]}
+        >
         <View style={styles.section}>
           <View style={styles.sectionHeading}>
             <View style={styles.sectionCopy}>
@@ -250,14 +320,20 @@ export function ProductForm({
             label="Product name"
             placeholder="e.g. Layer mash"
             value={name}
-            onChangeText={setName}
+            onChangeText={(value) => {
+              setName(value);
+              clearFormErrors();
+            }}
             maxLength={150}
           />
           <TextField
             label="Description (optional)"
             placeholder="What is this product used for?"
             value={description}
-            onChangeText={setDescription}
+            onChangeText={(value) => {
+              setDescription(value);
+              setSubmitError(null);
+            }}
             multiline
             style={styles.multiline}
           />
@@ -279,7 +355,10 @@ export function ProductForm({
                     key={option.value}
                     accessibilityRole="radio"
                     accessibilityState={{ checked: selected }}
-                    onPress={() => setProductType(option.value)}
+                    onPress={() => {
+                      setProductType(option.value);
+                      clearFormErrors();
+                    }}
                     style={[
                       styles.option,
                       {
@@ -290,8 +369,8 @@ export function ProductForm({
                       },
                     ]}
                   >
-                    <Ionicons
-                      name={productTypeIcons[option.value]}
+                    <ProductTypeIcon
+                      type={option.value}
                       size={17}
                       color={selected ? theme.onPrimary : theme.textSecondary}
                     />
@@ -336,9 +415,14 @@ export function ProductForm({
             />
           </View>
         </View>
-        </Card>
+        </View>
 
-        <Card style={styles.sectionCard}>
+        <View
+          style={[
+            styles.sectionCard,
+            { borderColor: theme.border, backgroundColor: theme.backgroundElement },
+          ]}
+        >
         <View style={[styles.section, styles.measurements]}>
           <View style={styles.sectionHeading}>
             <View
@@ -369,9 +453,25 @@ export function ProductForm({
           ) : null}
           {unitQuery.isError ? (
             <View style={styles.fieldGroup}>
-              <AppText size="small" style={{ color: theme.danger }}>
-                {normalizeApiError(unitQuery.error).message}
-              </AppText>
+              <View
+                accessibilityRole="alert"
+                style={[
+                  styles.validationError,
+                  {
+                    borderColor: theme.danger,
+                    backgroundColor: theme.backgroundElement,
+                  },
+                ]}
+              >
+                <Ionicons
+                  name="alert-circle-outline"
+                  size={18}
+                  color={theme.danger}
+                />
+                <AppText size="small" style={{ color: theme.danger, flex: 1 }}>
+                  {normalizeApiError(unitQuery.error).message}
+                </AppText>
+              </View>
               <Button
                 label="Retry units"
                 variant="secondary"
@@ -382,14 +482,35 @@ export function ProductForm({
           {!unitQuery.isLoading &&
           !unitQuery.isError &&
           !unitQuery.data?.length ? (
-            <View style={styles.fieldGroup}>
-              <AppText size="small" tone="secondary">
-                Create a measurement unit before setting up this product.
-              </AppText>
+            <View
+              style={[
+                styles.unitEmptyState,
+                {
+                  borderColor: theme.border,
+                  backgroundColor: theme.backgroundSelected,
+                },
+              ]}
+            >
+              <Ionicons
+                name="resize-outline"
+                size={22}
+                color={theme.primary}
+              />
+              <View style={styles.unitEmptyCopy}>
+                <AppText weight="semibold">No stock units yet</AppText>
+                <AppText size="small" tone="secondary">
+                  Create a counting unit, such as birds, eggs, kilograms, or
+                  trays. You’ll return here automatically afterward.
+                </AppText>
+              </View>
               <Button
-                label="Manage measurement units"
-                variant="secondary"
-                onPress={() => router.push("/units")}
+                label="Create first measurement unit"
+                onPress={() =>
+                  router.push({
+                    pathname: "/units",
+                    params: { returnToProductForm: "true" },
+                  })
+                }
               />
             </View>
           ) : null}
@@ -492,7 +613,6 @@ export function ProductForm({
                         onPress={() => {
                           updateUnitRow(row.key, { unitId: unit.id });
                           setOpenUnitRow(null);
-                          setError(null);
                         }}
                         style={styles.unitOption}
                       >
@@ -571,6 +691,16 @@ export function ProductForm({
                 disabled={unitRows.length >= unitQuery.data.length}
                 onPress={addUnitRow}
               />
+              <Button
+                label="Manage available units"
+                variant="secondary"
+                onPress={() =>
+                  router.push({
+                    pathname: "/units",
+                    params: { returnToProductForm: "true" },
+                  })
+                }
+              />
               <AppText size="small" tone="secondary">
                 {baseUnit
                   ? `For each other unit, enter how many ${baseUnitName} are in one. Example: if one ${exampleUnit?.name ?? "pack"} holds 30 ${baseUnitName}, enter 30.`
@@ -581,11 +711,20 @@ export function ProductForm({
         </View>
 
         {error ? (
-          <AppText size="small" style={{ color: theme.danger }}>
-            {error}
-          </AppText>
+          <View
+            accessibilityRole="alert"
+            style={[
+              styles.validationError,
+              { borderColor: theme.danger, backgroundColor: theme.backgroundElement },
+            ]}
+          >
+            <Ionicons name="alert-circle-outline" size={18} color={theme.danger} />
+            <AppText size="small" style={{ color: theme.danger, flex: 1 }}>
+              {error}
+            </AppText>
+          </View>
         ) : null}
-        </Card>
+        </View>
         <View style={styles.formFooter}>
           <Button
             label={submitLabel}
@@ -616,7 +755,7 @@ const styles = StyleSheet.create({
   formIntro: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 4 },
   formIcon: { width: 46, height: 46, borderRadius: 14, alignItems: "center", justifyContent: "center" },
   formIntroCopy: { flex: 1, gap: 3 },
-  sectionCard: { gap: 18, padding: 16 },
+  sectionCard: { gap: 18, padding: 16, borderWidth: 1, borderRadius: 12 },
   section: { gap: 16 },
   fieldGroup: { gap: 9 },
   options: { flexDirection: "row", flexWrap: "wrap", gap: 9 },
@@ -645,6 +784,31 @@ const styles = StyleSheet.create({
   sectionCopy: { flex: 1, gap: 3 },
   stepNumber: { width: 34, height: 34, borderRadius: 10, alignItems: "center", justifyContent: "center" },
   formFooter: { paddingTop: 2 },
+  submitError: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 13,
+  },
+  submitErrorCopy: { flex: 1, gap: 5 },
+  validationError: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 11,
+  },
+  unitEmptyState: {
+    alignItems: "flex-start",
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 14,
+  },
+  unitEmptyCopy: { gap: 4 },
   unitRow: { gap: 11, borderTopWidth: 1, paddingTop: 14 },
   unitRowHeading: {
     flexDirection: "row",

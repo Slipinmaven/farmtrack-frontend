@@ -178,7 +178,7 @@ function FarmSetupContent({
   async function removeEggProduct(productId: string, productName: string) {
     const confirmed = await dialog.confirmDialog({
       title: "Remove egg product?",
-      message: `“${productName}” will be permanently removed.`,
+      message: `“${productName}” will be permanently removed if it has no recorded activity. If it is already in use, edit it and deactivate it instead.`,
       confirmLabel: "Remove product",
       destructive: true,
     });

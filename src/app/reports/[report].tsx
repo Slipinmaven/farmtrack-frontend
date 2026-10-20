@@ -633,14 +633,16 @@ function ProductionReportDetail() {
                   quantity: Number(row.quantity),
                   unit: unitNames.get(row.unit_id) ?? "Unit",
                   baseQuantity: Number(row.quantity_in_base_unit),
-                  block: blockNames.get(row.block_id) ?? "Block not available",
+                  block: row.block_id
+                    ? blockNames.get(row.block_id) ?? "Block not available"
+                    : "Not assigned",
                   notes: row.notes,
                 })),
                 totalColumns: ["baseQuantity"],
               }],
             }}
           />
-          <SectionTitle title="Collection history" detail="Product, quantity and housing for each collection" />
+          <SectionTitle title="Collection history" detail="Product, quantity, date and block when assigned" />
           {rows.map((row) => (
             <RecordCard
               key={row.id}
@@ -649,7 +651,12 @@ function ProductionReportDetail() {
               rows={[
                 ["Quantity", `${formatQuantity(row.quantity)} recorded`],
                 ["Base quantity", `${formatQuantity(row.quantity_in_base_unit)} base units`],
-                ["Block", blockNames.get(row.block_id) ?? "Block not available"],
+                [
+                  "Block",
+                  row.block_id
+                    ? blockNames.get(row.block_id) ?? "Block not available"
+                    : "Not assigned",
+                ],
                 ...(row.notes ? [["Notes", row.notes] as [string, string]] : []),
               ]}
             />

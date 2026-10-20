@@ -46,7 +46,7 @@ export type EggCollectionResult = {
   id: string;
   farm_id: string;
   product_id: string;
-  block_id: string;
+  block_id: string | null;
   quantity: number | string;
   unit_id: string;
   conversion_factor: number | string;

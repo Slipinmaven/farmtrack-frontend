@@ -239,7 +239,7 @@ export type InventoryOpeningSetupInput =
       chicken_batches: [];
       egg_stock: {
         product_id: string;
-        block_id: string;
+        block_id?: string | null;
         unit_id: string;
         quantity: string;
         unit_cost?: string;
