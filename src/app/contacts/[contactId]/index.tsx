@@ -1,0 +1,527 @@
+import { Ionicons } from "@expo/vector-icons";
+import { router, useLocalSearchParams, type Href } from "expo-router";
+import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+
+import { LoadingState } from "@/components/feedback/loading-state";
+import { FarmPageHeader } from "@/components/layout/farm-page-header";
+import { SessionGate } from "@/components/layout/session-gate";
+import { useAppDialog } from "@/components/ui/app-dialog";
+import { AppText } from "@/components/ui/app-text";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import type { ContactTransactionHistoryItem } from "@/features/management/api";
+import { ContactRoleBadge } from "@/features/management/components/contact-role-badge";
+import {
+  useContact,
+  useContactTransactionHistory,
+  useDeleteContact,
+} from "@/features/management/hooks";
+import { normalizeApiError } from "@/lib/api/errors";
+import { formatRelativeDate } from "@/lib/date/format-relative-date";
+import { useAuth } from "@/providers/auth-provider";
+import { useFarm } from "@/providers/farm-provider";
+import { useTheme } from "@/providers/theme-provider";
+
+export default function ContactDetailsRoute() {
+  return (
+    <SessionGate>
+      <ContactDetailsContent />
+    </SessionGate>
+  );
+}
+
+function ContactDetailsContent() {
+  const { user } = useAuth();
+  const farm = useFarm();
+  const { theme } = useTheme();
+  const dialog = useAppDialog();
+  const { contactId } = useLocalSearchParams<{ contactId: string }>();
+  const contactQuery = useContact(user?.id, farm.selectedFarm?.id, contactId);
+  const historyQuery = useContactTransactionHistory(
+    user?.id,
+    farm.selectedFarm?.id,
+    contactId,
+  );
+  const remove = useDeleteContact(user?.id ?? "", farm.selectedFarm?.id ?? "");
+  const contact = contactQuery.data;
+  const history =
+    historyQuery.data?.pages.flatMap((page) => page.items) ?? [];
+
+  async function confirmDelete() {
+    if (!contact) return;
+    const confirmed = await dialog.confirmDialog({
+      title: "Delete contact?",
+      message: `“${contact.name}” will be permanently removed.`,
+      confirmLabel: "Delete contact",
+      destructive: true,
+    });
+    if (!confirmed) return;
+
+    try {
+      await remove.mutateAsync(contact.id);
+      await dialog.showDialog({
+        title: "Contact deleted",
+        message: `${contact.name} has been removed.`,
+        tone: "success",
+      });
+      router.replace("/contacts");
+    } catch (error: unknown) {
+      await dialog.showDialog({
+        title: "Couldn’t delete contact",
+        message: normalizeApiError(error).message,
+        tone: "error",
+      });
+    }
+  }
+
+  if (contactQuery.isLoading) return <LoadingState label="Loading contact" />;
+
+  return (
+    <SafeAreaView
+      style={[styles.screen, { backgroundColor: theme.background }]}
+      edges={["top", "bottom"]}
+    >
+      <ScrollView contentContainerStyle={styles.content}>
+        <FarmPageHeader title="Contact details" showBack backHref="/contacts" />
+        {contactQuery.isError ? (
+          <Card style={styles.state}>
+            <AppText weight="semibold">Could not load this contact</AppText>
+            <AppText size="small" tone="secondary">
+              {normalizeApiError(contactQuery.error).message}
+            </AppText>
+            <Button
+              label="Retry"
+              variant="secondary"
+              onPress={() => void contactQuery.refetch()}
+            />
+          </Card>
+        ) : null}
+        {contact ? (
+          <>
+            <View style={styles.titleRow}>
+              <View style={[styles.avatar, { backgroundColor: theme.primary }]}>
+                <AppText
+                  size="heading"
+                  weight="semibold"
+                  style={{ color: theme.onPrimary }}
+                >
+                  {contact.name.trim().slice(0, 1).toUpperCase()}
+                </AppText>
+              </View>
+              <View style={styles.titleCopy}>
+                <AppText size="small" tone="secondary">
+                  {farm.selectedFarm?.name ?? "Farm"}
+                </AppText>
+                <AppText
+                  size="title"
+                  weight="semibold"
+                  style={styles.contactName}
+                >
+                  {contact.name}
+                </AppText>
+              </View>
+            </View>
+
+            <View style={styles.roles}>
+              {contact.roles.map((role) => (
+                <ContactRoleBadge key={role} role={role} />
+              ))}
+            </View>
+
+            <Card style={styles.section}>
+              <AppText size="heading" weight="semibold">
+                Contact information
+              </AppText>
+              <InfoRow
+                icon="call-outline"
+                label="Phone"
+                value={contact.phone ?? "Not provided"}
+              />
+              <InfoRow
+                icon="mail-outline"
+                label="Email"
+                value={contact.email ?? "Not provided"}
+              />
+              <InfoRow
+                icon="location-outline"
+                label="Address"
+                value={contact.address ?? "Not provided"}
+              />
+              {contact.notes ? (
+                <View style={styles.notes}>
+                  <AppText size="small" tone="secondary">
+                    Notes
+                  </AppText>
+                  <AppText>{contact.notes}</AppText>
+                </View>
+              ) : null}
+            </Card>
+
+            <Card style={styles.section}>
+              <AppText size="heading" weight="semibold">
+                Record details
+              </AppText>
+              <DetailRow
+                label="Created"
+                value={formatRelativeDate(contact.created_at)}
+              />
+              <DetailRow
+                label="Last updated"
+                value={formatRelativeDate(contact.updated_at)}
+              />
+            </Card>
+
+            <Card style={styles.section}>
+              <View style={styles.historyHeading}>
+                <View style={styles.historyHeadingCopy}>
+                  <AppText
+                    size="heading"
+                    weight="semibold"
+                    style={styles.historyTitle}
+                  >
+                    Transactions & balances
+                  </AppText>
+                  <AppText size="small" tone="secondary">
+                    Open a record to review its full details and settlement.
+                  </AppText>
+                </View>
+                {historyQuery.data?.pages[0] ? (
+                  <AppText
+                    size="small"
+                    tone="secondary"
+                    style={styles.recordCount}
+                  >
+                    {historyQuery.data.pages[0].total_count} records
+                  </AppText>
+                ) : null}
+              </View>
+              {historyQuery.isLoading ? (
+                <AppText size="small" tone="secondary">
+                  Loading transaction history…
+                </AppText>
+              ) : null}
+              {historyQuery.isError ? (
+                <View style={styles.historyError}>
+                  <AppText size="small">
+                    Could not load transaction history.{" "}
+                    {normalizeApiError(historyQuery.error).message}
+                  </AppText>
+                  <Button
+                    label="Retry history"
+                    variant="secondary"
+                    onPress={() => void historyQuery.refetch()}
+                  />
+                </View>
+              ) : null}
+              {!historyQuery.isLoading &&
+              !historyQuery.isError &&
+              history.length === 0 ? (
+                <AppText size="small" tone="secondary">
+                  No sales or purchases have been recorded for this contact.
+                </AppText>
+              ) : null}
+              {history.map((item) => (
+                <TransactionHistoryRow key={item.id} item={item} />
+              ))}
+              {historyQuery.hasNextPage ? (
+                <Button
+                  label={
+                    historyQuery.isFetchingNextPage
+                      ? "Loading…"
+                      : "Load older transactions"
+                  }
+                  variant="secondary"
+                  disabled={historyQuery.isFetchingNextPage}
+                  onPress={() => void historyQuery.fetchNextPage()}
+                />
+              ) : null}
+            </Card>
+
+            <View style={styles.actions}>
+              <Button
+                label="Edit contact"
+                onPress={() =>
+                  router.push({
+                    pathname: "/contacts/[contactId]/edit",
+                    params: { contactId: contact.id },
+                  })
+                }
+              />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ disabled: remove.isPending }}
+                disabled={remove.isPending}
+                onPress={() => void confirmDelete()}
+                style={({ pressed }) => [
+                  styles.deleteAction,
+                  { borderColor: theme.border, opacity: pressed ? 0.7 : 1 },
+                ]}
+              >
+                {remove.isPending ? (
+                  <AppText size="small" style={{ color: theme.danger }}>
+                    Deleting…
+                  </AppText>
+                ) : (
+                  <>
+                    <Ionicons
+                      name="trash-outline"
+                      size={17}
+                      color={theme.danger}
+                    />
+                    <AppText
+                      size="small"
+                      weight="semibold"
+                      style={{ color: theme.danger }}
+                    >
+                      Delete contact
+                    </AppText>
+                  </>
+                )}
+              </Pressable>
+            </View>
+          </>
+        ) : null}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+function TransactionHistoryRow({
+  item,
+}: {
+  item: ContactTransactionHistoryItem;
+}) {
+  const { theme } = useTheme();
+  const isSale = item.transaction_type === "sale";
+  const balanceDue = Number(item.balance_due);
+  const creditBalance = Number(item.credit_balance);
+  const balanceLabel =
+    balanceDue > 0
+      ? isSale
+        ? `Customer owes ${formatMoney(balanceDue, theme.currency)}`
+        : `You owe supplier ${formatMoney(balanceDue, theme.currency)}`
+      : creditBalance > 0
+        ? isSale
+          ? `Customer credit ${formatMoney(creditBalance, theme.currency)}`
+          : `Supplier credit ${formatMoney(creditBalance, theme.currency)}`
+        : item.status === "cancelled"
+          ? "Cancelled"
+          : "Settled";
+  const balanceColor =
+    balanceDue > 0
+      ? theme.danger
+      : creditBalance > 0
+        ? theme.success
+        : theme.textSecondary;
+  const transactionHref = (
+    isSale ? `/sales/${item.id}` : `/purchases/${item.id}`
+  ) as Href;
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${isSale ? "Sale" : "Purchase"} ${item.reference_number ?? ""}, ${balanceLabel}`}
+      onPress={() => router.push(transactionHref)}
+      style={({ pressed }) => [
+        styles.transactionRow,
+        { borderColor: theme.border, opacity: pressed ? 0.75 : 1 },
+      ]}
+    >
+      <View
+        style={[
+          styles.transactionIcon,
+          { backgroundColor: theme.background },
+        ]}
+      >
+        <Ionicons
+          name={isSale ? "trending-up-outline" : "trending-down-outline"}
+          size={18}
+          color={theme.primary}
+        />
+      </View>
+      <View style={styles.transactionCopy}>
+        <View style={styles.transactionTitleLine}>
+          <AppText weight="semibold" style={styles.transactionTitle}>
+            {isSale ? "Sale" : "Purchase"}
+            {item.reference_number ? ` · ${item.reference_number}` : ""}
+          </AppText>
+          <AppText
+            size="small"
+            weight="semibold"
+            style={styles.transactionAmount}
+          >
+            {formatMoney(item.transaction_total, theme.currency)}
+          </AppText>
+        </View>
+        <AppText size="small" tone="secondary">
+          {formatTransactionDate(item.transaction_date)} · {item.item_count}{" "}
+          {item.item_count === 1 ? "item" : "items"}
+        </AppText>
+        <AppText
+          size="small"
+          weight="semibold"
+          style={[styles.balanceLabel, { color: balanceColor }]}
+        >
+          {balanceLabel}
+        </AppText>
+      </View>
+      <Ionicons name="chevron-forward" size={18} color={theme.textSecondary} />
+    </Pressable>
+  );
+}
+
+function InfoRow({
+  icon,
+  label,
+  value,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  value: string;
+}) {
+  const { theme } = useTheme();
+  return (
+    <View style={[styles.infoRow, { borderBottomColor: theme.border }]}>
+      <Ionicons name={icon} size={18} color={theme.textSecondary} />
+      <View style={styles.infoCopy}>
+        <AppText size="small" tone="secondary">
+          {label}
+        </AppText>
+        <AppText style={styles.wrappingText}>{value}</AppText>
+      </View>
+    </View>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value: string }) {
+  const { theme } = useTheme();
+  return (
+    <View style={[styles.detailRow, { borderBottomColor: theme.border }]}>
+      <AppText size="small" tone="secondary">
+        {label}
+      </AppText>
+      <AppText size="small" style={styles.detailValue}>
+        {value}
+      </AppText>
+    </View>
+  );
+}
+
+function formatMoney(value: number | string, currency: string): string {
+  return `${currency} ${new Intl.NumberFormat(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Number(value))}`;
+}
+
+function formatTransactionDate(value: string): string {
+  const date = new Date(`${value}T00:00:00`);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      });
+}
+
+const styles = StyleSheet.create({
+  screen: { flex: 1 },
+  content: {
+    width: "100%",
+    maxWidth: 760,
+    alignSelf: "center",
+    padding: 20,
+    paddingBottom: 36,
+    gap: 16,
+  },
+  state: { gap: 10 },
+  titleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    minWidth: 0,
+  },
+  avatar: {
+    width: 56,
+    height: 56,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 28,
+  },
+  titleCopy: { flex: 1, gap: 2, minWidth: 0 },
+  contactName: { flexShrink: 1 },
+  roles: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  section: { gap: 10 },
+  infoRow: {
+    minHeight: 58,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 8,
+  },
+  infoCopy: { flex: 1, gap: 2, minWidth: 0 },
+  wrappingText: { flexShrink: 1 },
+  notes: { gap: 4, paddingTop: 5, minWidth: 0 },
+  historyHeading: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    flexWrap: "wrap",
+    gap: 12,
+  },
+  historyHeadingCopy: { flex: 1, flexBasis: 220, gap: 3, minWidth: 0 },
+  historyTitle: { flexShrink: 1 },
+  recordCount: { flexShrink: 0 },
+  historyError: { gap: 8 },
+  transactionRow: {
+    minHeight: 78,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 10,
+    minWidth: 0,
+  },
+  transactionIcon: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 8,
+  },
+  transactionCopy: { flex: 1, gap: 4, minWidth: 0 },
+  transactionTitleLine: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    flexWrap: "wrap",
+    gap: 8,
+    minWidth: 0,
+  },
+  transactionTitle: { flex: 1, flexBasis: 120, minWidth: 0 },
+  transactionAmount: { flexShrink: 1, textAlign: "right" },
+  balanceLabel: { flexShrink: 1 },
+  detailRow: {
+    minHeight: 40,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    flexWrap: "wrap",
+    gap: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  detailValue: { flexShrink: 1, textAlign: "right" },
+  actions: { gap: 10 },
+  deleteAction: {
+    minHeight: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 6,
+  },
+});

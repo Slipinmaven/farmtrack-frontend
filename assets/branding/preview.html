@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>FarmTrack | Brand preview</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+        background: #f3f6f3;
+        color: #173d2a;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 48px 24px; }
+      main { width: min(980px, 100%); margin: 0 auto; }
+      header { margin-bottom: 30px; }
+      h1 { margin: 0 0 8px; font-size: clamp(26px, 4vw, 38px); letter-spacing: -1.2px; }
+      header p { margin: 0; color: #5b7063; }
+      .group { margin-top: 28px; }
+      h2 { margin: 0 0 12px; font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: #617368; }
+      .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+      .sample { min-height: 176px; padding: 24px; display: grid; align-content: center; gap: 14px; border: 1px solid #e1e8e2; border-radius: 16px; background: #fff; }
+      .sample.dark { background: #15261d; border-color: #263a2e; }
+      .sample img.logo { display: block; width: min(100%, 390px); height: 82px; }
+      .sample img.icon { display: block; width: 88px; height: 88px; }
+      .sample img.mono { filter: brightness(0) invert(1); }
+      .label { color: #68796e; font-size: 12px; }
+      .dark .label { color: #b8c6bc; }
+      @media (max-width: 620px) {
+        body { padding: 32px 16px; }
+        .grid { grid-template-columns: 1fr; }
+        .sample { min-height: 146px; padding: 20px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>FarmTrack brand directions</h1>
+        <p>Original hen-and-tracking mark, shown on light and dark surfaces.</p>
+      </header>
+      <section class="group" aria-labelledby="color-title">
+        <h2 id="color-title">Full color</h2>
+        <div class="grid">
+          <article class="sample">
+            <img class="logo" src="farmtrack-logo.svg" alt="FarmTrack full-color horizontal logo">
+            <span class="label">Horizontal logo · light</span>
+          </article>
+          <article class="sample dark">
+            <img class="logo" src="farmtrack-logo.svg" alt="FarmTrack full-color horizontal logo">
+            <span class="label">Horizontal logo · dark</span>
+          </article>
+          <article class="sample">
+            <img class="icon" src="farmtrack-icon.svg" alt="FarmTrack standalone icon">
+            <span class="label">Standalone icon · light</span>
+          </article>
+          <article class="sample dark">
+            <img class="icon" src="farmtrack-icon.svg" alt="FarmTrack standalone icon">
+            <span class="label">Standalone icon · dark</span>
+          </article>
+        </div>
+      </section>
+      <section class="group" aria-labelledby="mono-title">
+        <h2 id="mono-title">Monochrome</h2>
+        <div class="grid">
+          <article class="sample">
+            <img class="logo" src="farmtrack-logo-mono.svg" alt="FarmTrack monochrome horizontal logo">
+            <span class="label">Monochrome logo · light</span>
+          </article>
+          <article class="sample dark">
+            <img class="logo mono" src="farmtrack-logo-mono.svg" alt="FarmTrack monochrome horizontal logo displayed in white">
+            <span class="label">Monochrome logo · dark</span>
+          </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

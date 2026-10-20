@@ -1,0 +1,65 @@
+{
+  "expo": {
+    "name": "FarmTrack",
+    "slug": "farmtrack",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/farmtrack-app-icon.png",
+    "scheme": "farmtrack",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "icon": "./assets/images/farmtrack-app-icon.png"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#F7F8F4",
+        "foregroundImage": "./assets/images/farmtrack-icon.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "package": "com.slipinmaven.farmtrack",
+      "googleServicesFile": "./google-services.json"
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./assets/images/farmtrack-app-icon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Allow FarmTrack to use Face ID to unlock your account."
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#F7F8F4",
+          "image": "./assets/images/farmtrack-icon.png",
+          "imageWidth": 140
+        }
+      ],
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow FarmTrack to choose a farm logo from your photo library.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ],
+      "@react-native-community/datetimepicker",
+      "expo-notifications"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "a53c2a57-17df-42fd-a93f-7f4b21ba0337"
+      }
+    }
+  }
+}
