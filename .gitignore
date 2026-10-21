@@ -20,7 +20,6 @@ app.json.*
 *.key
 *.mobileprovision
 *.pem
-google-services.json
 GoogleService-Info.plist
 credentials.json
 
