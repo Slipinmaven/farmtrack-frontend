@@ -39,7 +39,22 @@ function SaleDetailsContent() {
   const farm = useFarm();
   const { theme } = useTheme();
   const dialog = useAppDialog();
-  const { saleId } = useLocalSearchParams<{ saleId: string }>();
+  const {
+    saleId,
+    created,
+    deliveryRecorded,
+    deliveredCount,
+    reminderNotice,
+    reminderNoticeTone,
+  } =
+    useLocalSearchParams<{
+      saleId: string;
+      created?: string;
+      deliveryRecorded?: string;
+      deliveredCount?: string;
+      reminderNotice?: string;
+      reminderNoticeTone?: string;
+    }>();
   const detail = useChickenSaleDetails(
     user?.id,
     farm.selectedFarm?.id,
@@ -49,12 +64,20 @@ function SaleDetailsContent() {
   const transaction = sale?.transaction;
   const hasChickenItems =
     transaction?.items.some((item) => item.product_type === "chickens") ?? false;
+  const hasEggItems =
+    transaction?.items.some((item) => item.product_type === "eggs") ?? false;
+  const hasDeliverableItems = hasChickenItems || hasEggItems;
   const fulfillment = useChickenSaleFulfillment(
     user?.id,
     farm.selectedFarm?.id,
     saleId,
-    hasChickenItems,
+    hasDeliverableItems,
   );
+  const outstandingDeliverableQuantity =
+    fulfillment.data?.items.reduce(
+      (total, item) => total + Number(item.outstanding_quantity),
+      0,
+    ) ?? null;
   const balanceTone =
     Number(transaction?.balance_due) > 0
       ? theme.danger
@@ -127,50 +150,108 @@ function SaleDetailsContent() {
             />
           </Card>
         ) : null}
+        {created === "true" && transaction ? (
+          <Card
+            style={[
+              styles.createdNotice,
+              {
+                backgroundColor: `${theme.success}0D`,
+                borderColor: `${theme.success}45`,
+              },
+            ]}
+          >
+            <View
+              style={[
+                styles.createdIcon,
+                { backgroundColor: `${theme.success}18` },
+              ]}
+            >
+              <Ionicons name="checkmark" size={21} color={theme.success} />
+            </View>
+            <View style={styles.actionCopy}>
+              <AppText weight="semibold">
+                {hasEggItems && !hasChickenItems
+                  ? "Egg sale recorded"
+                  : "Chicken sale recorded"}
+              </AppText>
+              <AppText size="small" tone="secondary">
+                The order is saved. Record each delivery when products are
+                handed over; stock updates with each delivery.
+              </AppText>
+            </View>
+          </Card>
+        ) : null}
+        {deliveryRecorded === "true" ? (
+          <Card
+            style={[
+              styles.createdNotice,
+              {
+                backgroundColor: `${theme.success}0D`,
+                borderColor: `${theme.success}45`,
+              },
+            ]}
+          >
+            <View
+              style={[
+                styles.createdIcon,
+                { backgroundColor: `${theme.success}18` },
+              ]}
+            >
+              <Ionicons name="checkmark" size={21} color={theme.success} />
+            </View>
+            <View style={styles.actionCopy}>
+              <AppText weight="semibold">Delivery recorded</AppText>
+              <AppText size="small" tone="secondary">
+                {Number(deliveredCount) > 0
+                  ? `${Number(deliveredCount).toLocaleString()} ${
+                      hasEggItems && !hasChickenItems
+                        ? "eggs"
+                        : Number(deliveredCount) === 1
+                          ? "chicken"
+                          : "chickens"
+                    } added to this sale and deducted from stock.`
+                  : "The delivery was recorded and stock was updated."}
+              </AppText>
+            </View>
+          </Card>
+        ) : null}
+        {reminderNotice ? (
+          <View
+            accessibilityRole="alert"
+            style={[
+              styles.reminderNotice,
+              {
+                backgroundColor:
+                  reminderNoticeTone === "warning"
+                    ? `${theme.secondary}12`
+                    : theme.backgroundElement,
+                borderColor:
+                  reminderNoticeTone === "warning"
+                    ? `${theme.secondary}55`
+                    : theme.border,
+              },
+            ]}
+          >
+            <Ionicons
+              name={
+                reminderNoticeTone === "warning"
+                  ? "alert-circle-outline"
+                  : "notifications-outline"
+              }
+              size={19}
+              color={
+                reminderNoticeTone === "warning"
+                  ? theme.secondary
+                  : theme.primary
+              }
+            />
+            <AppText size="small" style={styles.reminderNoticeCopy}>
+              {reminderNotice}
+            </AppText>
+          </View>
+        ) : null}
         {sale && transaction ? (
           <>
-            <Button
-              label="Settle balance or credit"
-              variant="secondary"
-              onPress={() =>
-                router.push({
-                  pathname: "/transactions/[transactionId]/settlements",
-                  params: {
-                    transactionId: saleId,
-                    transactionType: "sale",
-                    balanceDue: String(transaction.balance_due),
-                    creditBalance: String(transaction.credit_balance),
-                    contactName: sale.customer_name ?? "Customer",
-                    referenceNumber: transaction.reference_number ?? "",
-                  },
-                })
-              }
-            />
-            <Button
-              label="Record a product return"
-              variant="secondary"
-              onPress={() =>
-                router.push({
-                  pathname: "/transactions/[transactionId]/returns",
-                  params: {
-                    transactionId: saleId,
-                    transactionType: "sale",
-                  },
-                })
-              }
-            />
-            {hasChickenItems ? (
-              <Button
-                label="Record a delivery"
-                variant="secondary"
-                onPress={() =>
-                  router.push({
-                    pathname: "/sales/[saleId]/deliver",
-                    params: { saleId },
-                  })
-                }
-              />
-            ) : null}
             <Card
               style={[
                 styles.hero,
@@ -250,7 +331,7 @@ function SaleDetailsContent() {
                     {Number(transaction.balance_due) > 0
                       ? "Balance due"
                       : Number(transaction.credit_balance) > 0
-                        ? "Customer credit"
+                        ? "Credit owed to customer"
                         : "Paid in full"}
                   </AppText>
                 </View>
@@ -273,7 +354,7 @@ function SaleDetailsContent() {
                 ) : null}
                 {Number(transaction.credit_balance) > 0 ? (
                   <DetailLine
-                    label="Customer credit"
+                    label="Owed to customer (credit / overpayment)"
                     value={formatMoney(
                       transaction.credit_balance,
                       theme.currency,
@@ -291,6 +372,202 @@ function SaleDetailsContent() {
                   {transaction.notes}
                 </AppText>
               ) : null}
+            </Card>
+
+            <Card style={styles.actionsCard}>
+              <View style={styles.actionsHeading}>
+                <View style={styles.actionsTitleCopy}>
+                  <AppText weight="semibold">Sale actions</AppText>
+                  <AppText size="small" tone="secondary">
+                    Manage delivery, payment, or a return.
+                  </AppText>
+                </View>
+                {hasDeliverableItems &&
+                outstandingDeliverableQuantity !== null &&
+                outstandingDeliverableQuantity > 0 ? (
+                  <View
+                    style={[
+                      styles.actionCountBadge,
+                      { backgroundColor: `${theme.secondary}18` },
+                    ]}
+                  >
+                    <AppText
+                      size="small"
+                      weight="semibold"
+                      style={{ color: theme.secondary }}
+                    >
+                      {formatQuantity(outstandingDeliverableQuantity)} left
+                    </AppText>
+                  </View>
+                ) : null}
+              </View>
+
+              {hasDeliverableItems &&
+              (outstandingDeliverableQuantity === null ||
+                outstandingDeliverableQuantity > 0) ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    hasEggItems && !hasChickenItems
+                      ? "Record egg delivery"
+                      : "Record chicken delivery"
+                  }
+                  onPress={() => {
+                    const pathname =
+                      hasEggItems && !hasChickenItems
+                        ? "/sales/[saleId]/deliver-eggs"
+                        : "/sales/[saleId]/deliver";
+                    router.push({ pathname, params: { saleId } });
+                  }}
+                  style={({ pressed }) => [
+                    styles.deliveryAction,
+                    {
+                      backgroundColor: `${theme.primary}0D`,
+                      borderColor: `${theme.primary}45`,
+                      opacity: pressed ? 0.82 : 1,
+                    },
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.deliveryActionIcon,
+                      { backgroundColor: `${theme.primary}18` },
+                    ]}
+                  >
+                    <Ionicons
+                      name="cube-outline"
+                      size={21}
+                      color={theme.primary}
+                    />
+                  </View>
+                  <View style={styles.actionCopy}>
+                    <AppText weight="semibold">
+                      {outstandingDeliverableQuantity === null
+                        ? "Record a delivery"
+                        : hasEggItems && !hasChickenItems
+                          ? "Record egg delivery"
+                          : "Record chicken delivery"}
+                    </AppText>
+                    <AppText size="small" tone="secondary">
+                      {outstandingDeliverableQuantity === null
+                        ? "Update inventory for products handed over."
+                        : `${formatQuantity(outstandingDeliverableQuantity)} ${hasEggItems && !hasChickenItems ? "eggs" : outstandingDeliverableQuantity === 1 ? "chicken" : "chickens"} still to deliver`}
+                    </AppText>
+                  </View>
+                  <Ionicons
+                    name="arrow-forward"
+                    size={19}
+                    color={theme.primary}
+                  />
+                </Pressable>
+              ) : null}
+
+              <View
+                style={[
+                  styles.secondaryActions,
+                  { borderTopColor: theme.border },
+                ]}
+              >
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Settle sale balance or refund a customer overpayment"
+                  onPress={() =>
+                    router.push({
+                      pathname: "/transactions/[transactionId]/settlements",
+                      params: {
+                        transactionId: saleId,
+                        transactionType: "sale",
+                        balanceDue: String(transaction.balance_due),
+                        creditBalance: String(transaction.credit_balance),
+                        accountBalanceTotal: String(sale.customer_balance_total),
+                        accountCreditTotal: String(sale.customer_credit_total),
+                        contactName: sale.customer_name ?? "Customer",
+                        referenceNumber: transaction.reference_number ?? "",
+                      },
+                    })
+                  }
+                  style={({ pressed }) => [
+                    styles.secondaryAction,
+                    { opacity: pressed ? 0.72 : 1 },
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.secondaryActionIcon,
+                      { backgroundColor: `${theme.secondary}14` },
+                    ]}
+                  >
+                    <Ionicons
+                      name="wallet-outline"
+                      size={19}
+                      color={theme.secondary}
+                    />
+                  </View>
+                  <View style={styles.actionCopy}>
+                    <AppText size="small" weight="semibold">
+                      Settle balance or credit
+                    </AppText>
+                    <AppText size="small" tone="secondary">
+                      {Number(transaction.balance_due) > 0
+                        ? `${formatMoney(transaction.balance_due, theme.currency)} still to collect`
+                        : Number(transaction.credit_balance) > 0
+                          ? `Farm owes customer ${formatMoney(transaction.credit_balance, theme.currency)}`
+                          : "Record or review a payment"}
+                    </AppText>
+                  </View>
+                  <Ionicons
+                    name="chevron-forward"
+                    size={18}
+                    color={theme.textSecondary}
+                  />
+                </Pressable>
+
+                <View style={[styles.actionDivider, { backgroundColor: theme.border }]} />
+
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Record a product return"
+                  onPress={() =>
+                    router.push({
+                      pathname: "/transactions/[transactionId]/returns",
+                      params: {
+                        transactionId: saleId,
+                        transactionType: "sale",
+                      },
+                    })
+                  }
+                  style={({ pressed }) => [
+                    styles.secondaryAction,
+                    { opacity: pressed ? 0.72 : 1 },
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.secondaryActionIcon,
+                      { backgroundColor: `${theme.danger}12` },
+                    ]}
+                  >
+                    <Ionicons
+                      name="return-down-back-outline"
+                      size={19}
+                      color={theme.danger}
+                    />
+                  </View>
+                  <View style={styles.actionCopy}>
+                    <AppText size="small" weight="semibold">
+                      Record a product return
+                    </AppText>
+                    <AppText size="small" tone="secondary">
+                      Return delivered chickens or other sale items.
+                    </AppText>
+                  </View>
+                  <Ionicons
+                    name="chevron-forward"
+                    size={18}
+                    color={theme.textSecondary}
+                  />
+                </Pressable>
+              </View>
             </Card>
 
             <Section title="Items sold" icon="cart-outline" accent={theme.primary}>
@@ -357,7 +634,7 @@ function SaleDetailsContent() {
               ) : null}
             </Section>
 
-            {hasChickenItems ? (
+            {hasDeliverableItems ? (
               <Section
                 title="Delivery progress"
                 icon="git-commit-outline"
@@ -378,6 +655,7 @@ function SaleDetailsContent() {
                     (candidate) =>
                       candidate.id === item.transaction_item_id,
                   );
+                  const deliveryUnit = item.unit_abbreviation ?? item.unit_name ?? "";
                   return (
                     <View
                       key={item.transaction_item_id}
@@ -390,20 +668,22 @@ function SaleDetailsContent() {
                         {soldItem?.product_name ??
                           (item.chicken_type
                             ? labelize(item.chicken_type)
-                            : "Chicken item")}
+                            : hasEggItems
+                              ? "Egg product"
+                              : "Chicken item")}
                       </AppText>
                       <View style={styles.quantityRow}>
                         <Quantity
                           label="Ordered"
-                          value={formatQuantity(item.ordered_quantity)}
+                          value={`${formatQuantity(item.ordered_quantity)}${soldItem?.product_type === "eggs" && deliveryUnit ? ` ${deliveryUnit}` : ""}`}
                         />
                         <Quantity
                           label="Delivered"
-                          value={formatQuantity(item.delivered_quantity)}
+                          value={`${formatQuantity(item.delivered_quantity)}${soldItem?.product_type === "eggs" && deliveryUnit ? ` ${deliveryUnit}` : ""}`}
                         />
                         <Quantity
                           label="Remaining"
-                          value={formatQuantity(item.outstanding_quantity)}
+                          value={`${formatQuantity(item.outstanding_quantity)}${soldItem?.product_type === "eggs" && deliveryUnit ? ` ${deliveryUnit}` : ""}`}
                         />
                       </View>
                     </View>
@@ -411,7 +691,7 @@ function SaleDetailsContent() {
                 })
               ) : (
                 <AppText size="small" tone="secondary">
-                  No chicken delivery quantities are pending on this sale.
+                  No delivery quantities are pending on this sale.
                 </AppText>
               )}
               </Section>
@@ -423,62 +703,113 @@ function SaleDetailsContent() {
                 icon="home-outline"
                 accent={theme.secondary}
               >
-              {sale.deliveries.length === 0 ? (
-                <AppText size="small" tone="secondary">
-                  No delivery allocations have been recorded.
-                </AppText>
-              ) : (
-                sale.deliveries.map((delivery) => (
-                  <View key={delivery.id} style={styles.delivery}>
-                    <AppText weight="semibold">
-                      {formatDate(delivery.delivered_date)}
-                      {delivery.delivered_time
-                        ? ` · ${delivery.delivered_time.slice(0, 5)}`
-                        : ""}
-                    </AppText>
-                    {delivery.items.map((deliveryItem) => {
-                      const soldItem = transaction.items.find(
-                        (item) => item.id === deliveryItem.transaction_item_id,
-                      );
-                      return (
-                        <View key={deliveryItem.id} style={styles.deliveryItem}>
-                          <AppText size="small" weight="semibold">
-                            {soldItem?.product_name ?? "Chicken"} ·{" "}
-                            {formatQuantity(deliveryItem.quantity)} sold
-                          </AppText>
-                          {deliveryItem.batch_allocations.map((allocation) => (
-                            <View
-                              key={`${allocation.batch_id}-${allocation.block_id}`}
-                              style={[
-                                styles.allocation,
-                                { backgroundColor: theme.backgroundSelected },
-                              ]}
-                            >
-                              <Ionicons
-                                name="layers-outline"
-                                size={15}
-                                color={theme.secondary}
-                              />
-                              <AppText
-                                size="small"
-                                style={{ color: theme.text, flex: 1 }}
-                              >
-                                {allocation.batch_name} · {allocation.block_name} ·{" "}
-                                {allocation.quantity} birds
-                              </AppText>
-                            </View>
-                          ))}
-                        </View>
-                      );
-                    })}
-                    {delivery.notes ? (
-                      <AppText size="small" tone="secondary">
-                        Note: {delivery.notes}
+                {sale.deliveries.length === 0 ? (
+                  <AppText size="small" tone="secondary">
+                    No delivery allocations have been recorded.
+                  </AppText>
+                ) : (
+                  sale.deliveries.map((delivery) => (
+                    <View key={delivery.id} style={styles.delivery}>
+                      <AppText weight="semibold">
+                        {formatDate(delivery.delivered_date)}
+                        {delivery.delivered_time
+                          ? ` · ${delivery.delivered_time.slice(0, 5)}`
+                          : ""}
                       </AppText>
-                    ) : null}
-                  </View>
-                ))
-              )}
+                      {delivery.items.map((deliveryItem) => {
+                        const soldItem = transaction.items.find(
+                          (item) => item.id === deliveryItem.transaction_item_id,
+                        );
+                        return (
+                          <View key={deliveryItem.id} style={styles.deliveryItem}>
+                            <AppText size="small" weight="semibold">
+                              {soldItem?.product_name ?? "Chicken"} ·{" "}
+                              {formatQuantity(deliveryItem.quantity)} delivered
+                            </AppText>
+                            {deliveryItem.batch_allocations.map((allocation) => (
+                              <View
+                                key={`${allocation.batch_id}-${allocation.block_id}`}
+                                style={[
+                                  styles.allocation,
+                                  { backgroundColor: theme.backgroundSelected },
+                                ]}
+                              >
+                                <Ionicons
+                                  name="layers-outline"
+                                  size={15}
+                                  color={theme.secondary}
+                                />
+                                <AppText
+                                  size="small"
+                                  style={{ color: theme.text, flex: 1 }}
+                                >
+                                  {allocation.batch_name} · {allocation.block_name} ·{" "}
+                                  {allocation.quantity} birds
+                                </AppText>
+                              </View>
+                            ))}
+                          </View>
+                        );
+                      })}
+                      {delivery.notes ? (
+                        <AppText size="small" tone="secondary">
+                          Note: {delivery.notes}
+                        </AppText>
+                      ) : null}
+                    </View>
+                  ))
+                )}
+              </Section>
+            ) : null}
+
+            {hasEggItems ? (
+              <Section
+                title="Delivery history"
+                icon="cube-outline"
+                accent={theme.secondary}
+              >
+                {sale.deliveries.length === 0 ? (
+                  <AppText size="small" tone="secondary">
+                    No egg deliveries have been recorded yet.
+                  </AppText>
+                ) : (
+                  sale.deliveries.map((delivery) => (
+                    <View key={delivery.id} style={styles.delivery}>
+                      <AppText weight="semibold">
+                        {formatDate(delivery.delivered_date)}
+                        {delivery.delivered_time
+                          ? ` · ${delivery.delivered_time.slice(0, 5)}`
+                          : ""}
+                      </AppText>
+                      {delivery.items.map((deliveryItem) => {
+                        const soldItem = transaction.items.find(
+                          (item) => item.id === deliveryItem.transaction_item_id,
+                        );
+                        const baseUnit = fulfillment.data?.items.find(
+                          (item) =>
+                            item.transaction_item_id ===
+                            deliveryItem.transaction_item_id,
+                        )?.unit_abbreviation;
+                        return (
+                          <AppText
+                            key={deliveryItem.id}
+                            size="small"
+                            tone="secondary"
+                          >
+                            {soldItem?.product_name ?? "Eggs"} ·{" "}
+                            {formatQuantity(deliveryItem.quantity)}
+                            {baseUnit ? ` ${baseUnit}` : ""} delivered
+                          </AppText>
+                        );
+                      })}
+                      {delivery.notes ? (
+                        <AppText size="small" tone="secondary">
+                          Note: {delivery.notes}
+                        </AppText>
+                      ) : null}
+                    </View>
+                  ))
+                )}
               </Section>
             ) : null}
 
@@ -532,7 +863,7 @@ function SaleDetailsContent() {
 
             {transaction.contact_id ? (
               <Section
-                title="Customer account balance"
+                title="Customer balance"
                 icon="wallet-outline"
                 accent={theme.secondary}
               >
@@ -543,17 +874,34 @@ function SaleDetailsContent() {
                       { backgroundColor: `${theme.danger}12` },
                     ]}
                   >
-                    <Ionicons
-                      name="arrow-up-circle-outline"
-                      size={20}
-                      color={theme.danger}
-                    />
-                    <View style={styles.customerBalanceCopy}>
-                      <AppText size="small" tone="secondary">
-                        Customer owes you
-                      </AppText>
-                      <AppText weight="semibold" style={{ color: theme.danger }}>
-                        {formatMoney(
+                    <View style={styles.customerBalanceHeading}>
+                      <Ionicons
+                        name="arrow-up-circle-outline"
+                        size={20}
+                        color={theme.danger}
+                      />
+                      <View style={styles.customerBalanceCopy}>
+                        <AppText
+                          weight="semibold"
+                          style={styles.customerBalanceLabel}
+                        >
+                          Customer owes the farm
+                        </AppText>
+                        <AppText size="small" tone="secondary">
+                          Across open sales
+                        </AppText>
+                      </View>
+                    </View>
+                    <View style={styles.customerBalanceAmount}>
+                      <AppText
+                        size="body"
+                        weight="semibold"
+                        style={[
+                          styles.customerBalanceValue,
+                          { color: theme.danger },
+                        ]}
+                      >
+                        {formatMoneyWithBreaks(
                           sale.customer_balance_total,
                           theme.currency,
                         )}
@@ -566,17 +914,34 @@ function SaleDetailsContent() {
                       { backgroundColor: `${theme.primary}12` },
                     ]}
                   >
-                    <Ionicons
-                      name="arrow-down-circle-outline"
-                      size={20}
-                      color={theme.primary}
-                    />
-                    <View style={styles.customerBalanceCopy}>
-                      <AppText size="small" tone="secondary">
-                        Customer credit
-                      </AppText>
-                      <AppText weight="semibold" style={{ color: theme.primary }}>
-                        {formatMoney(
+                    <View style={styles.customerBalanceHeading}>
+                      <Ionicons
+                        name="arrow-down-circle-outline"
+                        size={20}
+                        color={theme.primary}
+                      />
+                      <View style={styles.customerBalanceCopy}>
+                        <AppText
+                          weight="semibold"
+                          style={styles.customerBalanceLabel}
+                        >
+                          Farm owes customer
+                        </AppText>
+                        <AppText size="small" tone="secondary">
+                          Credit and overpayments
+                        </AppText>
+                      </View>
+                    </View>
+                    <View style={styles.customerBalanceAmount}>
+                      <AppText
+                        size="body"
+                        weight="semibold"
+                        style={[
+                          styles.customerBalanceValue,
+                          { color: theme.primary },
+                        ]}
+                      >
+                        {formatMoneyWithBreaks(
                           sale.customer_credit_total,
                           theme.currency,
                         )}
@@ -588,7 +953,7 @@ function SaleDetailsContent() {
                   <Pressable
                     key={balance.id}
                     accessibilityRole="button"
-                    accessibilityLabel={`Open sale ${balance.reference_number ?? ""}, ${Number(balance.balance_due) > 0 ? `balance due ${formatMoney(balance.balance_due, theme.currency)}` : `customer credit ${formatMoney(balance.credit_balance, theme.currency)}`}`}
+                    accessibilityLabel={`Open sale ${balance.reference_number ?? ""}, ${Number(balance.balance_due) > 0 ? `customer owes ${formatMoney(balance.balance_due, theme.currency)}` : `farm owes customer ${formatMoney(balance.credit_balance, theme.currency)}`}`}
                     onPress={() =>
                       router.push({
                         pathname: "/sales/[saleId]",
@@ -603,38 +968,48 @@ function SaleDetailsContent() {
                       },
                     ]}
                   >
-                    <View style={styles.balanceRowCopy}>
-                      <AppText weight="semibold" numberOfLines={1}>
-                        {balance.reference_number
-                          ? `Sale ${balance.reference_number}`
-                          : "Chicken sale"}
-                      </AppText>
-                      <AppText size="small" tone="secondary">
-                        {formatDate(balance.transaction_date)}
-                      </AppText>
-                    </View>
-                    <View style={styles.balanceAmount}>
-                      <AppText
-                        size="small"
-                        weight="semibold"
-                        style={{
-                          flexShrink: 1,
-                          textAlign: "right",
-                          color:
-                            Number(balance.balance_due) > 0
-                              ? theme.danger
-                              : theme.primary,
-                        }}
-                      >
-                        {Number(balance.balance_due) > 0
-                          ? `Owed ${formatMoney(balance.balance_due, theme.currency)}`
-                          : `Credit ${formatMoney(balance.credit_balance, theme.currency)}`}
-                      </AppText>
+                    <View style={styles.balanceRowHeader}>
+                      <View style={styles.balanceRowCopy}>
+                        <AppText weight="semibold">
+                          {balance.reference_number
+                            ? `Sale ${balance.reference_number}`
+                            : "Chicken sale"}
+                        </AppText>
+                        <AppText size="small" tone="secondary">
+                          {formatDate(balance.transaction_date)}
+                        </AppText>
+                      </View>
                       <Ionicons
                         name="chevron-forward"
                         size={17}
                         color={theme.textSecondary}
                       />
+                    </View>
+                    <View style={styles.balanceAmount}>
+                      <AppText size="small" tone="secondary">
+                        {Number(balance.balance_due) > 0
+                          ? "Customer owes the farm"
+                          : "Farm owes customer"}
+                      </AppText>
+                      <AppText
+                        weight="semibold"
+                        style={[
+                          styles.customerBalanceValue,
+                          {
+                            color:
+                              Number(balance.balance_due) > 0
+                                ? theme.danger
+                                : theme.primary,
+                          },
+                        ]}
+                      >
+                        {formatMoneyWithBreaks(
+                          Number(balance.balance_due) > 0
+                            ? balance.balance_due
+                            : balance.credit_balance,
+                          theme.currency,
+                        )}
+                      </AppText>
                     </View>
                   </Pressable>
                 ))}
@@ -670,9 +1045,11 @@ function Section({
         <View style={[styles.sectionIcon, { backgroundColor: `${accent}16` }]}>
           <Ionicons name={icon} size={19} color={accent} />
         </View>
-        <AppText weight="semibold" size="heading">
-          {title}
-        </AppText>
+        <View style={styles.sectionHeadingCopy}>
+          <AppText weight="semibold" size="heading" style={styles.sectionTitle}>
+            {title}
+          </AppText>
+        </View>
       </View>
       <View style={[styles.sectionBody, { borderTopColor: theme.border }]}>
         {children}
@@ -727,6 +1104,18 @@ function formatMoney(value: number | string, currency: string): string {
   })}`;
 }
 
+function formatMoneyWithBreaks(
+  value: number | string,
+  currency: string,
+): string {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return `${currency} 0.00`;
+  return `${currency} ${amount.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`.replace(/,/g, ",\u200B");
+}
+
 function formatQuantity(value: number | string): string {
   const amount = Number(value);
   return Number.isFinite(amount)
@@ -769,6 +1158,30 @@ const styles = StyleSheet.create({
   },
   stateCard: { alignItems: "center", gap: 10, padding: 20 },
   centered: { textAlign: "center" },
+  createdNotice: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 11,
+    padding: 14,
+    borderWidth: 1,
+    borderRadius: 13,
+  },
+  createdIcon: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+  },
+  reminderNotice: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 9,
+    padding: 12,
+    borderWidth: 1,
+    borderRadius: 11,
+  },
+  reminderNoticeCopy: { flex: 1, minWidth: 0 },
   hero: { gap: 15, padding: 18, borderLeftWidth: 4 },
   heroHeading: { flexDirection: "row", alignItems: "center", gap: 12 },
   heroIcon: {
@@ -804,8 +1217,57 @@ const styles = StyleSheet.create({
   },
   heroDetails: { gap: 7 },
   notes: { borderTopWidth: 1, paddingTop: 10 },
+  actionsCard: { gap: 14, padding: 16 },
+  actionsHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  actionsTitleCopy: { flex: 1, gap: 3 },
+  actionCountBadge: {
+    maxWidth: "45%",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 16,
+  },
+  deliveryAction: {
+    minHeight: 76,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 13,
+    borderWidth: 1,
+    borderRadius: 14,
+  },
+  deliveryActionIcon: {
+    width: 42,
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 13,
+  },
+  actionCopy: { flex: 1, minWidth: 0, gap: 3 },
+  secondaryActions: { borderTopWidth: 1 },
+  secondaryAction: {
+    minHeight: 68,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+    paddingVertical: 11,
+  },
+  secondaryActionIcon: {
+    width: 38,
+    height: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+  },
+  actionDivider: { height: StyleSheet.hairlineWidth, marginLeft: 49 },
   section: { gap: 12, padding: 16 },
   sectionHeading: { flexDirection: "row", alignItems: "center", gap: 10 },
+  sectionHeadingCopy: { flex: 1, minWidth: 0 },
+  sectionTitle: { flexShrink: 1, minWidth: 0, flexWrap: "wrap" },
   sectionIcon: {
     width: 36,
     height: 36,
@@ -852,27 +1314,40 @@ const styles = StyleSheet.create({
   balanceSummary: { borderTopWidth: 1, paddingTop: 10, gap: 8 },
   customerBalanceSummary: { gap: 9 },
   customerBalanceCard: {
-    flexDirection: "row",
-    alignItems: "center",
+    alignItems: "stretch",
     gap: 10,
     padding: 11,
     borderRadius: 10,
   },
-  customerBalanceCopy: { flex: 1, gap: 2 },
-  balanceRow: {
+  customerBalanceHeading: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
+    gap: 8,
+  },
+  customerBalanceCopy: { flex: 1, minWidth: 0, gap: 1 },
+  customerBalanceLabel: { flexShrink: 1, minWidth: 0, flexWrap: "wrap" },
+  customerBalanceAmount: { width: "100%", minWidth: 0 },
+  customerBalanceValue: {
+    width: "100%",
+    minWidth: 0,
+    flexWrap: "wrap",
+  },
+  balanceRow: {
+    flexDirection: "column",
+    alignItems: "stretch",
+    gap: 5,
     paddingVertical: 11,
     borderBottomWidth: 1,
   },
-  balanceRowCopy: { flex: 1, gap: 3 },
-  balanceAmount: {
+  balanceRowHeader: {
     flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "flex-end",
-    gap: 5,
-    flex: 1,
+    alignItems: "flex-start",
+    gap: 8,
+  },
+  balanceRowCopy: { flex: 1, minWidth: 0, gap: 3 },
+  balanceAmount: {
+    width: "100%",
+    minWidth: 0,
+    gap: 3,
   },
 });

@@ -1,8 +1,14 @@
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams, type Href } from "expo-router";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import {
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { LoadingState } from "@/components/feedback/loading-state";
@@ -21,6 +27,7 @@ import {
   getContactTransactionHistory,
   getExpenseSummary,
   getExpenses,
+  getExpenseDisplayName,
   type ExpenseRecord,
   type ContactTransactionHistoryItem,
   type InventoryMovement,
@@ -80,7 +87,7 @@ function ReportDetailContent() {
   }
 
   return (
-    <ReportShell title={titles[report]}>
+    <ReportShell title={titles[report]} report={report}>
       {report === "sales" ? <SalesReportDetail /> : null}
       {report === "expenses" ? <ExpensesReportDetail /> : null}
       {report === "production" ? <ProductionReportDetail /> : null}
@@ -96,19 +103,44 @@ function ReportDetailContent() {
 
 function ReportShell({
   title,
+  report,
   children,
 }: {
   title: string;
+  report?: ReportName;
   children: React.ReactNode;
 }) {
   const { theme } = useTheme();
+  const queryClient = useQueryClient();
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  async function refreshReport() {
+    setIsRefreshing(true);
+    try {
+      await queryClient.refetchQueries({ type: "active" });
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
+
   return (
     <SafeAreaView
       style={[styles.screen, { backgroundColor: theme.background }]}
       edges={["top", "bottom"]}
     >
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefreshing}
+            onRefresh={() => void refreshReport()}
+            tintColor={theme.primary}
+            colors={[theme.primary]}
+          />
+        }
+      >
         <FarmPageHeader title={title} showBack backHref="/reports" />
+        {report ? <ReportIntro report={report} /> : null}
         {children}
       </ScrollView>
     </SafeAreaView>
@@ -126,9 +158,25 @@ function DateRange({
   setFromDate: (date: string) => void;
   setToDate: (date: string) => void;
 }) {
+  const { theme } = useTheme();
   return (
     <Card style={styles.card}>
-      <AppText size="small" weight="semibold">REPORTING PERIOD</AppText>
+      <View style={styles.periodHeading}>
+        <View
+          style={[
+            styles.periodIcon,
+            { backgroundColor: theme.backgroundSelected },
+          ]}
+        >
+          <Ionicons name="calendar-outline" size={17} color={theme.primary} />
+        </View>
+        <View style={styles.periodCopy}>
+          <AppText size="small" weight="semibold">Reporting period</AppText>
+          <AppText size="small" tone="secondary">
+            Choose the dates included in this report
+          </AppText>
+        </View>
+      </View>
       <View style={styles.dateRow}>
         <DatePickerField label="From" value={fromDate} onChange={setFromDate} style={styles.dateField} />
         <DatePickerField label="To" value={toDate} onChange={setToDate} style={styles.dateField} />
@@ -299,6 +347,14 @@ function SalesReportDetail() {
 
   return (
     <>
+      {summary.data ? (
+        <View style={styles.exportToolbar}>
+          <ReportExportActions
+            data={createExportData(items, summary.data)}
+            resolveData={resolveAllSales}
+          />
+        </View>
+      ) : null}
       <DateRange {...range} />
       {summary.isLoading ? <LoadingState label="Loading sales summary" /> : null}
       {summary.isError ? <QueryError error={summary.error} retry={() => void summary.refetch()} /> : null}
@@ -310,12 +366,6 @@ function SalesReportDetail() {
             ["Balance due", money(summary.data.summary.balance_due, currency)],
             ["Transactions", String(summary.data.summary.transaction_count)],
           ]}
-        />
-      ) : null}
-      {summary.data ? (
-        <ReportExportActions
-          data={createExportData(items, summary.data)}
-          resolveData={resolveAllSales}
         />
       ) : null}
       <SectionTitle title="Completed sales" detail={`${sales.data?.pages[0]?.total_count ?? 0} records`} />
@@ -346,6 +396,7 @@ function SalesReportDetail() {
 function ExpensesReportDetail() {
   const { user } = useAuth();
   const selectedFarm = useFarm().selectedFarm;
+  const { theme } = useTheme();
   const farmId = selectedFarm?.id;
   const currency = selectedFarm?.settings?.currency ?? "KES";
   const range = useDateRange();
@@ -393,7 +444,7 @@ function ExpensesReportDetail() {
         ],
         rows: records.map((item) => ({
           date: item.expense_date,
-          expense: item.name,
+          expense: getExpenseDisplayName(item),
           category: item.category_name,
           payee: item.contact_name,
           block: item.block_name,
@@ -483,12 +534,20 @@ function ExpensesReportDetail() {
 
   return (
     <>
+      {summary.data ? (
+        <View style={styles.exportToolbar}>
+          <ReportExportActions
+            data={createExportData(items, summary.data)}
+            resolveData={resolveAllExpenses}
+          />
+        </View>
+      ) : null}
       <DateRange {...range} />
       {summary.isLoading ? <LoadingState label="Loading expense summary" /> : null}
       {summary.isError ? <QueryError error={summary.error} retry={() => void summary.refetch()} /> : null}
       {summary.data ? (
         <>
-          <SummaryCard rows={[
+          <SummaryCard title="Period summary" rows={[
             ["Recorded expenses", money(summary.data.total_amount, currency)],
             ["Paid", money(summary.data.amount_paid, currency)],
             ["Outstanding", money(summary.data.balance_due, currency)],
@@ -505,20 +564,27 @@ function ExpensesReportDetail() {
           ))}
         </>
       ) : null}
-      {summary.data ? (
-        <ReportExportActions
-          data={createExportData(items, summary.data)}
-          resolveData={resolveAllExpenses}
-        />
-      ) : null}
       <SectionTitle title="Expense records" detail={`${expenses.data?.pages[0]?.total_count ?? 0} records`} />
       {expenses.isLoading ? <LoadingState label="Loading expenses" /> : null}
       {expenses.isError ? <QueryError error={expenses.error} retry={() => void expenses.refetch()} /> : null}
       {items.map((item) => (
         <RecordCard
           key={item.id}
-          title={item.name}
+          title={getExpenseDisplayName(item)}
           subtitle={`${item.category_name} · ${formatDateLabel(item.expense_date)}`}
+          icon="receipt-outline"
+          badgeLabel={{
+            paid: "Paid",
+            partial: "Part paid",
+            unpaid: "Payment due",
+            cancelled: "Cancelled",
+          }[item.payment_status]}
+          badgeColor={{
+            paid: theme.success,
+            partial: theme.secondary,
+            unpaid: theme.danger,
+            cancelled: theme.textSecondary,
+          }[item.payment_status]}
           rows={[
             ["Total", money(item.amount, currency)],
             ["Paid", money(item.amount_paid, currency)],
@@ -535,6 +601,52 @@ function ExpensesReportDetail() {
       ) : null}
       {!expenses.isLoading && items.length === 0 ? <EmptyState message="No expenses in this period." /> : null}
     </>
+  );
+}
+
+function ReportIntro({ report }: { report: ReportName }) {
+  const { theme } = useTheme();
+  const descriptions: Record<ReportName, string> = {
+    sales: "Completed sales, payments received and customer balances.",
+    expenses: "Spending by category, payment status and individual expense.",
+    production: "Egg collections and opening stock recorded for this period.",
+    flock: "Current bird counts by batch and housing capacity.",
+    inventory: "Product balances on hand and the movements behind them.",
+    accounts: "Supplier and customer transactions with balances due.",
+  };
+  const icons: Record<ReportName, keyof typeof Ionicons.glyphMap> = {
+    sales: "trending-up-outline",
+    expenses: "receipt-outline",
+    production: "egg-outline",
+    flock: "leaf-outline",
+    inventory: "cube-outline",
+    accounts: "people-outline",
+  };
+
+  return (
+    <View
+      style={[
+        styles.reportIntro,
+        { backgroundColor: theme.backgroundElement, borderColor: theme.border },
+      ]}
+    >
+      <View
+        style={[
+          styles.reportIntroIcon,
+          { backgroundColor: theme.backgroundSelected },
+        ]}
+      >
+        <Ionicons name={icons[report]} size={19} color={theme.primary} />
+      </View>
+      <View style={styles.reportIntroCopy}>
+        <AppText size="small" weight="semibold">
+          {titles[report]}
+        </AppText>
+        <AppText size="small" tone="secondary">
+          {descriptions[report]}
+        </AppText>
+      </View>
+    </View>
   );
 }
 
@@ -588,9 +700,52 @@ function ProductionReportDetail() {
     (sum, row) => sum + Number(row.quantity_in_base_unit),
     0,
   );
+  const exportData: ReportExportData = {
+    title: "Egg production report",
+    farmName: selectedFarm?.name ?? "FarmTrack",
+    farmLogoUri: getFarmLogoUri(selectedFarm?.settings?.logo_path),
+    fromDate: range.fromDate,
+    toDate: range.toDate,
+    summary: [
+      { label: "Eggs collected (base units)", value: total, kind: "number" },
+      { label: "Opening stock (base units)", value: openingTotal, kind: "number" },
+      { label: "Collection and opening-stock records", value: rows.length, kind: "number" },
+    ],
+    sheets: [{
+      name: "Egg collections",
+      columns: [
+        { key: "date", label: "Date", kind: "date" },
+        { key: "type", label: "Entry type" },
+        { key: "product", label: "Product" },
+        { key: "quantity", label: "Recorded quantity", kind: "number" },
+        { key: "unit", label: "Unit" },
+        { key: "baseQuantity", label: "Quantity in base units", kind: "number" },
+        { key: "block", label: "Block" },
+        { key: "notes", label: "Notes" },
+      ],
+      rows: rows.map((row) => ({
+        date: row.collected_at,
+        type: row.entry_type === "opening_stock" ? "Opening stock" : "Collection",
+        product: productNames.get(row.product_id) ?? "Egg product",
+        quantity: Number(row.quantity),
+        unit: unitNames.get(row.unit_id) ?? "Unit",
+        baseQuantity: Number(row.quantity_in_base_unit),
+        block: row.block_id
+          ? blockNames.get(row.block_id) ?? "Block not available"
+          : "Not assigned",
+        notes: row.notes,
+      })),
+      totalColumns: ["baseQuantity"],
+    }],
+  };
 
   return (
     <>
+      {collections.data ? (
+        <View style={styles.exportToolbar}>
+          <ReportExportActions label="Export" data={exportData} />
+        </View>
+      ) : null}
       <DateRange {...range} />
       {options.isError ? <QueryError error={options.error} retry={() => void options.refetch()} /> : null}
       {collections.isLoading ? <LoadingState label="Loading egg collections" /> : null}
@@ -602,46 +757,6 @@ function ProductionReportDetail() {
             ["Opening stock", `${formatQuantity(openingTotal)} base units`],
             ["Collection records", String(rows.length)],
           ]} />
-          <ReportExportActions
-            data={{
-              title: "Egg production report",
-              farmName: selectedFarm?.name ?? "FarmTrack",
-              farmLogoUri: getFarmLogoUri(selectedFarm?.settings?.logo_path),
-              fromDate: range.fromDate,
-              toDate: range.toDate,
-              summary: [
-                { label: "Eggs collected (base units)", value: total, kind: "number" },
-                { label: "Opening stock (base units)", value: openingTotal, kind: "number" },
-                { label: "Collection and opening-stock records", value: rows.length, kind: "number" },
-              ],
-              sheets: [{
-                name: "Egg collections",
-                columns: [
-                  { key: "date", label: "Date", kind: "date" },
-                  { key: "type", label: "Entry type" },
-                  { key: "product", label: "Product" },
-                  { key: "quantity", label: "Recorded quantity", kind: "number" },
-                  { key: "unit", label: "Unit" },
-                  { key: "baseQuantity", label: "Quantity in base units", kind: "number" },
-                  { key: "block", label: "Block" },
-                  { key: "notes", label: "Notes" },
-                ],
-                rows: rows.map((row) => ({
-                  date: row.collected_at,
-                  type: row.entry_type === "opening_stock" ? "Opening stock" : "Collection",
-                  product: productNames.get(row.product_id) ?? "Egg product",
-                  quantity: Number(row.quantity),
-                  unit: unitNames.get(row.unit_id) ?? "Unit",
-                  baseQuantity: Number(row.quantity_in_base_unit),
-                  block: row.block_id
-                    ? blockNames.get(row.block_id) ?? "Block not available"
-                    : "Not assigned",
-                  notes: row.notes,
-                })),
-                totalColumns: ["baseQuantity"],
-              }],
-            }}
-          />
           <SectionTitle title="Collection history" detail="Product, quantity, date and block when assigned" />
           {rows.map((row) => (
             <RecordCard
@@ -686,12 +801,9 @@ function FlockReportDetail() {
       {query.isError ? <QueryError error={query.error} retry={() => void query.refetch()} /> : null}
       {query.data ? (
         <>
-          <SummaryCard rows={[
-            ["Current flock", `${formatQuantity(flockCount)} birds`],
-            ["Active batches", String(batches.length)],
-            ["Housing blocks", String(blocks.length)],
-          ]} />
-          <ReportExportActions
+          <View style={styles.exportToolbar}>
+            <ReportExportActions
+              label="Export"
             data={{
               title: "Flock report",
               farmName: selectedFarm?.name ?? "FarmTrack",
@@ -748,7 +860,13 @@ function FlockReportDetail() {
                 },
               ],
             }}
-          />
+            />
+          </View>
+          <SummaryCard rows={[
+            ["Current flock", `${formatQuantity(flockCount)} birds`],
+            ["Active batches", String(batches.length)],
+            ["Housing blocks", String(blocks.length)],
+          ]} />
           <SectionTitle title="Current flock by batch" detail="Birds shown by batch and current block allocation" />
           {batches.map((batch) => {
             const count = batch.stocks.reduce((sum, stock) => sum + stock.quantity, 0);
@@ -856,40 +974,44 @@ function InventoryReportDetail() {
       {query.isError ? <QueryError error={query.error} retry={() => void query.refetch()} /> : null}
       {inventory ? (
         <>
+          <View style={styles.exportToolbar}>
+            <ReportExportActions
+              label="Stock"
+              data={{
+                title: "Inventory stock report",
+                farmName: selectedFarm?.name ?? "FarmTrack",
+                farmLogoUri: getFarmLogoUri(selectedFarm?.settings?.logo_path),
+                summary: [
+                  { label: "Tracked products", value: balances.length, kind: "number" },
+                  { label: "Products with stock", value: balances.filter((item) => Number(item.quantity) > 0).length, kind: "number" },
+                ],
+                sheets: [{
+                  name: "Current stock",
+                  columns: [
+                    { key: "product", label: "Product" },
+                    { key: "type", label: "Product type" },
+                    { key: "quantity", label: "Quantity on hand", kind: "number" },
+                    { key: "unit", label: "Unit" },
+                  ],
+                  rows: balances.map((item) => ({
+                    product: item.product_name,
+                    type: item.product_type,
+                    quantity: Number(item.quantity),
+                    unit: item.unit_name,
+                  })),
+                }],
+              }}
+            />
+            <ReportExportActions
+              label="Movements"
+              data={movementExportData}
+              resolveData={resolveAllInventoryMovements}
+            />
+          </View>
           <SummaryCard rows={[
             ["Tracked products", String(balances.length)],
             ["Stock movements shown", String(movements.length)],
           ]} />
-          <ReportExportActions
-            data={{
-              title: "Inventory stock report",
-              farmName: selectedFarm?.name ?? "FarmTrack",
-              farmLogoUri: getFarmLogoUri(selectedFarm?.settings?.logo_path),
-              summary: [
-                { label: "Tracked products", value: balances.length, kind: "number" },
-                { label: "Products with stock", value: balances.filter((item) => Number(item.quantity) > 0).length, kind: "number" },
-              ],
-              sheets: [{
-                name: "Current stock",
-                columns: [
-                  { key: "product", label: "Product" },
-                  { key: "type", label: "Product type" },
-                  { key: "quantity", label: "Quantity on hand", kind: "number" },
-                  { key: "unit", label: "Unit" },
-                ],
-                rows: balances.map((item) => ({
-                  product: item.product_name,
-                  type: item.product_type,
-                  quantity: Number(item.quantity),
-                  unit: item.unit_name,
-                })),
-              }],
-            }}
-          />
-          <ReportExportActions
-            data={movementExportData}
-            resolveData={resolveAllInventoryMovements}
-          />
           <SectionTitle title="Current stock" detail="Available quantity for each tracked product" />
           {balances.map((item) => (
             <RecordCard
@@ -967,31 +1089,34 @@ function AccountsReportDetail() {
       {!contactsQuery.isLoading && !contacts.length ? <EmptyState message="No customer or supplier accounts are recorded." /> : null}
       {selectedContact ? (
         <>
-          <DateRange {...range} />
-          <SectionTitle title={`${selectedContact.name} ledger`} detail="Transactions and balances for this account" />
-          <ReportExportActions
-            data={createAccountExportData(
-              history,
-              selectedContact.name,
-              currency,
-              selectedFarm?.name ?? "FarmTrack",
-              selectedFarm?.settings?.logo_path,
-              range.fromDate,
-              range.toDate,
-            )}
-            resolveData={() =>
-              resolveAccountExportData(
-                farmId,
-                selectedContact.id,
+          <View style={styles.exportToolbar}>
+            <ReportExportActions
+              label="Export ledger"
+              data={createAccountExportData(
+                history,
                 selectedContact.name,
                 currency,
                 selectedFarm?.name ?? "FarmTrack",
                 selectedFarm?.settings?.logo_path,
                 range.fromDate,
                 range.toDate,
-              )
-            }
-          />
+              )}
+              resolveData={() =>
+                resolveAccountExportData(
+                  farmId,
+                  selectedContact.id,
+                  selectedContact.name,
+                  currency,
+                  selectedFarm?.name ?? "FarmTrack",
+                  selectedFarm?.settings?.logo_path,
+                  range.fromDate,
+                  range.toDate,
+                )
+              }
+            />
+          </View>
+          <DateRange {...range} />
+          <SectionTitle title={`${selectedContact.name} ledger`} detail="Transactions and balances for this account" />
           {historyQuery.isLoading ? <LoadingState label="Loading account history" /> : null}
           {historyQuery.isError ? <QueryError error={historyQuery.error} retry={() => void historyQuery.refetch()} /> : null}
           {history.map((transaction) => (
@@ -1148,15 +1273,84 @@ function SummaryCard({
   rows: [string, string][];
 }) {
   const { theme } = useTheme();
+  const [primary, ...supporting] = rows;
   return (
-    <Card style={styles.card}>
-      {title ? <AppText weight="semibold">{title}</AppText> : null}
-      {rows.map(([label, value]) => (
-        <View key={label} style={[styles.summaryRow, { borderBottomColor: theme.border }]}>
-          <AppText size="small" tone="secondary" style={styles.summaryLabel}>{label}</AppText>
-          <AppText size="small" weight="semibold" style={styles.summaryValue}>{value}</AppText>
+    <Card style={styles.summaryCard}>
+      {title ? (
+        <View style={styles.summaryHeading}>
+          <View
+            style={[
+              styles.summaryIcon,
+              { backgroundColor: theme.backgroundSelected },
+            ]}
+          >
+            <Ionicons
+              name="stats-chart-outline"
+              size={16}
+              color={theme.primary}
+            />
+          </View>
+          <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+            {title}
+          </AppText>
         </View>
-      ))}
+      ) : null}
+      {primary ? (
+        <View
+          style={[
+            styles.summaryPrimary,
+            { backgroundColor: theme.backgroundSelected },
+          ]}
+        >
+          <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+            {primary[0]}
+          </AppText>
+          <AppText
+            size="title"
+            weight="semibold"
+            style={{ color: theme.primary }}
+            numberOfLines={2}
+          >
+            {primary[1]}
+          </AppText>
+        </View>
+      ) : null}
+      {supporting.length ? (
+        <View style={[styles.summaryDetails, { borderTopColor: theme.border }]}>
+          {supporting.map(([label, value], index) => {
+            const tone = getFinancialRowTone(label, value, theme);
+            return (
+              <View
+                key={label}
+                style={[
+                  styles.summaryDetailRow,
+                  index < supporting.length - 1
+                    ? { borderBottomColor: theme.border, borderBottomWidth: StyleSheet.hairlineWidth }
+                    : null,
+                ]}
+              >
+                {tone ? <Ionicons name={tone.icon} size={15} color={tone.color} /> : null}
+                <AppText
+                  size="small"
+                  tone="secondary"
+                  style={[styles.summaryLabel, tone ? { color: tone.color } : null]}
+                  numberOfLines={2}
+                >
+                  {label}
+                </AppText>
+                <AppText
+                  size="small"
+                  weight="semibold"
+                  style={[styles.summaryValue, tone ? { color: tone.color } : null]}
+                  numberOfLines={2}
+                >
+                  {value}
+                </AppText>
+              </View>
+            );
+          })}
+        </View>
+      ) : null}
     </Card>
   );
 }
@@ -1165,37 +1359,97 @@ function RecordCard({
   title,
   subtitle,
   rows,
+  icon = "document-text-outline",
+  badgeLabel,
+  badgeColor,
   onPress,
 }: {
   title: string;
   subtitle: string;
   rows: [string, string][];
+  icon?: keyof typeof Ionicons.glyphMap;
+  badgeLabel?: string;
+  badgeColor?: string;
   onPress?: () => void;
 }) {
   const { theme } = useTheme();
   const content = (
     <>
       <View style={styles.recordHeading}>
-        <View style={styles.recordTitleGroup}>
-          <AppText weight="semibold">{title}</AppText>
-          <AppText size="small" tone="secondary">{subtitle}</AppText>
+        <View
+          style={[
+            styles.recordIcon,
+            { backgroundColor: theme.backgroundSelected },
+          ]}
+        >
+          <Ionicons name={icon} size={17} color={theme.primary} />
         </View>
+        <View style={styles.recordTitleGroup}>
+          <AppText weight="semibold" numberOfLines={2} ellipsizeMode="tail">
+            {title}
+          </AppText>
+          <AppText size="small" tone="secondary" numberOfLines={2} ellipsizeMode="tail">
+            {subtitle}
+          </AppText>
+        </View>
+        {badgeLabel && badgeColor ? (
+          <View style={[styles.recordBadge, { backgroundColor: `${badgeColor}18` }]}>
+            <AppText
+              size="small"
+              weight="semibold"
+              numberOfLines={1}
+              style={{ color: badgeColor }}
+            >
+              {badgeLabel}
+            </AppText>
+          </View>
+        ) : null}
         {onPress ? <Ionicons name="chevron-forward" size={18} color={theme.primary} /> : null}
       </View>
-      {rows.map(([label, value]) => (
-        <View key={label} style={styles.recordRow}>
-          <AppText size="small" tone="secondary" style={styles.recordLabel}>{label}</AppText>
-          <AppText size="small" style={styles.recordValue}>{value}</AppText>
-        </View>
-      ))}
+      {rows.map(([label, value]) => {
+        const tone = getFinancialRowTone(label, value, theme);
+        return (
+          <View key={label} style={styles.recordRow}>
+            {tone ? <Ionicons name={tone.icon} size={15} color={tone.color} /> : null}
+            <AppText
+              size="small"
+              tone="secondary"
+              style={[styles.recordLabel, tone ? { color: tone.color } : null]}
+              numberOfLines={2}
+            >
+              {label}
+            </AppText>
+            <AppText
+              size="small"
+              weight={tone ? "semibold" : undefined}
+              style={[styles.recordValue, tone ? { color: tone.color } : null]}
+              numberOfLines={2}
+              ellipsizeMode="tail"
+            >
+              {value}
+            </AppText>
+          </View>
+        );
+      })}
     </>
   );
   return onPress ? (
-    <Pressable accessibilityRole="button" onPress={onPress} style={[styles.recordCard, { backgroundColor: theme.backgroundElement, borderColor: theme.border }]}>
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.recordCard,
+        {
+          backgroundColor: theme.backgroundElement,
+          borderColor: theme.border,
+          opacity: pressed ? 0.78 : 1,
+        },
+      ]}
+    >
       {content}
     </Pressable>
   ) : (
-    <Card style={styles.card}>{content}</Card>
+    <Card style={styles.recordCard}>{content}</Card>
   );
 }
 
@@ -1236,10 +1490,53 @@ function ContactOption({
 function SectionTitle({ title, detail }: { title: string; detail: string }) {
   return (
     <View style={styles.sectionTitle}>
-      <AppText weight="semibold">{title}</AppText>
+      <AppText size="body" weight="semibold">{title}</AppText>
       <AppText size="small" tone="secondary">{detail}</AppText>
     </View>
   );
+}
+
+function getFinancialRowTone(
+  label: string,
+  value: string,
+  theme: ReturnType<typeof useTheme>["theme"],
+): { color: string; icon: keyof typeof Ionicons.glyphMap } | null {
+  const normalizedLabel = label.trim().toLocaleLowerCase();
+  if (
+    normalizedLabel === "balance due" ||
+    normalizedLabel === "outstanding" ||
+    normalizedLabel === "remaining" ||
+    normalizedLabel === "outstanding balance"
+  ) {
+    const amount = Number(value.replace(/[^0-9.-]/g, ""));
+    if (!Number.isFinite(amount)) return null;
+    return amount > 0
+      ? { color: theme.danger, icon: "alert-circle-outline" }
+      : { color: theme.success, icon: "checkmark-circle-outline" };
+  }
+  if (
+    normalizedLabel === "paid" ||
+    normalizedLabel === "amount paid" ||
+    normalizedLabel === "payments received"
+  ) {
+    return { color: theme.success, icon: "checkmark-circle-outline" };
+  }
+  if (normalizedLabel === "payment status") {
+    const status = value.trim().toLocaleLowerCase();
+    if (status === "paid") {
+      return { color: theme.success, icon: "checkmark-circle-outline" };
+    }
+    if (status === "partial") {
+      return { color: theme.secondary, icon: "time-outline" };
+    }
+    if (status === "unpaid") {
+      return { color: theme.danger, icon: "alert-circle-outline" };
+    }
+    if (status === "cancelled") {
+      return { color: theme.textSecondary, icon: "close-circle-outline" };
+    }
+  }
+  return null;
 }
 
 function EmptyState({ message }: { message: string }) {
@@ -1332,28 +1629,86 @@ function formatDate(date: Date): string {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
-  content: { padding: 16, gap: 13, paddingBottom: 32 },
-  card: { gap: 10 },
-  errorCard: { gap: 9 },
-  dateRow: { flexDirection: "row", gap: 10 },
-  dateField: { flex: 1 },
-  sectionTitle: { gap: 3, marginTop: 4 },
-  summaryRow: {
+  content: { padding: 14, gap: 12, paddingBottom: 30 },
+  card: { gap: 10, borderRadius: 12, padding: 14 },
+  reportIntro: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    gap: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    paddingVertical: 5,
+    alignItems: "center",
+    gap: 11,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 13,
   },
-  summaryLabel: { flex: 1 },
-  summaryValue: { flex: 1, textAlign: "right" },
-  recordCard: { borderWidth: 1, borderRadius: 14, padding: 14, gap: 8 },
-  recordHeading: { flexDirection: "row", alignItems: "flex-start", gap: 10, marginBottom: 2 },
-  recordTitleGroup: { flex: 1, gap: 3 },
-  recordRow: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
-  recordLabel: { flex: 1 },
-  recordValue: { flex: 1, textAlign: "right" },
+  reportIntroIcon: {
+    width: 38,
+    height: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+  },
+  reportIntroCopy: { flex: 1, gap: 3 },
+  errorCard: { gap: 9, borderRadius: 12 },
+  exportToolbar: {
+    minHeight: 38,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    gap: 8,
+  },
+  periodHeading: { flexDirection: "row", alignItems: "center", gap: 9 },
+  periodIcon: {
+    width: 32,
+    height: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 9,
+  },
+  periodCopy: { flex: 1, gap: 2 },
+  dateRow: { flexDirection: "row", gap: 9 },
+  dateField: { flex: 1 },
+  sectionTitle: { gap: 3, marginTop: 3, paddingHorizontal: 1 },
+  summaryCard: { gap: 11, borderRadius: 14, padding: 14 },
+  summaryHeading: { flexDirection: "row", alignItems: "center", gap: 8 },
+  summaryIcon: {
+    width: 30,
+    height: 30,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 9,
+  },
+  summaryPrimary: { gap: 3, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 11 },
+  summaryDetails: { borderTopWidth: StyleSheet.hairlineWidth, paddingTop: 3 },
+  summaryDetailRow: {
+    minHeight: 36,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    paddingVertical: 6,
+  },
+  summaryLabel: { flex: 1, minWidth: 0 },
+  summaryValue: { flexShrink: 1, minWidth: 0, textAlign: "right" },
+  recordCard: { borderWidth: 1, borderRadius: 14, padding: 13, gap: 9 },
+  recordHeading: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 2 },
+  recordIcon: {
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 10,
+  },
+  recordBadge: {
+    flexShrink: 1,
+    maxWidth: "32%",
+    alignSelf: "flex-start",
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  recordTitleGroup: { flex: 1, minWidth: 0, gap: 3 },
+  recordRow: { flexDirection: "row", alignItems: "flex-start", gap: 7 },
+  recordLabel: { flex: 1, minWidth: 0 },
+  recordValue: { flex: 1, minWidth: 0, textAlign: "right" },
   contactOption: {
     minHeight: 58,
     borderWidth: 1,

@@ -16,6 +16,7 @@
         "foregroundImage": "./assets/images/farmtrack-icon.png"
       },
       "predictiveBackGestureEnabled": false,
+      "softwareKeyboardLayoutMode": "resize",
       "package": "com.slipinmaven.farmtrack",
       "googleServicesFile": "./google-services.json"
     },

@@ -344,6 +344,7 @@ function EggCollectionContent() {
         <ScrollView
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
+          automaticallyAdjustKeyboardInsets
         >
           <FarmPageHeader
             title={stage === "select" ? "Collect eggs" : "Review collection"}

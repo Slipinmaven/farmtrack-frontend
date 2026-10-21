@@ -155,7 +155,11 @@ export default function AccountDetailsScreen() {
       style={[styles.screen, { backgroundColor: theme.background }]}
       edges={["top", "bottom"]}
     >
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        automaticallyAdjustKeyboardInsets
+        keyboardShouldPersistTaps="handled"
+      >
         <FarmPageHeader title="Account & access" showBack />
 
         <Card style={styles.profileCard}>

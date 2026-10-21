@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "160349385594",
+    "project_id": "farm-track-72106",
+    "storage_bucket": "farm-track-72106.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:160349385594:android:1d01e869bb327ffca71cc3",
+        "android_client_info": {
+          "package_name": "com.slipinmaven.farmtrack"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDWFOCNYBqIRT_W7dimxYUFCQO17BytgEA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

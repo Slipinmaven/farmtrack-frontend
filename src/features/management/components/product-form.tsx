@@ -65,6 +65,41 @@ function ProductTypeIcon({
   );
 }
 
+function FormAction({
+  label,
+  icon,
+  disabled = false,
+  onPress,
+}: {
+  label: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  disabled?: boolean;
+  onPress: () => void;
+}) {
+  const { theme } = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.formAction,
+        {
+          backgroundColor: theme.backgroundElement,
+          borderColor: theme.border,
+          opacity: disabled ? 0.45 : pressed ? 0.75 : 1,
+        },
+      ]}
+    >
+      <Ionicons name={icon} size={17} color={theme.primary} />
+      <AppText size="small" weight="semibold">
+        {label}
+      </AppText>
+    </Pressable>
+  );
+}
+
 export function ProductForm({
   initialProduct,
   initialProductType,
@@ -239,27 +274,37 @@ export function ProductForm({
       style={styles.scroll}
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
+      automaticallyAdjustKeyboardInsets
     >
       <View style={styles.form}>
-        <View style={styles.formIntro}>
+        <View
+          style={[
+            styles.formIntro,
+            { backgroundColor: theme.backgroundSelected },
+          ]}
+        >
           <View
             style={[
               styles.formIcon,
-              { backgroundColor: theme.backgroundSelected },
+              { backgroundColor: theme.primary },
             ]}
           >
             <ProductTypeIcon
               type={productType}
               size={22}
-              color={theme.primary}
+              color={theme.onPrimary}
             />
           </View>
           <View style={styles.formIntroCopy}>
-            <AppText size="heading" weight="semibold">
-              {initialProduct ? "Product profile" : "Set up a product"}
+            <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+              PRODUCT CATALOGUE
+            </AppText>
+            <AppText size="heading" weight="semibold" style={styles.formTitle}>
+              {initialProduct ? "Product profile" : "Create a product"}
             </AppText>
             <AppText size="small" tone="secondary">
-              Add the details and stock units you use to track this item.
+              Define how your farm identifies and tracks this item.
             </AppText>
           </View>
         </View>
@@ -306,15 +351,24 @@ export function ProductForm({
         >
         <View style={styles.section}>
           <View style={styles.sectionHeading}>
-            <View style={styles.sectionCopy}>
+            <View
+              style={[
+                styles.stepNumber,
+                { backgroundColor: theme.backgroundSelected },
+              ]}
+            >
               <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
-                PRODUCT DETAILS
-              </AppText>
-              <AppText size="small" tone="secondary">
-                Name, category and how you use it.
+                01
               </AppText>
             </View>
-            <Ionicons name="create-outline" size={19} color={theme.primary} />
+            <View style={styles.sectionCopy}>
+              <AppText size="heading" weight="semibold">
+                Product details
+              </AppText>
+              <AppText size="small" tone="secondary">
+                Name and categorize the item for your farm.
+              </AppText>
+            </View>
           </View>
           <TextField
             label="Product name"
@@ -363,8 +417,8 @@ export function ProductForm({
                       styles.option,
                       {
                         backgroundColor: selected
-                          ? theme.primary
-                          : theme.backgroundElement,
+                          ? theme.backgroundSelected
+                          : theme.background,
                         borderColor: selected ? theme.primary : theme.border,
                       },
                     ]}
@@ -372,47 +426,99 @@ export function ProductForm({
                     <ProductTypeIcon
                       type={option.value}
                       size={17}
-                      color={selected ? theme.onPrimary : theme.textSecondary}
+                      color={selected ? theme.primary : theme.textSecondary}
                     />
                     <AppText
                       size="small"
                       weight={selected ? "semibold" : "regular"}
-                      style={{ color: selected ? theme.onPrimary : theme.text }}
+                      style={{ color: theme.text, flex: 1 }}
                     >{option.label}</AppText>
+                    {selected ? (
+                      <Ionicons
+                        name="checkmark-circle"
+                        size={17}
+                        color={theme.primary}
+                      />
+                    ) : null}
                   </Pressable>
                 );
               })}
             </View>
           </View>
-          <View style={styles.activeRow}>
-            <View style={styles.activeCopy}>
-              <AppText weight="semibold">Product active</AppText>
-              <AppText size="small" tone="secondary">
-                Keep history; hide from new activity.
-              </AppText>
+          <View style={[styles.settingsGroup, { borderColor: theme.border }]}>
+            <View style={styles.activeRow}>
+              <View
+                style={[
+                  styles.settingIcon,
+                  { backgroundColor: isActive ? theme.backgroundSelected : theme.background },
+                ]}
+              >
+                <Ionicons
+                  name="toggle-outline"
+                  size={18}
+                  color={isActive ? theme.primary : theme.textSecondary}
+                />
+              </View>
+              <View style={styles.activeCopy}>
+                <AppText weight="semibold" style={styles.settingTitle}>
+                  Active in your farm
+                </AppText>
+                <AppText
+                  size="small"
+                  tone="secondary"
+                  style={styles.settingDescription}
+                >
+                  {isActive
+                    ? "Available for new farm activity."
+                    : "Hidden from new activity. History is kept."}
+                </AppText>
+              </View>
+              <Switch
+                value={isActive}
+                onValueChange={setIsActive}
+                trackColor={{ false: theme.border, true: theme.success }}
+                thumbColor={theme.backgroundElement}
+                accessibilityLabel="Product active"
+                style={styles.settingSwitch}
+              />
             </View>
-            <Switch
-              value={isActive}
-              onValueChange={setIsActive}
-              trackColor={{ false: theme.border, true: theme.primary }}
-              thumbColor={theme.backgroundElement}
-              accessibilityLabel="Product is active"
-            />
-          </View>
-          <View style={styles.activeRow}>
-            <View style={styles.activeCopy}>
-              <AppText weight="semibold">Available for sale</AppText>
-              <AppText size="small" tone="secondary">
-                Turn on for items you sell. Farm purchases remain available.
-              </AppText>
+            <View style={[styles.settingDivider, { backgroundColor: theme.border }]} />
+            <View style={styles.activeRow}>
+              <View
+                style={[
+                  styles.settingIcon,
+                  { backgroundColor: isSellable ? theme.backgroundSelected : theme.background },
+                ]}
+              >
+                <Ionicons
+                  name="pricetag-outline"
+                  size={17}
+                  color={isSellable ? theme.primary : theme.textSecondary}
+                />
+              </View>
+              <View style={styles.activeCopy}>
+                <AppText weight="semibold" style={styles.settingTitle}>
+                  Available for sale
+                </AppText>
+                <AppText
+                  size="small"
+                  tone="secondary"
+                  style={styles.settingDescription}
+                >
+                  {isSellable
+                    ? "Customers can buy this product."
+                    : "Not listed for sale. Farm use is unchanged."}
+                </AppText>
+              </View>
+              <Switch
+                value={isSellable}
+                onValueChange={setIsSellable}
+                trackColor={{ false: theme.border, true: theme.primary }}
+                thumbColor={theme.backgroundElement}
+                accessibilityLabel="Product available for sale"
+                style={styles.settingSwitch}
+              />
             </View>
-            <Switch
-              value={isSellable}
-              onValueChange={setIsSellable}
-              trackColor={{ false: theme.border, true: theme.primary }}
-              thumbColor={theme.backgroundElement}
-              accessibilityLabel="Product available for sale"
-            />
           </View>
         </View>
         </View>
@@ -436,7 +542,7 @@ export function ProductForm({
               </AppText>
             </View>
             <View style={styles.sectionCopy}>
-              <AppText size="heading" weight="semibold">
+              <AppText size="heading" weight="semibold" style={styles.stockTitle}>
                 Stock units
               </AppText>
               <AppText size="small" tone="secondary">
@@ -535,7 +641,7 @@ export function ProductForm({
             return (
               <View
                 key={row.key}
-                style={[styles.unitRow, { borderTopColor: theme.border }]}
+                style={[styles.unitRow, { borderColor: theme.border }]}
               >
                 <View style={styles.unitRowHeading}>
                   <AppText weight="semibold">
@@ -685,27 +791,41 @@ export function ProductForm({
 
           {unitQuery.data?.length ? (
             <View style={styles.fieldGroup}>
-              <Button
-                label="Add measurement unit"
-                variant="secondary"
-                disabled={unitRows.length >= unitQuery.data.length}
-                onPress={addUnitRow}
-              />
-              <Button
-                label="Manage available units"
-                variant="secondary"
-                onPress={() =>
-                  router.push({
-                    pathname: "/units",
-                    params: { returnToProductForm: "true" },
-                  })
-                }
-              />
-              <AppText size="small" tone="secondary">
-                {baseUnit
-                  ? `For each other unit, enter how many ${baseUnitName} are in one. Example: if one ${exampleUnit?.name ?? "pack"} holds 30 ${baseUnitName}, enter 30.`
-                  : "Choose the main counting unit before entering amounts."}
-              </AppText>
+              <View style={styles.unitActions}>
+                <FormAction
+                  label="Add another unit"
+                  icon="add-circle-outline"
+                  disabled={unitRows.length >= unitQuery.data.length}
+                  onPress={addUnitRow}
+                />
+                <FormAction
+                  label="Manage units"
+                  icon="settings-outline"
+                  onPress={() =>
+                    router.push({
+                      pathname: "/units",
+                      params: { returnToProductForm: "true" },
+                    })
+                  }
+                />
+              </View>
+              <View
+                style={[
+                  styles.unitTip,
+                  { backgroundColor: theme.backgroundSelected },
+                ]}
+              >
+                <Ionicons
+                  name="information-circle-outline"
+                  size={17}
+                  color={theme.primary}
+                />
+                <AppText size="small" tone="secondary" style={styles.unitTipText}>
+                  {baseUnit
+                    ? `For each other unit, enter how many ${baseUnitName} are in one. Example: if one ${exampleUnit?.name ?? "pack"} holds 30 ${baseUnitName}, enter 30.`
+                    : "Choose the main counting unit before entering amounts."}
+                </AppText>
+              </View>
             </View>
           ) : null}
         </View>
@@ -729,6 +849,7 @@ export function ProductForm({
           <Button
             label={submitLabel}
             loading={unitQuery.isLoading || isSubmitting}
+            style={styles.submitButton}
             disabled={
               unitQuery.isLoading || !unitQuery.data?.length || !name.trim()
             }
@@ -748,49 +869,106 @@ const styles = StyleSheet.create({
     maxWidth: 680,
     alignSelf: "center",
     paddingHorizontal: 18,
-    paddingTop: 12,
-    paddingBottom: 32,
+    paddingTop: 14,
+    paddingBottom: 36,
   },
-  form: { gap: 24 },
-  formIntro: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 4 },
-  formIcon: { width: 46, height: 46, borderRadius: 14, alignItems: "center", justifyContent: "center" },
-  formIntroCopy: { flex: 1, gap: 3 },
-  sectionCard: { gap: 18, padding: 16, borderWidth: 1, borderRadius: 12 },
-  section: { gap: 16 },
-  fieldGroup: { gap: 9 },
-  options: { flexDirection: "row", flexWrap: "wrap", gap: 9 },
-  option: {
-    minHeight: 46,
-    flexBasis: "47%",
-    flexGrow: 1,
-    paddingHorizontal: 11,
+  form: { gap: 18 },
+  formIntro: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    borderRadius: 10,
+    gap: 13,
+    borderRadius: 12,
+    padding: 14,
+  },
+  formIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  formIntroCopy: { flex: 1, gap: 2 },
+  formTitle: { fontSize: 27, lineHeight: 34 },
+  sectionCard: {
+    gap: 17,
+    padding: 16,
+    borderWidth: 1,
+    borderRadius: 12,
+  },
+  section: { gap: 15 },
+  fieldGroup: { gap: 9 },
+  options: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  option: {
+    minHeight: 48,
+    flexBasis: "46%",
+    flexGrow: 1,
+    paddingHorizontal: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    borderRadius: 8,
     borderWidth: 1,
   },
   multiline: { minHeight: 72, textAlignVertical: "top" },
   activeRow: {
-    minHeight: 52,
+    minHeight: 68,
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    gap: 12,
+    gap: 9,
   },
-  activeCopy: { flex: 1, gap: 3 },
+  activeCopy: { flex: 1, minWidth: 0, gap: 2 },
+  settingTitle: { flexShrink: 1 },
+  settingDescription: { flexShrink: 1, lineHeight: 17 },
+  settingSwitch: { flexShrink: 0, marginLeft: 2 },
+  settingsGroup: { borderWidth: 1, borderRadius: 9, paddingHorizontal: 11 },
+  settingIcon: {
+    width: 32,
+    height: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 8,
+  },
+  settingDivider: { height: StyleSheet.hairlineWidth, marginLeft: 42 },
   measurements: { gap: 14 },
   sectionHeading: { flexDirection: "row", alignItems: "center", gap: 11 },
   sectionCopy: { flex: 1, gap: 3 },
-  stepNumber: { width: 34, height: 34, borderRadius: 10, alignItems: "center", justifyContent: "center" },
-  formFooter: { paddingTop: 2 },
+  stepNumber: {
+    width: 34,
+    height: 34,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  stockTitle: { fontSize: 21, lineHeight: 28 },
+  formFooter: { paddingTop: 1 },
+  unitActions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  formAction: {
+    minHeight: 42,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    borderWidth: 1,
+    borderRadius: 7,
+    paddingHorizontal: 12,
+  },
+  submitButton: { minHeight: 52, borderRadius: 9 },
+  unitTip: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    borderRadius: 7,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+  },
+  unitTipText: { flex: 1, lineHeight: 18 },
   submitError: {
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 10,
     borderWidth: 1,
-    borderRadius: 10,
-    padding: 13,
+    borderRadius: 9,
+    padding: 12,
   },
   submitErrorCopy: { flex: 1, gap: 5 },
   validationError: {
@@ -803,13 +981,18 @@ const styles = StyleSheet.create({
   },
   unitEmptyState: {
     alignItems: "flex-start",
-    gap: 10,
+    gap: 9,
     borderWidth: 1,
-    borderRadius: 10,
-    padding: 14,
+    borderRadius: 9,
+    padding: 12,
   },
   unitEmptyCopy: { gap: 4 },
-  unitRow: { gap: 11, borderTopWidth: 1, paddingTop: 14 },
+  unitRow: {
+    gap: 11,
+    borderWidth: 1,
+    borderRadius: 9,
+    padding: 12,
+  },
   unitRowHeading: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -822,17 +1005,17 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   unitSelector: {
-    minHeight: 48,
+    minHeight: 46,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
     borderWidth: 1,
-    borderRadius: 6,
-    paddingHorizontal: 13,
+    borderRadius: 7,
+    paddingHorizontal: 12,
   },
   selectorText: { flex: 1 },
-  unitOptions: { borderWidth: 1, borderRadius: 6, overflow: "hidden" },
+  unitOptions: { borderWidth: 1, borderRadius: 7, overflow: "hidden" },
   unitOption: {
     minHeight: 44,
     flexDirection: "row",

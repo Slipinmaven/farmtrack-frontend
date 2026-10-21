@@ -3,8 +3,10 @@ import { router, useLocalSearchParams, type Href } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Modal,
   Pressable,
+  Platform,
   ScrollView,
   StyleSheet,
   View,
@@ -277,8 +279,8 @@ function InventoryPurchaseContent() {
       setError("The amount paid cannot exceed the purchase total.");
       return;
     }
-    if (paid > 0 && paymentMethod !== "cash" && !paymentReference.trim()) {
-      setError("Enter the payment reference for this payment method.");
+    if (paid > 0 && paymentMethod !== "cash" && paymentReference.trim() && !/^[A-Za-z0-9- ]{1,100}$/.test(paymentReference.trim())) {
+      setError("Reference must be letters, numbers, spaces, or dashes, with up to 100 characters.");
       return;
     }
     try {
@@ -387,17 +389,56 @@ function InventoryPurchaseContent() {
       style={[styles.screen, { backgroundColor: theme.background }]}
       edges={["top", "bottom"]}
     >
+      <KeyboardAvoidingView
+        style={styles.keyboardContainer}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
       <ScrollView
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        automaticallyAdjustKeyboardInsets
       >
         <FarmPageHeader title="Purchase supplies" showBack fallbackHref="/inventory" />
-        <View style={styles.intro}>
-          <AppText size="heading" weight="semibold">What did you buy?</AppText>
-          <AppText size="small" tone="secondary">
-            Record received feed, medication, equipment, and other supplies. Stock updates when
-            you save.
-          </AppText>
+        <View
+          style={[
+            styles.purchaseHero,
+            { backgroundColor: theme.backgroundElement, borderColor: theme.border },
+          ]}
+        >
+          <View
+            style={[
+              styles.purchaseHeroIcon,
+              { backgroundColor: theme.backgroundSelected },
+            ]}
+          >
+            <Ionicons name="bag-handle-outline" size={22} color={theme.primary} />
+          </View>
+          <View style={styles.grow}>
+            <AppText size="heading" weight="semibold">Record a purchase</AppText>
+            <AppText size="small" tone="secondary">
+              Received goods are added to your farm stock when you save.
+            </AppText>
+          </View>
+        </View>
+
+        <View style={styles.itemsHeading}>
+          <View style={styles.grow}>
+            <AppText size="heading" weight="semibold">Items</AppText>
+            <AppText size="small" tone="secondary">
+              Add the products and quantities received.
+            </AppText>
+          </View>
+          <View
+            style={[
+              styles.itemCountBadge,
+              { backgroundColor: theme.backgroundSelected },
+            ]}
+          >
+            <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+              {lines.length}
+            </AppText>
+          </View>
         </View>
 
         {lines.map((line, index) => {
@@ -405,8 +446,19 @@ function InventoryPurchaseContent() {
               return (
                 <Card key={line.id} style={styles.lineCard}>
                   <View style={styles.lineTitle}>
-                    <View style={styles.lineNumber}>
-                      <AppText size="small" weight="semibold">{index + 1}</AppText>
+                    <View
+                      style={[
+                        styles.lineNumber,
+                        { backgroundColor: theme.backgroundSelected },
+                      ]}
+                    >
+                      <AppText
+                        size="small"
+                        weight="semibold"
+                        style={{ color: theme.primary }}
+                      >
+                        {index + 1}
+                      </AppText>
                     </View>
                     <AppText weight="semibold" style={styles.grow}>
                       {selected?.name ?? "Choose an item"}
@@ -499,7 +551,11 @@ function InventoryPurchaseContent() {
                         />
                       </View>
                       {Number(line.quantity) > 0 && Number(line.unitPrice) >= 0 ? (
-                        <AppText size="small" tone="secondary" style={styles.lineTotal}>
+                        <AppText
+                          size="small"
+                          weight="semibold"
+                          style={[styles.lineTotal, { color: theme.primary }]}
+                        >
                           Line total {formatMoney(
                             Number(line.quantity) * Number(line.unitPrice),
                             theme.currency,
@@ -511,118 +567,186 @@ function InventoryPurchaseContent() {
                 </Card>
               );
         })}
-        <Button
-          label="Add another product"
-          variant="secondary"
+        <Pressable
+          accessibilityRole="button"
           onPress={() => setLines((current) => [...current, newLine()])}
-        />
+          style={({ pressed }) => [
+            styles.addProductButton,
+            {
+              borderColor: theme.border,
+              backgroundColor: theme.backgroundElement,
+              opacity: pressed ? 0.75 : 1,
+            },
+          ]}
+        >
+          <Ionicons name="add-circle-outline" size={20} color={theme.primary} />
+          <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+            Add another product
+          </AppText>
+        </Pressable>
         <Card style={styles.section}>
-              <View style={styles.totalRow}>
-                <AppText weight="semibold">Purchase total</AppText>
-                <AppText size="heading" weight="semibold">
-                  {formatMoney(total, theme.currency)}
+          <View style={styles.purchaseDetailsHeading}>
+            <View style={styles.grow}>
+              <AppText size="heading" weight="semibold">Purchase details</AppText>
+              <AppText size="small" tone="secondary">
+                Supplier, date, and payment information.
+              </AppText>
+            </View>
+            <View
+              style={[
+                styles.detailsHeadingIcon,
+                { backgroundColor: theme.backgroundSelected },
+              ]}
+            >
+              <Ionicons name="receipt-outline" size={18} color={theme.primary} />
+            </View>
+          </View>
+          <View
+            style={[
+              styles.totalRow,
+              { backgroundColor: theme.backgroundSelected },
+            ]}
+          >
+            <View style={styles.grow}>
+              <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+                PURCHASE TOTAL
+              </AppText>
+              <AppText size="small" tone="secondary">
+                {lines.length} {lines.length === 1 ? "item" : "items"}
+              </AppText>
+            </View>
+            <AppText size="title" weight="semibold" style={{ color: theme.primary }}>
+              {formatMoney(total, theme.currency)}
+            </AppText>
+          </View>
+          <View style={[styles.formDivider, { backgroundColor: theme.border }]} />
+          <DatePickerField
+            label="Purchase date"
+            value={purchaseDate}
+            onChange={(value) => {
+              setPurchaseDate(value);
+              setError("");
+            }}
+          />
+          <View style={styles.fieldSectionHeading}>
+            <Ionicons name="person-outline" size={17} color={theme.primary} />
+            <AppText size="small" weight="semibold">Supplier</AppText>
+            <AppText size="small" tone="secondary">(optional)</AppText>
+          </View>
+          {suppliersQuery.isError ? (
+            <View style={styles.supplierError}>
+              <AppText size="small" style={{ color: theme.danger }}>
+                Couldn’t load suppliers: {normalizeApiError(suppliersQuery.error).message}
+              </AppText>
+              <Button
+                label="Retry suppliers"
+                variant="quiet"
+                onPress={() => void suppliersQuery.refetch()}
+              />
+              <Button
+                label="Add supplier"
+                variant="secondary"
+                onPress={() => setCreateSupplierOpen(true)}
+              />
+            </View>
+          ) : (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                setSupplierSearch("");
+                setDebouncedSupplierSearch("");
+                setSupplierPickerOpen(true);
+              }}
+              style={[
+                styles.selectorButton,
+                { borderColor: theme.border, backgroundColor: theme.backgroundElement },
+              ]}
+            >
+              <View style={styles.grow}>
+                <AppText size="small" weight="semibold">
+                  {supplierId ? selectedSupplierName || "Selected supplier" : "Choose a supplier"}
+                </AppText>
+                <AppText size="small" tone="secondary">
+                  {supplierId ? "Tap to change" : "Search your supplier contacts"}
                 </AppText>
               </View>
-              <DatePickerField
-                label="Purchase date"
-                value={purchaseDate}
-                onChange={(value) => {
-                  setPurchaseDate(value);
-                  setError("");
+              <Ionicons name="chevron-down" size={19} color={theme.textSecondary} />
+            </Pressable>
+          )}
+          <View style={[styles.paymentHeading, { borderTopColor: theme.border }]}>
+            <View style={styles.fieldSectionHeading}>
+              <Ionicons name="card-outline" size={17} color={theme.primary} />
+              <AppText size="small" weight="semibold">Payment</AppText>
+            </View>
+            <AppText size="small" tone="secondary">
+              Leave amount paid at zero if this purchase is unpaid.
+            </AppText>
+          </View>
+          <TextField
+            label="Amount paid"
+            value={paymentAmount}
+            onChangeText={(value) => {
+              setPaymentAmount(value);
+              setError("");
+            }}
+            keyboardType="decimal-pad"
+            placeholder="0.00"
+          />
+          <AppText size="small" weight="semibold">Method of payment</AppText>
+          <View style={styles.productChoices}>
+            {paymentMethods.map((method) => (
+              <Choice
+                key={method.value}
+                label={method.label}
+                selected={paymentMethod === method.value}
+                onPress={() => {
+                  setPaymentMethod(method.value);
+                  if (method.value === "cash") setPaymentReference("");
                 }}
               />
-              <AppText size="small" weight="semibold">Supplier (optional)</AppText>
-              {suppliersQuery.isError ? (
-                <View style={styles.supplierError}>
-                  <AppText size="small" style={{ color: theme.danger }}>
-                    Couldn’t load suppliers: {normalizeApiError(suppliersQuery.error).message}
-                  </AppText>
-                  <Button
-                    label="Retry suppliers"
-                    variant="quiet"
-                    onPress={() => void suppliersQuery.refetch()}
-                  />
-                  <Button
-                    label="Add supplier"
-                    variant="secondary"
-                    onPress={() => setCreateSupplierOpen(true)}
-                  />
-                </View>
-              ) : (
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => {
-                    setSupplierSearch("");
-                    setDebouncedSupplierSearch("");
-                    setSupplierPickerOpen(true);
-                  }}
+            ))}
+          </View>
+          {Number(paymentAmount) > 0 && paymentMethod !== "cash" ? (
+            <TextField
+              label="Payment reference (optional)"
+              value={paymentReference}
+              onChangeText={(value) => {
+                setPaymentReference(value);
+                setError("");
+              }}
+              placeholder="Receipt or transaction code"
+            />
+          ) : null}
+          <TextField
+            label="Notes (optional)"
+            value={notes}
+            onChangeText={setNotes}
+            placeholder="Add a note about this purchase"
+            multiline
+            maxLength={500}
+          />
+              {error ? (
+                <View
                   style={[
-                    styles.selectorButton,
-                    { borderColor: theme.border, backgroundColor: theme.backgroundElement },
+                    styles.formError,
+                    {
+                      backgroundColor: theme.backgroundSelected,
+                      borderColor: theme.danger,
+                    },
                   ]}
                 >
-                  <View style={styles.grow}>
-                    <AppText size="small" weight="semibold">
-                      {supplierId ? selectedSupplierName || "Selected supplier" : "Choose a supplier"}
-                    </AppText>
-                    <AppText size="small" tone="secondary">
-                      {supplierId ? "Tap to change" : "Search your supplier contacts"}
-                    </AppText>
-                  </View>
-                  <Ionicons name="chevron-down" size={19} color={theme.textSecondary} />
-                </Pressable>
-              )}
-              <View style={styles.paymentHeading}>
-                <AppText size="small" weight="semibold">Payment</AppText>
-                <AppText size="small" tone="secondary">
-                  Leave the amount at zero if unpaid.
-                </AppText>
-              </View>
-              <TextField
-                label="Amount paid"
-                value={paymentAmount}
-                onChangeText={(value) => {
-                  setPaymentAmount(value);
-                  setError("");
-                }}
-                keyboardType="decimal-pad"
-                placeholder="0.00"
-              />
-              <AppText size="small" weight="semibold">Method of payment</AppText>
-              <View style={styles.productChoices}>
-                {paymentMethods.map((method) => (
-                  <Choice
-                    key={method.value}
-                    label={method.label}
-                    selected={paymentMethod === method.value}
-                    onPress={() => {
-                      setPaymentMethod(method.value);
-                      if (method.value === "cash") setPaymentReference("");
-                    }}
+                  <Ionicons
+                    name="alert-circle-outline"
+                    size={18}
+                    color={theme.danger}
                   />
-                ))}
-              </View>
-              {Number(paymentAmount) > 0 && paymentMethod !== "cash" ? (
-                <TextField
-                  label="Payment reference (required)"
-                  value={paymentReference}
-                  onChangeText={(value) => {
-                    setPaymentReference(value);
-                    setError("");
-                  }}
-                  placeholder="Receipt or transaction code"
-                />
-              ) : null}
-              <TextField
-                label="Notes (optional)"
-                value={notes}
-                onChangeText={setNotes}
-                placeholder="Add a note about this purchase"
-                multiline
-                maxLength={500}
-              />
-              {error ? (
-                <AppText size="small" style={{ color: theme.danger }}>{error}</AppText>
+                  <AppText
+                    size="small"
+                    style={[styles.formErrorText, { color: theme.danger }]}
+                  >
+                    {error}
+                  </AppText>
+                </View>
               ) : null}
               <Button
                 label="Save purchase"
@@ -631,6 +755,7 @@ function InventoryPurchaseContent() {
               />
         </Card>
       </ScrollView>
+      </KeyboardAvoidingView>
 
       <Modal
         visible={productPickerLineId !== null}
@@ -677,6 +802,8 @@ function InventoryPurchaseContent() {
             />
             <ScrollView
               keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+              automaticallyAdjustKeyboardInsets
               contentContainerStyle={styles.modalList}
             >
               {products
@@ -815,6 +942,8 @@ function InventoryPurchaseContent() {
             />
             <ScrollView
               keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+              automaticallyAdjustKeyboardInsets
               contentContainerStyle={styles.modalList}
               onMomentumScrollEnd={(event) => {
                 const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
@@ -999,50 +1128,144 @@ function formatMoney(value: number, currency: string) {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
+  keyboardContainer: { flex: 1 },
   content: {
     width: "100%",
     maxWidth: 760,
     alignSelf: "center",
-    padding: 12,
-    paddingBottom: 36,
-    gap: 9,
+    padding: 18,
+    paddingBottom: 44,
+    gap: 15,
   },
-  intro: { gap: 4 },
-  section: { gap: 11, padding: 12 },
-  lineCard: { gap: 10, padding: 12 },
-  lineTitle: { flexDirection: "row", alignItems: "center", gap: 8 },
-  lineNumber: {
-    width: 26,
-    height: 26,
-    borderRadius: 8,
+  purchaseHero: {
+    minHeight: 100,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    borderWidth: 1,
+    borderRadius: 18,
+    padding: 17,
+  },
+  purchaseHeroIcon: {
+    width: 48,
+    height: 48,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#315F5018",
+    borderRadius: 16,
+  },
+  itemsHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginTop: 1,
+  },
+  purchaseDetailsHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+  },
+  detailsHeadingIcon: {
+    width: 38,
+    height: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+  },
+  itemCountBadge: {
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+  },
+  section: { gap: 14, padding: 16, borderRadius: 18 },
+  lineCard: {
+    gap: 13,
+    padding: 15,
+    borderRadius: 17,
+  },
+  lineTitle: {
+    minHeight: 34,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  lineNumber: {
+    width: 32,
+    height: 32,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
   },
   grow: { flex: 1, minWidth: 0 },
   selectedProduct: { flexDirection: "row", alignItems: "center", gap: 7 },
   productChoices: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  choice: { paddingHorizontal: 12, paddingVertical: 9, borderRadius: 20, borderWidth: 1 },
-  selectorButton: {
-    minHeight: 48,
-    borderWidth: 1,
-    borderRadius: 12,
+  choice: {
+    minHeight: 38,
     paddingHorizontal: 12,
     paddingVertical: 8,
+    borderRadius: 11,
+    borderWidth: 1,
+  },
+  addProductButton: {
+    minHeight: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderRadius: 13,
+    paddingHorizontal: 14,
+  },
+  selectorButton: {
+    minHeight: 58,
+    borderWidth: 1,
+    borderRadius: 13,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
   },
   inputRow: { flexDirection: "row", gap: 10 },
   half: { flex: 1, minWidth: 0 },
-  lineTotal: { textAlign: "right" },
-  paymentHeading: { gap: 2, paddingTop: 4 },
+  lineTotal: { textAlign: "right", paddingTop: 2 },
+  paymentHeading: {
+    gap: 5,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 13,
+    marginTop: 2,
+  },
+  fieldSectionHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    paddingTop: 3,
+  },
   totalRow: {
+    minHeight: 76,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     gap: 10,
+    borderRadius: 13,
+    paddingHorizontal: 13,
+    paddingVertical: 10,
   },
+  formDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginVertical: 2,
+  },
+  formError: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 11,
+    padding: 11,
+  },
+  formErrorText: { flex: 1 },
   supplierError: { gap: 2 },
   loadingScreen: { flex: 1 },
   loading: { flex: 1, alignItems: "center", justifyContent: "center", gap: 9 },

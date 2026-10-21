@@ -3,8 +3,10 @@ import { useLocalSearchParams } from "expo-router";
 import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Modal,
   Pressable,
+  Platform,
   ScrollView,
   StyleSheet,
   View,
@@ -13,10 +15,10 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { FarmPageHeader } from "@/components/layout/farm-page-header";
 import { SessionGate } from "@/components/layout/session-gate";
-import { useAppDialog } from "@/components/ui/app-dialog";
 import { AppText } from "@/components/ui/app-text";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { DatePickerField } from "@/components/ui/date-picker-field";
 import { TextField } from "@/components/ui/text-field";
 import {
   useChickenPurchaseDetails,
@@ -34,7 +36,12 @@ import {
   useSupplierRefunds,
   useTransactionRefunds,
 } from "@/features/management/hooks";
-import type { Product, SettlementPaymentMethod } from "@/features/management/api";
+import type {
+  Product,
+  RecordedReturn,
+  RecordedReturnItem,
+  SettlementPaymentMethod,
+} from "@/features/management/api";
 import { normalizeApiError } from "@/lib/api/errors";
 import { useAuth } from "@/providers/auth-provider";
 import { useFarm } from "@/providers/farm-provider";
@@ -42,6 +49,7 @@ import { useTheme } from "@/providers/theme-provider";
 
 type TransactionKind = "sale" | "purchase";
 type ReturnMode = "delivered_return" | "undelivered_cancelled";
+type ReturnsSection = "return" | "refund" | "history";
 type ReturnRow = {
   id: string;
   productId: string;
@@ -85,7 +93,6 @@ function ReturnsContent() {
   const { user } = useAuth();
   const farm = useFarm();
   const { theme } = useTheme();
-  const dialog = useAppDialog();
   const params = useLocalSearchParams<{
     transactionId: string;
     transactionType: TransactionKind;
@@ -155,6 +162,8 @@ function ReturnsContent() {
   const [quantities, setQuantities] = useState<Record<string, string>>({});
   const [allocations, setAllocations] = useState<Record<string, AllocationChoice>>({});
   const [mode, setMode] = useState<ReturnMode>("delivered_return");
+  const [activeSection, setActiveSection] =
+    useState<ReturnsSection>("return");
   const [returnDate, setReturnDate] = useState(today());
   const [reason, setReason] = useState("");
   const [refundAmount, setRefundAmount] = useState("");
@@ -165,6 +174,8 @@ function ReturnsContent() {
   const [selectedReturnItemId, setSelectedReturnItemId] = useState("");
   const [returnError, setReturnError] = useState("");
   const [refundError, setRefundError] = useState("");
+  const [returnSuccess, setReturnSuccess] = useState("");
+  const [refundSuccess, setRefundSuccess] = useState("");
   const contactName = isSale
     ? sale.data?.customer_name || "Customer"
     : purchase.data?.supplier_name || "Supplier";
@@ -409,8 +420,16 @@ function ReturnsContent() {
     return remaining === 0 ? result : [];
   }
 
+  function supplierCreditRemaining(item: RecordedReturnItem) {
+    const alreadyRefunded = (supplierRefunds.data ?? [])
+      .filter((refund) => refund.purchase_return_item_id === item.id)
+      .reduce((sum, refund) => sum + Number(refund.amount), 0);
+    return Math.max(Number(item.credit_amount) - alreadyRefunded, 0);
+  }
+
   async function submitReturn() {
     setReturnError("");
+    setReturnSuccess("");
     if (!transactionId || !farmId) {
       setReturnError("Transaction or farm details are missing. Reload the page and try again.");
       return;
@@ -464,6 +483,7 @@ function ReturnsContent() {
       }
     }
     try {
+      let savedReturn: RecordedReturn;
       if (isSale) {
         const items = returnedRows.map(({ row, quantity }) => {
           const batchBlock =
@@ -489,7 +509,7 @@ function ReturnsContent() {
                 : [],
           };
         });
-        await createSaleReturn.mutateAsync({
+        savedReturn = await createSaleReturn.mutateAsync({
           return_type: mode,
           return_date: returnDate,
           reason: reason.trim(),
@@ -516,7 +536,7 @@ function ReturnsContent() {
             block_allocations: blockAllocations,
           };
         });
-        await createPurchaseReturn.mutateAsync({
+        savedReturn = await createPurchaseReturn.mutateAsync({
           return_date: returnDate,
           reason: reason.trim(),
           items,
@@ -524,11 +544,42 @@ function ReturnsContent() {
       }
       setQuantities({});
       setReason("");
-      await dialog.showDialog({
-        title: "Return recorded",
-        message: "Returned goods were added to or removed from inventory, and the transaction credit was updated.",
-        tone: "success",
-      });
+      const issuedReturnValue = Number(savedReturn.credit_total);
+      if (isSale && issuedReturnValue > 0) {
+        setActiveSection("refund");
+        const refundAvailableAfterReturn = Math.min(
+          issuedReturnValue,
+          Math.max(Number(savedReturn.credit_balance ?? 0), 0),
+        );
+        setRefundAmount(
+          refundAvailableAfterReturn > 0
+            ? refundAvailableAfterReturn.toFixed(2)
+            : "",
+        );
+        setRefundReason("Refund for returned goods");
+        setRefundSuccess(
+          `${formatMoney(issuedReturnValue, theme.currency)} return value applied. Sale balance due: ${formatMoney(savedReturn.balance_due ?? 0, theme.currency)}. Cash refundable now: ${formatMoney(refundAvailableAfterReturn, theme.currency)}.`,
+        );
+      } else if (!isSale) {
+        const firstCreditItem = savedReturn.items.find(
+          (item) => Number(item.credit_amount) > 0,
+        );
+        if (firstCreditItem) {
+          setActiveSection("refund");
+          setSelectedReturnItemId(firstCreditItem.id);
+          setRefundAmount(Number(firstCreditItem.credit_amount).toFixed(2));
+          setRefundReason("Refund for returned goods");
+          setRefundSuccess(
+            `${formatMoney(firstCreditItem.credit_amount, theme.currency)} is the value of this supplier return. The refund amount below is filled in and linked to this return.`,
+          );
+        } else {
+          setReturnSuccess(
+            "Return recorded. No refundable value was created for this return.",
+          );
+        }
+      } else {
+        setReturnSuccess("Return recorded. No refundable value was created.");
+      }
     } catch (error: unknown) {
       setReturnError(normalizeApiError(error).message);
     }
@@ -536,6 +587,7 @@ function ReturnsContent() {
 
   async function submitCashRefund() {
     setRefundError("");
+    setRefundSuccess("");
     if (!farmId || !transactionId) {
       setRefundError("Transaction or farm details are missing. Reload the page and try again.");
       return;
@@ -549,9 +601,9 @@ function ReturnsContent() {
       setRefundError("Enter a reason for this refund.");
       return;
     }
-    if (isSale && parsedRefundAmount > refundTransactionCredit) {
+    if (isSale && parsedRefundAmount > availableRefundAmount) {
       setRefundError(
-        `The refund cannot exceed the available customer credit of ${formatMoney(refundTransactionCredit, theme.currency)}.`,
+        `The refund cannot exceed the unrefunded return value or the amount currently refundable after the sale balance is recalculated: ${formatMoney(availableRefundAmount, theme.currency)}.`,
       );
       return;
     }
@@ -577,13 +629,7 @@ function ReturnsContent() {
           setRefundError("Select a purchase return credit before recording a supplier refund.");
           return;
         }
-        const alreadyRefunded = (supplierRefunds.data ?? [])
-          .filter((refund) => refund.purchase_return_item_id === returnItem.id)
-          .reduce((sum, refund) => sum + Number(refund.amount), 0);
-        const remainingCredit = Math.max(
-          Number(returnItem.credit_amount) - alreadyRefunded,
-          0,
-        );
+        const remainingCredit = supplierCreditRemaining(returnItem);
         if (parsedRefundAmount > remainingCredit) {
           setRefundError(
             `This refund cannot exceed the remaining supplier credit of ${formatMoney(remainingCredit, theme.currency)}.`,
@@ -603,12 +649,9 @@ function ReturnsContent() {
       setRefundAmount("");
       setRefundReason("");
       setRefundReference("");
-      setRefundError("");
-      await dialog.showDialog({
-        title: "Cash refund recorded",
-        message: "The cash refund has been added to the transaction history and balance.",
-        tone: "success",
-      });
+      setRefundSuccess(
+        `${formatMoney(parsedRefundAmount, theme.currency)} refund recorded and added to the transaction history.`,
+      );
     } catch (error: unknown) {
       setRefundError(normalizeApiError(error).message);
     }
@@ -626,10 +669,49 @@ function ReturnsContent() {
     (isSale ? saleReturns.error : purchaseReturns.error) ??
     (isSale ? saleRefunds.error : supplierRefunds.error) ??
     chickenOptions.error;
-  const refundTransactionCredit = Number(sale.data?.transaction.credit_balance ?? 0);
+  const saleRefundValueRemaining = Math.max(
+    (saleReturns.data ?? []).reduce(
+      (sum, record) => sum + Number(record.credit_total),
+      0,
+    ) -
+      (saleRefunds.data ?? []).reduce(
+        (sum, refund) => sum + Number(refund.amount),
+        0,
+      ),
+    0,
+  );
+  const saleRefundableBalance = Math.max(
+    Number(sale.data?.transaction.credit_balance ?? 0),
+    0,
+  );
   const selectedSupplierReturnItem = returns
     .flatMap((record) => record.items)
     .find((item) => item.id === selectedReturnItemId);
+  const supplierRefundableItems = returns
+    .flatMap((record) => record.items)
+    .filter((item) => supplierCreditRemaining(item) > 0);
+  const selectedSupplierRemainingCredit = selectedSupplierReturnItem
+    ? supplierCreditRemaining(selectedSupplierReturnItem)
+    : 0;
+  const availableRefundAmount = isSale
+    ? Math.min(saleRefundValueRemaining, saleRefundableBalance)
+    : selectedSupplierRemainingCredit;
+  const refundDataReady = isSale
+    ? sale.isSuccess &&
+      saleReturns.isSuccess &&
+      saleRefunds.isSuccess &&
+      !sale.isFetching &&
+      !saleReturns.isFetching &&
+      !saleRefunds.isFetching
+    : purchase.isSuccess &&
+      purchaseReturns.isSuccess &&
+      supplierRefunds.isSuccess &&
+      !purchase.isFetching &&
+      !purchaseReturns.isFetching &&
+      !supplierRefunds.isFetching;
+  const refundAmountExceedsAvailable =
+    Number.isFinite(Number(refundAmount)) &&
+    Number(refundAmount) > availableRefundAmount;
   const returnableRows = rows.filter((row) => maxReturnable(row) > 0);
   const hasUndeliveredToCancel = rows.some(
     (row) => maxUndeliveredCancelable(row) > 0,
@@ -648,7 +730,16 @@ function ReturnsContent() {
 
   return (
     <SafeAreaView style={[styles.screen, { backgroundColor: theme.background }]} edges={["top", "bottom"]}>
-      <ScrollView contentContainerStyle={styles.content}>
+      <KeyboardAvoidingView
+        style={styles.screen}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+        automaticallyAdjustKeyboardInsets
+      >
         <FarmPageHeader title="Returns and refunds" showBack />
         {isLoading ? (
           <View style={styles.loading}>
@@ -662,6 +753,29 @@ function ReturnsContent() {
             <AppText size="small" style={{ color: theme.danger }}>
               {normalizeApiError(queryError).message}
             </AppText>
+            <Button
+              label="Retry loading"
+              variant="secondary"
+              onPress={() =>
+                void Promise.all(
+                  isSale
+                    ? [
+                        sale.refetch(),
+                        saleReturns.refetch(),
+                        saleRefunds.refetch(),
+                        products.refetch(),
+                        chickenOptions.refetch(),
+                      ]
+                    : [
+                        purchase.refetch(),
+                        purchaseReturns.refetch(),
+                        supplierRefunds.refetch(),
+                        products.refetch(),
+                        chickenOptions.refetch(),
+                      ],
+                )
+              }
+            />
           </Card>
         ) : null}
         {transaction ? (
@@ -669,13 +783,41 @@ function ReturnsContent() {
             <Card
               style={[
                 styles.directionCard,
-                { backgroundColor: `${directionColor}14`, borderLeftColor: directionColor },
+                {
+                  backgroundColor: theme.backgroundElement,
+                  borderColor: theme.border,
+                },
               ]}
             >
-              <AppText size="small" weight="semibold" style={{ color: directionColor }}>
-                {isSale ? "GOODS RETURNING TO THE FARM" : "GOODS RETURNING TO THE SUPPLIER"}
-              </AppText>
-              <View style={styles.directionFlow}>
+              <View style={styles.transactionHeading}>
+                <View
+                  style={[
+                    styles.transactionIcon,
+                    { backgroundColor: `${directionColor}16` },
+                  ]}
+                >
+                  <Ionicons
+                    name="return-down-back-outline"
+                    size={22}
+                    color={directionColor}
+                  />
+                </View>
+                <View style={styles.grow}>
+                  <AppText size="small" weight="semibold" style={{ color: directionColor }}>
+                    {isSale ? "CUSTOMER RETURN" : "SUPPLIER RETURN"}
+                  </AppText>
+                  <AppText size="heading" weight="semibold">
+                    {transaction.reference_number ??
+                      `${isSale ? "Sale" : "Purchase"} transaction`}
+                  </AppText>
+                </View>
+              </View>
+              <View
+                style={[
+                  styles.directionFlow,
+                  { backgroundColor: theme.background },
+                ]}
+              >
                 <View style={styles.directionParty}>
                   <AppText size="small" tone="secondary">FROM</AppText>
                   <AppText weight="semibold">{isSale ? contactName : "Farm Track"}</AppText>
@@ -686,10 +828,80 @@ function ReturnsContent() {
                   <AppText weight="semibold">{isSale ? "Farm Track" : contactName}</AppText>
                 </View>
               </View>
-              <AppText size="small" tone="secondary">
-                {transaction.reference_number ?? `${isSale ? "Sale" : "Purchase"} transaction`}
-              </AppText>
+              <View style={[styles.transactionSummary, { borderTopColor: theme.border }]}>
+                  <View style={styles.transactionSummaryMetric}>
+                    <AppText size="small" tone="secondary">Transaction total</AppText>
+                    <AppText weight="semibold">
+                      {formatMoney(transaction.transaction_total, theme.currency)}
+                    </AppText>
+                  </View>
+                  <View style={[styles.metricDivider, { backgroundColor: theme.border }]} />
+                  <View style={styles.transactionSummaryMetric}>
+                    <AppText size="small" tone="secondary">
+                      {isSale
+                        ? "Returned-goods value (after discount)"
+                        : "Supplier credit"}
+                    </AppText>
+                    <AppText weight="semibold" style={{ color: directionColor }}>
+                      {formatMoney(
+                        isSale
+                          ? saleRefundValueRemaining
+                          : Number(transaction.credit_balance),
+                        theme.currency,
+                      )}
+                    </AppText>
+                  </View>
+              </View>
+              {isSale ? (
+                <View
+                  style={[
+                    styles.returnBalanceNote,
+                    { borderTopColor: theme.border },
+                  ]}
+                >
+                  <AppText size="small" tone="secondary">
+                    Current sale balance due
+                  </AppText>
+                  <AppText weight="semibold" style={{ color: theme.danger }}>
+                    {formatMoney(Number(transaction.balance_due), theme.currency)}
+                  </AppText>
+                  <AppText size="small" tone="secondary">
+                    Return value reduces the amount owed first. A cash refund is
+                    only due if the return leaves a customer credit.
+                  </AppText>
+                </View>
+              ) : null}
             </Card>
+            <View
+              style={[
+                styles.sectionTabs,
+                {
+                  backgroundColor: theme.backgroundElement,
+                  borderColor: theme.border,
+                },
+              ]}
+            >
+              <WorkflowTab
+                label="Return"
+                icon="return-down-back-outline"
+                selected={activeSection === "return"}
+                onPress={() => setActiveSection("return")}
+              />
+              <WorkflowTab
+                label="Refund"
+                icon="cash-outline"
+                selected={activeSection === "refund"}
+                onPress={() => setActiveSection("refund")}
+              />
+              <WorkflowTab
+                label="History"
+                icon="time-outline"
+                selected={activeSection === "history"}
+                onPress={() => setActiveSection("history")}
+              />
+            </View>
+            {activeSection === "return" ? (
+              <>
             {isSale ? (
               <Card style={styles.section}>
                 <AppText weight="semibold">What is being returned?</AppText>
@@ -697,13 +909,23 @@ function ReturnsContent() {
                   <Choice
                     label="Goods returned"
                     selected={mode === "delivered_return"}
-                    onPress={() => setMode("delivered_return")}
+                    onPress={() => {
+                      setMode("delivered_return");
+                      setQuantities({});
+                      setReturnError("");
+                      setReturnSuccess("");
+                    }}
                   />
                   {hasUndeliveredToCancel || mode === "undelivered_cancelled" ? (
                     <Choice
                       label="Cancel undelivered chickens"
                       selected={mode === "undelivered_cancelled"}
-                      onPress={() => setMode("undelivered_cancelled")}
+                      onPress={() => {
+                        setMode("undelivered_cancelled");
+                        setQuantities({});
+                        setReturnError("");
+                        setReturnSuccess("");
+                      }}
                     />
                   ) : null}
                 </View>
@@ -716,13 +938,28 @@ function ReturnsContent() {
             ) : null}
 
             <Card style={styles.section}>
-              <AppText weight="semibold">
-                {mode === "undelivered_cancelled"
-                  ? "Undelivered chickens"
-                  : isSale
-                    ? "Items sold"
-                    : "Items purchased"}
-              </AppText>
+              <View style={styles.sectionHeading}>
+                <View
+                  style={[
+                    styles.sectionIcon,
+                    { backgroundColor: `${theme.primary}14` },
+                  ]}
+                >
+                  <Ionicons name="list-outline" size={19} color={theme.primary} />
+                </View>
+                <View style={styles.grow}>
+                  <AppText weight="semibold">
+                    {mode === "undelivered_cancelled"
+                      ? "Undelivered chickens"
+                      : isSale
+                        ? "Choose items to return"
+                        : "Choose items to return"}
+                  </AppText>
+                  <AppText size="small" tone="secondary">
+                    Enter quantities only for the items included in this return.
+                  </AppText>
+                </View>
+              </View>
               {!returnableRows.length ? (
                 <AppText size="small" tone="secondary">
                   {isLoading
@@ -795,9 +1032,33 @@ function ReturnsContent() {
                           {formatMoney(row.totalAmount, theme.currency)}
                         </AppText>
                       </View>
-                      <AppText size="small" weight="semibold" style={{ color: theme.success }}>
-                        Up to {formatNumber(maxQuantity)}
-                      </AppText>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`Use maximum return quantity, ${formatNumber(maxQuantity)} ${row.unitLabel}`}
+                        onPress={() => {
+                          setReturnError("");
+                          setReturnSuccess("");
+                          setQuantities((current) => ({
+                            ...current,
+                            [row.id]: String(maxQuantity),
+                          }));
+                        }}
+                        style={[
+                          styles.maxQuantityButton,
+                          {
+                            backgroundColor: `${theme.primary}10`,
+                            borderColor: `${theme.primary}35`,
+                          },
+                        ]}
+                      >
+                        <AppText
+                          size="small"
+                          weight="semibold"
+                          style={{ color: theme.primary }}
+                        >
+                          Use max · {formatNumber(maxQuantity)}
+                        </AppText>
+                      </Pressable>
                     </View>
                     {isSale &&
                     mode === "delivered_return" &&
@@ -833,9 +1094,10 @@ function ReturnsContent() {
                       value={quantities[row.id] ?? ""}
                       onChangeText={(value) => {
                         setReturnError("");
+                        setReturnSuccess("");
                         setQuantities((current) => ({ ...current, [row.id]: value }));
                       }}
-                      keyboardType="decimal-pad"
+                      keyboardType={chicken ? "number-pad" : "decimal-pad"}
                       placeholder="0"
                     />
                     {isSale && mode === "delivered_return" && chicken && quantity > 0 ? (
@@ -955,86 +1217,290 @@ function ReturnsContent() {
               {returnableRows.length ? (
                 <>
                   {returnError ? (
-                    <AppText size="small" style={{ color: theme.danger }}>
-                      {returnError}
-                    </AppText>
+                    <FeedbackNotice tone="error" message={returnError} />
                   ) : null}
-                  <TextField
+                  <DatePickerField
                     label="Return date"
                     value={returnDate}
-                    onChangeText={(value) => {
+                    maximumDate={new Date()}
+                    onChange={(value) => {
                       setReturnError("");
+                      setReturnSuccess("");
                       setReturnDate(value);
                     }}
-                    placeholder="YYYY-MM-DD"
                   />
                   <TextField
                     label="Reason"
                     value={reason}
                     onChangeText={(value) => {
                       setReturnError("");
+                      setReturnSuccess("");
                       setReason(value);
                     }}
                     placeholder="Describe why these goods are returned"
                   />
                   <Button
-                    label="Record product return"
+                    label={
+                      mode === "undelivered_cancelled"
+                        ? "Confirm chicken cancellation"
+                        : "Record product return"
+                    }
                     loading={createSaleReturn.isPending || createPurchaseReturn.isPending}
                     onPress={() => void submitReturn()}
                   />
                 </>
               ) : null}
             </Card>
+            {returnSuccess ? (
+              <FeedbackNotice tone="success" message={returnSuccess} />
+            ) : null}
+              </>
+            ) : null}
 
-            <Card style={styles.section}>
-              <AppText weight="semibold">Record a cash refund</AppText>
-              <AppText size="small" tone="secondary">
-                This is a cash refund record, separate from a goods return or a mixed settlement.
-              </AppText>
+            {activeSection === "refund" ? (
+            <Card style={styles.refundCard}>
+              <View style={styles.refundHeading}>
+                <View
+                  style={[
+                    styles.sectionIcon,
+                    { backgroundColor: `${theme.success}14` },
+                  ]}
+                >
+                  <Ionicons name="cash-outline" size={19} color={theme.success} />
+                </View>
+                <View style={styles.grow}>
+                  <AppText weight="semibold">Refund money</AppText>
+                  <AppText size="small" tone="secondary">
+                    {isSale
+                      ? "Record cash only when the customer has a refundable overpayment after returns are applied."
+                      : "Record cash paid out against the selected purchase return."}
+                  </AppText>
+                </View>
+              </View>
+              <View
+                style={[
+                  styles.creditSummary,
+                  {
+                    backgroundColor: `${availableRefundAmount > 0 ? theme.success : theme.secondary}10`,
+                    borderColor: `${availableRefundAmount > 0 ? theme.success : theme.secondary}35`,
+                  },
+                ]}
+              >
+                <View style={styles.creditSummaryCopy}>
+                  <AppText size="small" tone="secondary">
+                    {isSale
+                      ? "Unrefunded return value"
+                      : selectedSupplierReturnItem
+                        ? "Value remaining on selected return"
+                        : "Select a purchase return"}
+                  </AppText>
+                  <AppText
+                    size="heading"
+                    weight="semibold"
+                    style={{
+                      color:
+                        availableRefundAmount > 0
+                          ? theme.success
+                          : theme.textSecondary,
+                    }}
+                  >
+                    {formatMoney(
+                      isSale
+                        ? saleRefundValueRemaining
+                        : selectedSupplierRemainingCredit,
+                      theme.currency,
+                    )}
+                  </AppText>
+                </View>
+                {availableRefundAmount > 0 ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                      setRefundError("");
+                      setRefundSuccess("");
+                      setRefundAmount(availableRefundAmount.toFixed(2));
+                    }}
+                    style={[
+                      styles.fillCreditButton,
+                      { backgroundColor: theme.backgroundElement },
+                    ]}
+                  >
+                    <AppText
+                      size="small"
+                      weight="semibold"
+                      style={{ color: theme.primary }}
+                    >
+                      Fill amount
+                    </AppText>
+                  </Pressable>
+                ) : null}
+              </View>
               {isSale ? (
-                <AppText size="small" tone="secondary">
-                  Customer credit available: {formatMoney(refundTransactionCredit, theme.currency)}
-                </AppText>
+                refundDataReady && saleRefundValueRemaining <= 0 ? (
+                  <FeedbackNotice
+                    tone="info"
+                    message="No unrefunded sale-return value is available. Record a return before recording a refund."
+                  />
+                ) : null
               ) : (
                 <>
-                  <AppText size="small" weight="semibold">Apply to purchase return credit</AppText>
-                  <View style={styles.pills}>
-                    {returns.flatMap((record) =>
-                      record.items.map((item) => (
-                        <Choice
-                          key={item.id}
-                          label={`${item.product_name ?? "Return"} · ${formatMoney(item.credit_amount, theme.currency)}`}
-                          selected={selectedReturnItemId === item.id}
-                          onPress={() => {
-                            setRefundError("");
-                            setSelectedReturnItemId(item.id);
-                          }}
-                        />
-                      )),
-                    )}
-                  </View>
+                  <AppText size="small" weight="semibold">
+                    Choose a purchase return
+                  </AppText>
+                  {supplierRefundableItems.length ? (
+                    <View style={styles.returnCreditList}>
+                      {supplierRefundableItems.map((item) => {
+                        const remaining = supplierCreditRemaining(item);
+                        const selected = selectedReturnItemId === item.id;
+                        return (
+                          <Pressable
+                            key={item.id}
+                            accessibilityRole="button"
+                            accessibilityState={{ selected }}
+                            onPress={() => {
+                              setRefundError("");
+                              setRefundSuccess("");
+                              setSelectedReturnItemId(item.id);
+                              setRefundAmount(remaining.toFixed(2));
+                            }}
+                            style={[
+                              styles.returnCreditOption,
+                              {
+                                borderColor: selected
+                                  ? theme.primary
+                                  : theme.border,
+                                backgroundColor: selected
+                                  ? `${theme.primary}0A`
+                                  : theme.background,
+                              },
+                            ]}
+                          >
+                            <View style={styles.grow}>
+                              <AppText weight="semibold">
+                                {item.product_name ?? "Returned item"}
+                              </AppText>
+                              <AppText size="small" tone="secondary">
+                                {formatNumber(
+                                  Number(item.quantity_returned ?? item.quantity ?? 0),
+                                )}{" "}
+                                returned
+                              </AppText>
+                            </View>
+                            <View style={styles.returnCreditAmount}>
+                              <AppText
+                                size="small"
+                                weight="semibold"
+                                style={{ color: theme.success }}
+                              >
+                                {formatMoney(remaining, theme.currency)}
+                              </AppText>
+                              <Ionicons
+                                name={
+                                  selected
+                                    ? "checkmark-circle"
+                                    : "chevron-forward"
+                                }
+                                size={19}
+                                color={
+                                  selected ? theme.primary : theme.textSecondary
+                                }
+                              />
+                            </View>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  ) : refundDataReady ? (
+                    <FeedbackNotice
+                      tone="info"
+                      message="No unrefunded purchase-return value is available. Record a supplier return before recording a refund."
+                    />
+                  ) : null}
+                  {!refundDataReady ? (
+                    <FeedbackNotice
+                      tone="info"
+                      message="Checking the latest return and refund balances before enabling payouts."
+                    />
+                  ) : null}
                 </>
               )}
+              {isSale && saleRefundValueRemaining > 0 ? (
+                <AppText size="small" tone="secondary">
+                  Refundable now = the lower of unrefunded return value (
+                  {formatMoney(saleRefundValueRemaining, theme.currency)}) and
+                  customer credit after returns (
+                  {formatMoney(saleRefundableBalance, theme.currency)}). Current
+                  sale balance due:{" "}
+                  {formatMoney(
+                    Number(sale.data?.transaction.balance_due ?? 0),
+                    theme.currency,
+                  )}.
+                </AppText>
+              ) : null}
+              {isSale &&
+              refundDataReady &&
+              saleRefundValueRemaining > 0 &&
+              availableRefundAmount <= 0 ? (
+                <FeedbackNotice
+                  tone="info"
+                  message={
+                    Number(sale.data?.transaction.balance_due ?? 0) > 0
+                      ? "There is no cash refund to fill: the customer still owes this sale balance. The returned-goods value has already reduced what they owe."
+                      : "There is no customer overpayment available to refund against this return."
+                  }
+                />
+              ) : null}
+              {refundSuccess ? (
+                <FeedbackNotice tone="success" message={refundSuccess} />
+              ) : null}
               <TextField
                 label="Refund amount"
                 value={refundAmount}
                 onChangeText={(value) => {
                   setRefundError("");
+                  setRefundSuccess("");
                   setRefundAmount(value);
                 }}
                 keyboardType="decimal-pad"
                 placeholder="0.00"
+                editable={
+                  refundDataReady &&
+                  (isSale ? availableRefundAmount > 0 : selectedSupplierRemainingCredit > 0)
+                }
               />
-              <TextField
+              <AppText size="small" tone="secondary">
+                Maximum cash refund now:{" "}
+                {formatMoney(availableRefundAmount, theme.currency)}
+              </AppText>
+              {refundAmountExceedsAvailable ? (
+                <FeedbackNotice
+                  tone="error"
+                  message={
+                    availableRefundAmount > 0
+                      ? "The entered amount is higher than the refundable amount. Use Fill amount or enter a smaller amount."
+                      : "No cash refund is currently available. The returned value has reduced the sale balance first."
+                  }
+                />
+              ) : null}
+              <DatePickerField
                 label="Refund date"
                 value={refundDate}
-                onChangeText={(value) => {
+                maximumDate={new Date()}
+                onChange={(value) => {
                   setRefundError("");
                   setRefundDate(value);
                 }}
-                placeholder="YYYY-MM-DD"
               />
-              <AppText size="small" weight="semibold">Payment method</AppText>
+              <View style={styles.formSectionHeading}>
+                <AppText size="small" weight="semibold">
+                  Payment method
+                </AppText>
+                <AppText size="small" tone="secondary">
+                  {refundMethod === "cash"
+                    ? "No reference needed for cash."
+                    : "Add a reference if available."}
+                </AppText>
+              </View>
               <View style={styles.pills}>
                 {paymentMethods.map((method) => (
                   <Choice
@@ -1070,32 +1536,49 @@ function ReturnsContent() {
                 placeholder="Why was money refunded?"
               />
               {refundError ? (
-                <AppText size="small" style={{ color: theme.danger }}>
-                  {refundError}
-                </AppText>
+                <FeedbackNotice tone="error" message={refundError} />
               ) : null}
               <Button
-                label="Record cash refund"
-                variant="secondary"
+                label={
+                  refundDataReady
+                    ? "Record refund"
+                    : "Checking available credit…"
+                }
                 loading={createSaleRefund.isPending || createSupplierRefund.isPending}
-                disabled={isSale ? refundTransactionCredit <= 0 : !selectedSupplierReturnItem}
+                disabled={
+                  createSaleRefund.isPending ||
+                  createSupplierRefund.isPending ||
+                  !refundDataReady ||
+                  refundAmountExceedsAvailable ||
+                  (isSale
+                    ? availableRefundAmount <= 0
+                    : !selectedSupplierReturnItem ||
+                      selectedSupplierRemainingCredit <= 0)
+                }
                 onPress={() => void submitCashRefund()}
               />
-              {refundHistory.map((refund) => (
-                <View key={refund.id} style={[styles.history, { borderColor: theme.border }]}>
-                  <View style={styles.historyTop}>
-                    <AppText weight="semibold">{formatMoney(refund.amount, theme.currency)}</AppText>
-                    <AppText size="small" tone="secondary">{refund.refund_date}</AppText>
-                  </View>
+            </Card>
+            ) : null}
+
+            {activeSection === "history" ? (
+              <>
+            <Card style={styles.section}>
+              <View style={styles.sectionHeading}>
+                <View
+                  style={[
+                    styles.sectionIcon,
+                    { backgroundColor: `${theme.primary}14` },
+                  ]}
+                >
+                  <Ionicons name="return-down-back-outline" size={19} color={theme.primary} />
+                </View>
+                <View style={styles.grow}>
+                  <AppText weight="semibold">Return history</AppText>
                   <AppText size="small" tone="secondary">
-                    {refund.payment_method.replace("_", " ")} · {refund.reason}
+                    Recorded goods returns, cancellations, and issued credits.
                   </AppText>
                 </View>
-              ))}
-            </Card>
-
-            <Card style={styles.section}>
-              <AppText weight="semibold">Return history</AppText>
+              </View>
               {returns.length ? (
                 returns.map((record) => (
                   <View key={record.id} style={[styles.history, { borderColor: theme.border }]}>
@@ -1105,11 +1588,42 @@ function ReturnsContent() {
                       </AppText>
                       <AppText size="small" tone="secondary">{record.return_date}</AppText>
                     </View>
-                    <AppText size="small">{record.reason}</AppText>
+                    <View style={styles.historyReason}>
+                      <View
+                        style={[
+                          styles.historyTypeBadge,
+                          {
+                            backgroundColor: `${record.return_type === "undelivered_cancelled" ? theme.secondary : theme.primary}14`,
+                          },
+                        ]}
+                      >
+                        <AppText
+                          size="small"
+                          weight="semibold"
+                          style={{
+                            color:
+                              record.return_type === "undelivered_cancelled"
+                                ? theme.secondary
+                                : theme.primary,
+                          }}
+                        >
+                          {record.return_type === "undelivered_cancelled"
+                            ? "Undelivered cancelled"
+                            : "Goods returned"}
+                        </AppText>
+                      </View>
+                      <AppText size="small" tone="secondary">
+                        {record.reason}
+                      </AppText>
+                    </View>
                     {record.items.map((item) => (
                       <AppText key={item.id} size="small" tone="secondary">
                         {item.product_name ?? "Product"} ·{" "}
-                        {item.quantity_returned ?? item.quantity ?? "0"} returned · credit{" "}
+                        {item.quantity_returned ?? item.quantity ?? "0"}{" "}
+                        {record.return_type === "undelivered_cancelled"
+                          ? "cancelled"
+                          : "returned"}{" "}
+                        · credit{" "}
                         {formatMoney(item.credit_amount, theme.currency)}
                       </AppText>
                     ))}
@@ -1121,9 +1635,55 @@ function ReturnsContent() {
                 </AppText>
               )}
             </Card>
+            <Card style={styles.section}>
+              <View style={styles.sectionHeading}>
+                <View
+                  style={[
+                    styles.sectionIcon,
+                    { backgroundColor: `${theme.danger}14` },
+                  ]}
+                >
+                  <Ionicons name="cash-outline" size={19} color={theme.danger} />
+                </View>
+                <View style={styles.grow}>
+                  <AppText weight="semibold">Refund history</AppText>
+                  <AppText size="small" tone="secondary">
+                    Cash paid out against transaction or return credit.
+                  </AppText>
+                </View>
+              </View>
+              {refundHistory.length ? (
+                refundHistory.map((refund) => (
+                  <View
+                    key={refund.id}
+                    style={[styles.history, { borderColor: theme.border }]}
+                  >
+                    <View style={styles.historyTop}>
+                      <AppText weight="semibold">
+                        {formatMoney(refund.amount, theme.currency)}
+                      </AppText>
+                      <AppText size="small" tone="secondary">
+                        {refund.refund_date}
+                      </AppText>
+                    </View>
+                    <AppText size="small" tone="secondary">
+                      {titleCase(refund.payment_method.replace("_", " "))} ·{" "}
+                      {refund.reason}
+                    </AppText>
+                  </View>
+                ))
+              ) : (
+                <AppText size="small" tone="secondary">
+                  No cash refunds have been recorded yet.
+                </AppText>
+              )}
+            </Card>
+              </>
+            ) : null}
           </>
         ) : null}
       </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 
@@ -1160,6 +1720,81 @@ function Choice({
         {label}
       </AppText>
     </Pressable>
+  );
+}
+
+function WorkflowTab({
+  label,
+  icon,
+  selected,
+  onPress,
+}: {
+  label: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  const { theme } = useTheme();
+  const color = selected ? theme.onPrimary : theme.textSecondary;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ selected }}
+      onPress={onPress}
+      style={[
+        styles.sectionTab,
+        { backgroundColor: selected ? theme.primary : "transparent" },
+      ]}
+    >
+      <Ionicons name={icon} size={17} color={color} />
+      <AppText
+        size="small"
+        weight="semibold"
+        numberOfLines={1}
+        style={{ color, flexShrink: 1 }}
+      >
+        {label}
+      </AppText>
+    </Pressable>
+  );
+}
+
+function FeedbackNotice({
+  tone,
+  message,
+}: {
+  tone: "error" | "info" | "success";
+  message: string;
+}) {
+  const { theme } = useTheme();
+  const color =
+    tone === "error"
+      ? theme.danger
+      : tone === "success"
+        ? theme.success
+        : theme.primary;
+  const icon =
+    tone === "error"
+      ? "alert-circle-outline"
+      : tone === "success"
+        ? "checkmark-circle-outline"
+        : "information-circle-outline";
+  return (
+    <View
+      accessibilityRole={tone === "error" ? "alert" : "summary"}
+      style={[
+        styles.feedbackNotice,
+        {
+          borderColor: `${color}40`,
+          backgroundColor: `${color}0B`,
+        },
+      ]}
+    >
+      <Ionicons name={icon} size={19} color={color} />
+      <AppText size="small" style={{ color, flex: 1 }}>
+        {message}
+      </AppText>
+    </View>
   );
 }
 
@@ -1332,25 +1967,88 @@ function formatBatchAge(hatchDate: string, referenceDate: string) {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
-  content: { padding: 16, gap: 14, paddingBottom: 36 },
+  content: { width: "100%", maxWidth: 760, alignSelf: "center", padding: 18, gap: 14, paddingBottom: 40 },
   loading: { alignItems: "center", gap: 10, padding: 20 },
   directionCard: {
     padding: 16,
-    gap: 12,
+    gap: 14,
+    borderRadius: 15,
+    borderWidth: 1,
+  },
+  transactionHeading: { flexDirection: "row", alignItems: "center", gap: 12 },
+  transactionIcon: {
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
     borderRadius: 14,
-    borderLeftWidth: 4,
   },
   directionFlow: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
+    alignItems: "flex-start",
+    gap: 10,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "rgba(127, 127, 127, 0.06)",
   },
   directionParty: { flex: 1, minWidth: 0, gap: 3 },
   grow: { flex: 1, gap: 6 },
-  section: { padding: 16, gap: 14 },
-  itemCard: { paddingVertical: 14, gap: 12 },
+  transactionSummary: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 12,
+  },
+  transactionSummaryMetric: { flex: 1, minWidth: 0, gap: 3 },
+  metricDivider: { width: StyleSheet.hairlineWidth, height: 34 },
+  returnBalanceNote: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 10,
+    gap: 3,
+  },
+  sectionTabs: {
+    flexDirection: "row",
+    gap: 5,
+    padding: 5,
+    borderWidth: 1,
+    borderRadius: 14,
+  },
+  sectionTab: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: 6,
+    borderRadius: 10,
+  },
+  section: { padding: 16, gap: 14, borderRadius: 15 },
+  refundCard: { padding: 16, gap: 14, borderRadius: 15 },
+  sectionHeading: { flexDirection: "row", alignItems: "center", gap: 11 },
+  sectionIcon: {
+    width: 38,
+    height: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+  },
+  itemCard: { paddingVertical: 14, gap: 13 },
   itemDivider: { borderTopWidth: StyleSheet.hairlineWidth },
-  itemHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
+  itemHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  maxQuantityButton: {
+    borderWidth: 1,
+    borderRadius: 20,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
   locationSummary: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -1361,6 +2059,47 @@ const styles = StyleSheet.create({
   },
   pills: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   choice: { paddingHorizontal: 12, paddingVertical: 9, borderRadius: 20, borderWidth: 1 },
+  refundHeading: { flexDirection: "row", alignItems: "center", gap: 11 },
+  creditSummary: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    padding: 13,
+    borderWidth: 1,
+    borderRadius: 12,
+  },
+  creditSummaryCopy: { flex: 1, minWidth: 0, gap: 3 },
+  fillCreditButton: {
+    minHeight: 38,
+    justifyContent: "center",
+    paddingHorizontal: 12,
+    borderRadius: 10,
+  },
+  returnCreditList: { gap: 8 },
+  returnCreditOption: {
+    minHeight: 62,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 11,
+    borderWidth: 1,
+    borderRadius: 12,
+  },
+  returnCreditAmount: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+  },
+  formSectionHeading: { gap: 2 },
+  feedbackNotice: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 9,
+    padding: 11,
+    borderWidth: 1,
+    borderRadius: 11,
+  },
   returnPicker: { gap: 7 },
   returnPickerTrigger: {
     minHeight: 52,
@@ -1402,5 +2141,13 @@ const styles = StyleSheet.create({
   },
   emptyOptions: { paddingVertical: 24, paddingHorizontal: 8 },
   history: { borderBottomWidth: StyleSheet.hairlineWidth, paddingVertical: 12, gap: 6 },
-  historyTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  historyTop: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 8,
+  },
+  historyReason: { alignItems: "flex-start", gap: 7 },
+  historyTypeBadge: { borderRadius: 999, paddingHorizontal: 9, paddingVertical: 5 },
 });

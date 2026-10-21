@@ -90,7 +90,11 @@ function StockCostingContent() {
   if (!farm.selectedFarm) {
     return (
       <SafeAreaView style={[styles.screen, { backgroundColor: theme.background }]}>
-        <ScrollView contentContainerStyle={styles.content}>
+        <ScrollView
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+          automaticallyAdjustKeyboardInsets
+        >
           <FarmPageHeader title="Stock costing" showBack />
           <Card>
             <AppText weight="semibold">Choose a farm to continue.</AppText>
@@ -105,7 +109,11 @@ function StockCostingContent() {
       style={[styles.screen, { backgroundColor: theme.background }]}
       edges={["top", "bottom"]}
     >
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        automaticallyAdjustKeyboardInsets
+      >
         <FarmPageHeader
           title="Stock costing"
           showBack

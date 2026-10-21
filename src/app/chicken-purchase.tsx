@@ -96,13 +96,6 @@ type PurchaseItemDraft = {
   unitId: string;
   unitPrice: string;
   notes: string;
-  batchMode: "create" | "existing";
-  existingBatchId: string;
-  customBatchName: boolean;
-  newBatchName: string;
-  age: string;
-  ageUnit: ChickenAgeUnit;
-  blockAllocations: { blockId: string; quantity: string }[];
 };
 
 type ArrivalBatchDraft = {
@@ -140,13 +133,6 @@ function createItemDraft(): PurchaseItemDraft {
     unitId: "",
     unitPrice: "",
     notes: "",
-    batchMode: "create",
-    existingBatchId: "",
-    customBatchName: false,
-    newBatchName: "",
-    age: "",
-    ageUnit: "weeks",
-    blockAllocations: [{ blockId: "", quantity: "" }],
   };
 }
 
@@ -278,7 +264,6 @@ function ChickenPurchaseContent() {
   const [newSupplierEmail, setNewSupplierEmail] = useState("");
   const [supplierError, setSupplierError] = useState<string | null>(null);
   const [purchaseNotes, setPurchaseNotes] = useState("");
-  const [receiveOnPurchase, setReceiveOnPurchase] = useState(true);
   const [itemDrafts, setItemDrafts] = useState<PurchaseItemDraft[]>([
     createItemDraft(),
   ]);
@@ -320,8 +305,6 @@ function ChickenPurchaseContent() {
   const [arrivalNotes, setArrivalNotes] = useState("");
   const [arrivalDrafts, setArrivalDrafts] = useState<ArrivalBatchDraft[]>([]);
   const [arrivalError, setArrivalError] = useState<string | null>(null);
-  const [receiptResult, setReceiptResult] =
-    useState<ChickenPurchaseReceiptResult | null>(null);
   const selectedPurchaseDate = purchaseDate ?? farmToday;
   const defaultChickenProduct = options.data?.products[0];
   const items = itemDrafts.map((item) => {
@@ -357,31 +340,6 @@ function ChickenPurchaseContent() {
     setArrivalFieldError((current) => (current?.key === key ? null : current));
     setError(null);
     setArrivalError(null);
-  }
-
-  function remainingPlannedCapacity(
-    blockId: string,
-    itemId: string,
-    allocationIndex: number,
-  ): number {
-    const block = options.data?.blocks.find(
-      (candidate) => candidate.id === blockId,
-    );
-    if (!block) return 0;
-    const assignedElsewhere = itemDrafts.reduce(
-      (total, item) =>
-        total +
-        item.blockAllocations.reduce(
-          (itemTotal, allocation, index) =>
-            allocation.blockId === blockId &&
-            !(item.id === itemId && index === allocationIndex)
-              ? itemTotal + (Number(allocation.quantity) || 0)
-              : itemTotal,
-          0,
-        ),
-      0,
-    );
-    return Math.max(0, block.available_capacity - assignedElsewhere);
   }
 
   function remainingArrivalCapacity(
@@ -479,104 +437,8 @@ function ChickenPurchaseContent() {
       current.map((item) => {
         if (item.id !== id) return item;
         const updated = { ...item, ...changes };
-        if (
-          changes.quantity !== undefined &&
-          item.blockAllocations.length > 0
-        ) {
-          const fixedAllocations = item.blockAllocations
-            .slice(0, -1)
-            .reduce(
-              (total, allocation) => total + (Number(allocation.quantity) || 0),
-              0,
-            );
-          updated.blockAllocations = item.blockAllocations.map(
-            (allocation, index) =>
-              index === item.blockAllocations.length - 1
-                ? {
-                    ...allocation,
-                    quantity: changes.quantity?.trim()
-                      ? String(
-                          Math.max(
-                            0,
-                            Number(changes.quantity) - fixedAllocations,
-                          ),
-                        )
-                      : "",
-                  }
-                : allocation,
-          );
-        }
         return updated;
       }),
-    );
-  }
-
-  function updateItemAllocation(
-    itemId: string,
-    index: number,
-    changes: Partial<PurchaseItemDraft["blockAllocations"][number]>,
-  ) {
-    const availableForRow = changes.blockId
-      ? remainingPlannedCapacity(changes.blockId, itemId, index)
-      : 0;
-    setItemDrafts((current) =>
-      current.map((item) =>
-        item.id === itemId
-          ? {
-              ...item,
-              blockAllocations: item.blockAllocations.map(
-                (allocation, allocationIndex) =>
-                  allocationIndex === index
-                    ? {
-                        ...allocation,
-                        ...changes,
-                        quantity: changes.blockId
-                          ? String(
-                              Math.min(
-                                Number(allocation.quantity) ||
-                                  Number(item.quantity) ||
-                                  0,
-                                availableForRow,
-                              ),
-                            )
-                          : (changes.quantity ?? allocation.quantity),
-                      }
-                    : allocation,
-              ),
-            }
-          : item,
-      ),
-    );
-  }
-
-  function addItemAllocation(itemId: string) {
-    setItemDrafts((current) =>
-      current.map((item) =>
-        item.id === itemId
-          ? {
-              ...item,
-              blockAllocations: [
-                ...item.blockAllocations,
-                { blockId: "", quantity: "" },
-              ],
-            }
-          : item,
-      ),
-    );
-  }
-
-  function removeItemAllocation(itemId: string, index: number) {
-    setItemDrafts((current) =>
-      current.map((item) =>
-        item.id === itemId
-          ? {
-              ...item,
-              blockAllocations: item.blockAllocations.filter(
-                (_allocation, allocationIndex) => allocationIndex !== index,
-              ),
-            }
-          : item,
-      ),
     );
   }
 
@@ -608,7 +470,7 @@ function ChickenPurchaseContent() {
     }
     if (step === 1) {
       if (items.length === 0) {
-        setError("Add at least one chicken batch to this purchase.");
+        setError("Add at least one chicken purchase item.");
         return false;
       }
       for (const [index, item] of items.entries()) {
@@ -617,118 +479,36 @@ function ChickenPurchaseContent() {
         );
         if (!product) {
           return reportFieldError(
-            `Choose a chicken product for batch ${index + 1}.`,
+            `Choose a chicken product for item ${index + 1}.`,
             `batch:${item.id}:product`,
           );
         }
         if (!item.chickenType) {
           return reportFieldError(
-            `Choose a chicken type for batch ${index + 1}.`,
+            `Choose a chicken type for item ${index + 1}.`,
             `batch:${item.id}:type`,
           );
-        }
-        if (
-          item.batchMode === "existing" &&
-          !options.data?.batches.some(
-            (batch) =>
-              batch.id === item.existingBatchId &&
-              batch.chicken_type === item.chickenType,
-          )
-        ) {
-          return reportFieldError(
-            `Choose an existing ${item.chickenType} batch for batch ${index + 1}.`,
-            `batch:${item.id}:existing-batch`,
-          );
-        }
-        if (item.batchMode === "create") {
-          const age = Number(item.age);
-          if (item.age.trim() === "" || !Number.isSafeInteger(age) || age < 0) {
-            return reportFieldError(
-              `Enter the age for batch ${index + 1} in whole days, weeks, months, or years.`,
-              `batch:${item.id}:age`,
-            );
-          }
         }
         if (
           !product.product_units.some((unit) => unit.unit_id === item.unitId)
         ) {
           return reportFieldError(
-            `Choose a valid unit for batch ${index + 1}.`,
+            `Choose a valid unit for item ${index + 1}.`,
             `batch:${item.id}:unit`,
           );
         }
         const quantity = Number(item.quantity);
         if (!Number.isSafeInteger(quantity) || quantity < 1) {
           return reportFieldError(
-            `Enter a whole-number quantity above zero for batch ${index + 1}.`,
+            `Enter a whole-number quantity above zero for item ${index + 1}.`,
             `batch:${item.id}:quantity`,
           );
         }
         if (parseMoneyToCents(item.unitPrice) === null) {
           return reportFieldError(
-            `Enter a unit price with up to two decimal places for batch ${index + 1}. Use 0 if the chickens are free.`,
+            `Enter a unit price with up to two decimal places for item ${index + 1}. Use 0 if the chickens are free.`,
             `batch:${item.id}:unit-price`,
           );
-        }
-        const hasHousingPlan = item.blockAllocations.some(
-          (allocation) => allocation.blockId,
-        );
-        if (receiveOnPurchase && !hasHousingPlan) {
-          return reportFieldError(
-            "Choose a housing block to receive these chickens now, or turn off Receive now for a later delivery.",
-            `batch:${item.id}:allocation:0:block`,
-          );
-        }
-        if (receiveOnPurchase && hasHousingPlan) {
-          const selectedBlockIds = new Set<string>();
-          let allocatedQuantity = 0;
-          for (const [
-            allocationIndex,
-            allocation,
-          ] of item.blockAllocations.entries()) {
-            const allocationQuantity = Number(allocation.quantity);
-            if (
-              !Number.isSafeInteger(allocationQuantity) ||
-              allocationQuantity < 1
-            ) {
-              return reportFieldError(
-                "Enter a whole-number quantity for every housing block.",
-                `batch:${item.id}:allocation:${allocationIndex}:quantity`,
-              );
-            }
-            if (
-              !allocation.blockId ||
-              selectedBlockIds.has(allocation.blockId)
-            ) {
-              return reportFieldError(
-                "Choose a different housing block for each allocation.",
-                `batch:${item.id}:allocation:${allocationIndex}:block`,
-              );
-            }
-            selectedBlockIds.add(allocation.blockId);
-            allocatedQuantity += allocationQuantity;
-            const availableCapacity = remainingPlannedCapacity(
-              allocation.blockId,
-              item.id,
-              allocationIndex,
-            );
-            if (allocationQuantity > availableCapacity) {
-              const blockName =
-                options.data?.blocks.find(
-                  (block) => block.id === allocation.blockId,
-                )?.name ?? "This block";
-              return reportFieldError(
-                `${blockName} has room for ${availableCapacity} more chickens, but ${allocationQuantity} are assigned.`,
-                `batch:${item.id}:allocation:${allocationIndex}:quantity`,
-              );
-            }
-          }
-          if (allocatedQuantity !== quantity) {
-            return reportFieldError(
-              `Housing allocations for batch ${index + 1} must add up to ${quantity}.`,
-              `batch:${item.id}:allocation:${item.blockAllocations.length - 1}:quantity`,
-            );
-          }
         }
       }
       if (discountType && purchasePricing.error) {
@@ -954,33 +734,6 @@ function ChickenPurchaseContent() {
           : [],
       });
       setResult(created);
-      if (receiveOnPurchase) {
-        const arrivalDraftsForPurchase = buildArrivalDrafts(created);
-        const receivedDate = farmToday;
-        setArrivalDate(receivedDate);
-        setArrivalNotes("");
-        setArrivalError(null);
-        setReceiptResult(null);
-        setArrivalDrafts(arrivalDraftsForPurchase);
-        setArrivalOpen(true);
-        try {
-          const receipt = await createReceipt.mutateAsync(
-            buildReceiptInput(
-              created,
-              arrivalDraftsForPurchase,
-              receivedDate,
-              "",
-            ),
-          );
-          setReceiptResult(receipt);
-          setArrivalOpen(false);
-          setResult(applyReceiptToPurchase(created, receipt));
-        } catch (receiptError: unknown) {
-          setArrivalError(
-            `The purchase was recorded, but its arrival was not: ${normalizeApiError(receiptError).message} Review the details below and record the arrival to retry.`,
-          );
-        }
-      }
       if (
         remindForSettlement &&
         ((parseMoneyToCents(String(created.balance_due)) ?? 0n) > 0n ||
@@ -1004,76 +757,6 @@ function ChickenPurchaseContent() {
         tone: "error",
       });
     }
-  }
-
-  function buildArrivalDrafts(
-    purchase: ChickenPurchaseResult,
-  ): ArrivalBatchDraft[] {
-    return purchase.items
-      .filter((item) => item.quantity_remaining > 0)
-      .map((item) => {
-        const itemIndex = purchase.items.findIndex(
-          (candidate) => candidate.id === item.id,
-        );
-        const planned = items[itemIndex];
-        const quantityRemaining = Number(item.quantity_remaining);
-        let unallocated = quantityRemaining;
-        const plannedBlocks = (planned?.blockAllocations ?? []).filter(
-          (allocation) => allocation.blockId,
-        );
-        const blockAllocations = plannedBlocks
-          .map((allocation, index) => {
-            const plannedQuantity = Number(allocation.quantity) || 0;
-            const quantity =
-              index === plannedBlocks.length - 1
-                ? unallocated
-                : Math.min(plannedQuantity, unallocated);
-            unallocated -= quantity;
-            return {
-              blockId: allocation.blockId,
-              quantity: String(quantity),
-            };
-          })
-          .filter((allocation) => Number(allocation.quantity) > 0);
-        if (blockAllocations.length === 0) {
-          blockAllocations.push({
-            blockId: "",
-            quantity: String(quantityRemaining),
-          });
-        } else if (unallocated > 0) {
-          blockAllocations[blockAllocations.length - 1].quantity = String(
-            Number(blockAllocations[blockAllocations.length - 1].quantity) +
-              unallocated,
-          );
-        }
-        const linkedBatchId = item.batch_id ?? "";
-        return {
-          transactionItemId: item.id,
-          quantityReceived: String(quantityRemaining),
-          batchMode: linkedBatchId
-            ? "existing"
-            : (planned?.batchMode ?? "create"),
-          existingBatchId: linkedBatchId || planned?.existingBatchId || "",
-          customBatchName: planned?.customBatchName ?? false,
-          newBatchName: planned?.customBatchName
-            ? (planned.newBatchName ?? "")
-            : "",
-          age: planned?.age ?? "",
-          ageUnit: planned?.ageUnit ?? "weeks",
-          blockAllocations,
-          notes: "",
-        };
-      });
-  }
-
-  function beginArrival(purchase: ChickenPurchaseResult | null = result) {
-    if (!purchase) return;
-    setArrivalDate(farmToday);
-    setArrivalNotes("");
-    setArrivalError(null);
-    setReceiptResult(null);
-    setArrivalDrafts(buildArrivalDrafts(purchase));
-    setArrivalOpen(true);
   }
 
   function updateArrivalBatch(
@@ -1418,7 +1101,6 @@ function ChickenPurchaseContent() {
       const receipt = await createReceipt.mutateAsync(
         buildReceiptInput(result, arrivalDrafts, arrivalDate, arrivalNotes),
       );
-      setReceiptResult(receipt);
       setArrivalOpen(false);
       setResult((current) =>
         current ? applyReceiptToPurchase(current, receipt) : current,
@@ -1526,11 +1208,8 @@ function ChickenPurchaseContent() {
             Chicken purchase recorded
           </AppText>
           <AppText size="small" tone="secondary">
-            {receiptResult
-              ? "The chickens were received and assigned to housing. Flock counts have been updated."
-              : arrivalOpen
-                ? "The purchase is saved. Complete the arrival below to update flock counts."
-                : "The purchase is saved. Record the arrival when the chickens are delivered to update flock counts."}
+            The purchase records what you bought. Record each delivery
+            separately so partial arrivals update flock stock accurately.
           </AppText>
           <SummaryRow
             label="Transaction reference"
@@ -1564,13 +1243,19 @@ function ChickenPurchaseContent() {
               return (
                 <View key={purchasedItem.id} style={styles.successBatch}>
                   <AppText weight="semibold">
-                    Batch {index + 1}: {chickenType ?? "Chicken"}
+                    {chickenType ?? "Chicken"} ·{" "}
+                    {formatChickenCount(purchasedItem.quantity)} purchased
                   </AppText>
                   <AppText size="small" tone="secondary">
                     {product?.name ?? "Chicken product"} ·{" "}
-                    {purchasedItem.quantity}{" "}
                     {unit?.unit_abbreviation ?? "units"} ·{" "}
                     {formatMoney(purchasedItem.total_amount, theme.currency)}
+                  </AppText>
+                  <AppText size="small" tone="secondary">
+                    {formatChickenCount(purchasedItem.quantity_received)}{" "}
+                    received ·{" "}
+                    {formatChickenCount(purchasedItem.quantity_remaining)}{" "}
+                    outstanding
                   </AppText>
                   {purchasedItem.notes ? (
                     <AppText size="small" tone="secondary">
@@ -1635,56 +1320,6 @@ function ChickenPurchaseContent() {
           {purchaseNotes.trim() ? (
             <SummaryRow label="Notes" value={purchaseNotes.trim()} />
           ) : null}
-          {receiptResult ? (
-            <Card style={styles.receiptSuccess}>
-              <AppText weight="semibold">Arrival recorded</AppText>
-              {receiptResult.items.map((receivedItem) => {
-                const purchasedItem = result.items.find(
-                  (item) => item.id === receivedItem.transaction_item_id,
-                );
-                const chickenType = chickenTypes.find(
-                  (type) => type.value === purchasedItem?.chicken_type,
-                )?.label;
-                const allocatedBlocks = receivedItem.block_allocations
-                  .map(
-                    (allocation) =>
-                      `${
-                        options.data.blocks.find(
-                          (block) => block.id === allocation.block_id,
-                        )?.name ?? "Housing block"
-                      } (${allocation.quantity})`,
-                  )
-                  .join(" · ");
-                return (
-                  <View key={receivedItem.id} style={styles.receiptSuccessItem}>
-                    {receivedItem.batch_name ? (
-                      <AppText size="small" weight="semibold">
-                        {receivedItem.batch_name}
-                      </AppText>
-                    ) : null}
-                    <AppText size="small" weight="semibold">
-                      {chickenType ?? "Chicken"} ·{" "}
-                      {receivedItem.quantity_received} received
-                    </AppText>
-                    <AppText size="small" tone="secondary">
-                      Housing: {allocatedBlocks}
-                    </AppText>
-                    <AppText size="small" tone="secondary">
-                      Hatch date:{" "}
-                      {receivedItem.hatch_date
-                        ? formatDateForDisplay(receivedItem.hatch_date)
-                        : "Not set"}
-                    </AppText>
-                    <AppText size="small" tone="secondary">
-                      {Number(receivedItem.remaining_quantity) > 0
-                        ? `${formatChickenCount(receivedItem.remaining_quantity)} still expected`
-                        : "Fully received"}
-                    </AppText>
-                  </View>
-                );
-              })}
-            </Card>
-          ) : null}
           {savedBalanceReminder ? (
             <Card style={styles.reminderSaved}>
               <Ionicons
@@ -1734,8 +1369,8 @@ function ChickenPurchaseContent() {
                   Record chicken arrival
                 </AppText>
                 <AppText size="small" tone="secondary">
-                  Enter what arrived today. You can receive the remaining
-                  chickens later.
+                  Enter only the chickens delivered now. Anything still expected
+                  remains on this purchase for a later receipt.
                 </AppText>
               </View>
               <DatePickerField
@@ -1767,12 +1402,22 @@ function ChickenPurchaseContent() {
                       {" · "}
                       {product?.name ?? "Chicken product"}
                     </AppText>
-                    <AppText size="small" tone="secondary">
-                      {formatChickenCount(purchaseItem.quantity_remaining)}{" "}
-                      {Number(purchaseItem.quantity_remaining) === 1
-                        ? "chicken still expected"
-                        : "chickens still expected"}
-                    </AppText>
+                    <View style={styles.arrivalQuantityContext}>
+                      <View style={styles.arrivalQuantityStat}>
+                        <AppText size="small" tone="secondary">Still expected</AppText>
+                        <AppText weight="semibold">
+                          {formatChickenCount(purchaseItem.quantity_remaining)}
+                        </AppText>
+                      </View>
+                      {purchaseItem.quantity_received > 0 ? (
+                        <View style={styles.arrivalQuantityStat}>
+                          <AppText size="small" tone="secondary">Received earlier</AppText>
+                          <AppText weight="semibold">
+                            {formatChickenCount(purchaseItem.quantity_received)}
+                          </AppText>
+                        </View>
+                      ) : null}
+                    </View>
                     <TextField
                       label="Number arriving now"
                       value={draft.quantityReceived}
@@ -2160,14 +1805,15 @@ function ChickenPurchaseContent() {
               </View>
             </Card>
           ) : null}
-          {!arrivalOpen &&
-          result.items.some((item) => item.quantity_remaining > 0) ? (
+          {result.items.some((item) => item.quantity_remaining > 0) ? (
             <Button
-              label={
-                receiptResult ? "Record another arrival" : "Record arrival"
+              label="Record receipt"
+              onPress={() =>
+                router.push({
+                  pathname: "/purchases/[purchaseId]/receive",
+                  params: { purchaseId: result.id },
+                })
               }
-              variant="secondary"
-              onPress={() => beginArrival()}
             />
           ) : null}
           <Card style={styles.inventoryNote}>
@@ -2332,36 +1978,23 @@ function ChickenPurchaseContent() {
         <View style={styles.stepContent}>
           <View style={styles.sectionIntro}>
             <AppText size="heading" weight="semibold">
-              Batch assignment & housing
+              Purchase quantities
             </AppText>
             <AppText size="small" tone="secondary">
-              Choose whether each group joins an existing batch or starts a new
-              one, then divide its planned quantity across housing blocks.
+              Enter the amount you bought here. Actual deliveries are recorded
+              separately so you can receive part now and the remainder later.
             </AppText>
           </View>
-          <Card style={styles.paymentToggle}>
-            <View style={styles.flexCopy}>
-              <AppText weight="semibold">Receive chickens now</AppText>
-              <AppText size="small" tone="secondary">
-                Record the batch and block allocation with this purchase. Turn
-                this off if the delivery is later.
-              </AppText>
-            </View>
-            <Switch
-              value={receiveOnPurchase}
-              onValueChange={setReceiveOnPurchase}
-              trackColor={{ false: theme.border, true: theme.primary }}
-              thumbColor={theme.backgroundElement}
-            />
-          </Card>
           {items.map((item, index) => (
             <Card key={item.id} style={styles.itemCard}>
               <View style={styles.itemHeading}>
-                <AppText weight="semibold">Batch {index + 1}</AppText>
+                <AppText weight="semibold">
+                  Purchase item {index + 1}
+                </AppText>
                 {items.length > 1 ? (
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityLabel={`Remove batch ${index + 1}`}
+                    accessibilityLabel={`Remove purchase item ${index + 1}`}
                     onPress={() => {
                       setDiscountConfirmed(false);
                       setOverpaymentConfirmed(false);
@@ -2436,158 +2069,9 @@ function ChickenPurchaseContent() {
                 }))}
                 onSelect={(value) => {
                   clearFieldError(`batch:${item.id}:type`);
-                  updateItem(item.id, {
-                    chickenType: value as ChickenType,
-                    existingBatchId: "",
-                  });
+                  updateItem(item.id, { chickenType: value as ChickenType });
                 }}
               />
-              <View style={styles.inputSection}>
-                <AppText size="small" weight="semibold">
-                  Batch assignment
-                </AppText>
-                <View style={styles.choiceWrap}>
-                  <ChoiceButton
-                    label="Create new batch"
-                    selected={item.batchMode === "create"}
-                    onPress={() => updateItem(item.id, { batchMode: "create" })}
-                  />
-                  <ChoiceButton
-                    label="Add to existing batch"
-                    selected={item.batchMode === "existing"}
-                    onPress={() =>
-                      updateItem(item.id, { batchMode: "existing" })
-                    }
-                  />
-                </View>
-              </View>
-              {item.batchMode === "existing" ? (
-                <View style={styles.inputSection}>
-                  <SearchableSelectField
-                    label="Existing chicken batch"
-                    value={item.existingBatchId}
-                    placeholder="Choose existing batch"
-                    searchPlaceholder="Search active batches"
-                    error={
-                      arrivalFieldError?.key ===
-                      `batch:${item.id}:existing-batch`
-                        ? arrivalFieldError.message
-                        : undefined
-                    }
-                    focusRequest={
-                      arrivalFieldError?.key ===
-                      `batch:${item.id}:existing-batch`
-                        ? arrivalFieldError.request
-                        : 0
-                    }
-                    options={options.data.batches
-                      .filter(
-                        (batch) => batch.chicken_type === item.chickenType,
-                      )
-                      .map((batch) => ({
-                        label: batch.name,
-                        value: batch.id,
-                        description: batch.hatch_date
-                          ? `Hatch date ${formatDateForDisplay(batch.hatch_date)}`
-                          : "Hatch date not set",
-                      }))}
-                    onSelect={(value) => {
-                      clearFieldError(`batch:${item.id}:existing-batch`);
-                      updateItem(item.id, { existingBatchId: value });
-                    }}
-                  />
-                  {options.data.batches.every(
-                    (batch) => batch.chicken_type !== item.chickenType,
-                  ) ? (
-                    <AppText size="small" tone="secondary">
-                      No active batch matches this chicken type. Create a new
-                      batch or add one in flock management.
-                    </AppText>
-                  ) : null}
-                </View>
-              ) : (
-                <View style={styles.inputSection}>
-                  <AppText size="small" weight="semibold">
-                    Batch name
-                  </AppText>
-                  <AppText size="small" tone="secondary">
-                    No need to think of a name. FarmTrack will generate one when
-                    the chickens arrive.
-                  </AppText>
-                  {item.customBatchName ? (
-                    <>
-                      <TextField
-                        label="Custom batch name"
-                        value={item.newBatchName}
-                        onChangeText={(value) =>
-                          updateItem(item.id, { newBatchName: value })
-                        }
-                        placeholder="Enter a name (optional)"
-                        maxLength={100}
-                      />
-                      <Button
-                        label="Use automatic name"
-                        variant="secondary"
-                        onPress={() =>
-                          updateItem(item.id, { customBatchName: false })
-                        }
-                      />
-                    </>
-                  ) : (
-                    <Button
-                      label="Name it myself"
-                      variant="secondary"
-                      onPress={() =>
-                        updateItem(item.id, { customBatchName: true })
-                      }
-                    />
-                  )}
-                  <View style={styles.numberFields}>
-                    <View style={styles.numberField}>
-                      <TextField
-                        label="Age when first received"
-                        value={item.age}
-                        ref={(input) =>
-                          bindFieldRef(`batch:${item.id}:age`, input)
-                        }
-                        error={
-                          arrivalFieldError?.key === `batch:${item.id}:age`
-                            ? arrivalFieldError.message
-                            : undefined
-                        }
-                        onChangeText={(value) => {
-                          clearFieldError(`batch:${item.id}:age`);
-                          updateItem(item.id, { age: value });
-                        }}
-                        keyboardType="number-pad"
-                        placeholder="e.g. 2"
-                      />
-                    </View>
-                    <View style={styles.numberField}>
-                      <SearchableSelectField
-                        label="Age unit"
-                        value={item.ageUnit}
-                        placeholder="Weeks"
-                        searchPlaceholder="Search age units"
-                        searchable={false}
-                        options={ageUnits.map((unit) => ({
-                          label: unit.label,
-                          value: unit.value,
-                        }))}
-                        onSelect={(value) =>
-                          updateItem(item.id, {
-                            ageUnit: value as ChickenAgeUnit,
-                          })
-                        }
-                      />
-                    </View>
-                  </View>
-                  <AppText size="small" tone="secondary">
-                    This sets the hatch date when the batch is first received.
-                    You can adjust the age on the arrival form.
-                  </AppText>
-                </View>
-              )}
               {options.data.products.find(
                 (product) => product.id === item.productId,
               ) ? (
@@ -2612,7 +2096,7 @@ function ChickenPurchaseContent() {
               <View style={styles.numberFields}>
                 <View style={styles.numberField}>
                   <TextField
-                    label="Number of chickens"
+                    label="Quantity purchased"
                     value={item.quantity}
                     ref={(input) =>
                       bindFieldRef(`batch:${item.id}:quantity`, input)
@@ -2652,183 +2136,19 @@ function ChickenPurchaseContent() {
                 </View>
               </View>
               <TextField
-                label="Batch notes (optional)"
+                label="Purchase item notes (optional)"
                 value={item.notes}
                 onChangeText={(value) => updateItem(item.id, { notes: value })}
-                placeholder="Breed, source, or other details"
+                placeholder="Add details about this order item"
               />
-              {receiveOnPurchase ? (
-                <View style={styles.allocationSection}>
-                  <AppText size="small" weight="semibold">
-                    Divide into housing blocks
-                  </AppText>
-                  {item.blockAllocations.map((allocation, allocationIndex) => {
-                    const allocationKey = `batch:${item.id}:allocation:${allocationIndex}`;
-                    const quantityKey = `${allocationKey}:quantity`;
-                    const blockKey = `${allocationKey}:block`;
-                    const block = options.data.blocks.find(
-                      (candidate) => candidate.id === allocation.blockId,
-                    );
-                    const availableCapacity = allocation.blockId
-                      ? remainingPlannedCapacity(
-                          allocation.blockId,
-                          item.id,
-                          allocationIndex,
-                        )
-                      : 0;
-                    const assignedQuantity = Number(allocation.quantity) || 0;
-                    const capacityError =
-                      allocation.blockId && assignedQuantity > availableCapacity
-                        ? `${block?.name ?? "This block"} has only ${availableCapacity} spaces left.`
-                        : undefined;
-                    return (
-                      <View
-                        key={`${item.id}-${allocationIndex}`}
-                        style={styles.allocationRow}
-                      >
-                        <View style={styles.allocationFields}>
-                          <View style={styles.allocationQuantity}>
-                            <TextField
-                              label={`Block ${allocationIndex + 1} quantity`}
-                              value={allocation.quantity}
-                              ref={(input) => bindFieldRef(quantityKey, input)}
-                              error={
-                                capacityError ??
-                                (arrivalFieldError?.key === quantityKey
-                                  ? arrivalFieldError.message
-                                  : undefined)
-                              }
-                              onChangeText={(value) => {
-                                clearFieldError(quantityKey);
-                                updateItemAllocation(item.id, allocationIndex, {
-                                  quantity: value,
-                                });
-                              }}
-                              keyboardType="number-pad"
-                              placeholder={item.quantity || "e.g. 300"}
-                            />
-                          </View>
-                          <View style={styles.allocationBlock}>
-                            <SearchableSelectField
-                              label="Housing block"
-                              value={allocation.blockId}
-                              placeholder="Choose a block"
-                              searchPlaceholder="Search housing blocks"
-                              error={
-                                arrivalFieldError?.key === blockKey
-                                  ? arrivalFieldError.message
-                                  : undefined
-                              }
-                              focusRequest={
-                                arrivalFieldError?.key === blockKey
-                                  ? arrivalFieldError.request
-                                  : 0
-                              }
-                              options={options.data.blocks
-                                .filter(
-                                  (candidate) =>
-                                    !item.blockAllocations.some(
-                                      (other, otherIndex) =>
-                                        otherIndex !== allocationIndex &&
-                                        other.blockId === candidate.id,
-                                    ),
-                                )
-                                .map((candidate) => {
-                                  const free = remainingPlannedCapacity(
-                                    candidate.id,
-                                    item.id,
-                                    allocationIndex,
-                                  );
-                                  const requestedQuantity =
-                                    Number(allocation.quantity) || 0;
-                                  const full =
-                                    free === 0 &&
-                                    candidate.id !== allocation.blockId;
-                                  const insufficient = free < requestedQuantity;
-                                  const unavailable = full || insufficient;
-                                  return {
-                                    label:
-                                      free === 0
-                                        ? `${candidate.name} (Full)`
-                                        : insufficient
-                                          ? `${candidate.name} (Only ${free.toLocaleString()} spaces left)`
-                                          : candidate.name,
-                                    value: candidate.id,
-                                    description: `${free.toLocaleString()} spaces left${insufficient ? ` · ${requestedQuantity.toLocaleString()} needed` : ""} · ${(candidate.available_capacity - free).toLocaleString()} allocated`,
-                                    disabled:
-                                      unavailable &&
-                                      candidate.id !== allocation.blockId,
-                                    danger: unavailable,
-                                  };
-                                })}
-                              onSelect={(value) => {
-                                clearFieldError(blockKey);
-                                updateItemAllocation(item.id, allocationIndex, {
-                                  blockId: value,
-                                });
-                              }}
-                            />
-                          </View>
-                        </View>
-                        {allocation.blockId ? (
-                          <AppText
-                            size="small"
-                            style={{
-                              color: capacityError
-                                ? theme.danger
-                                : theme.textSecondary,
-                            }}
-                          >
-                            {capacityError
-                              ? capacityError
-                              : `${Math.max(0, availableCapacity - assignedQuantity).toLocaleString()} spaces will remain after this batch.`}
-                          </AppText>
-                        ) : null}
-                        {item.blockAllocations.length > 1 ? (
-                          <Pressable
-                            accessibilityRole="button"
-                            accessibilityLabel={`Remove block allocation ${allocationIndex + 1}`}
-                            onPress={() =>
-                              removeItemAllocation(item.id, allocationIndex)
-                            }
-                            style={styles.removeAllocation}
-                          >
-                            <Ionicons
-                              name="trash-outline"
-                              size={17}
-                              color={theme.danger}
-                            />
-                            <AppText
-                              size="small"
-                              style={{ color: theme.danger }}
-                            >
-                              Remove block
-                            </AppText>
-                          </Pressable>
-                        ) : null}
-                      </View>
-                    );
-                  })}
-                  <Button
-                    label="Add another block"
-                    variant="secondary"
-                    onPress={() => addItemAllocation(item.id)}
-                  />
-                  <AppText size="small" tone="secondary">
-                    Housing will be recorded with this arrival. You can receive
-                    part of a batch and allocate the rest later.
-                  </AppText>
-                </View>
-              ) : (
-                <AppText size="small" tone="secondary">
-                  Housing allocations will be chosen when you record the
-                  arrival.
-                </AppText>
-              )}
+              <AppText size="small" tone="secondary">
+                Batch and housing details are set on the separate receipt form
+                when the chickens arrive.
+              </AppText>
             </Card>
           ))}
           <Button
-            label="Add another batch"
+            label="Add another item"
             variant="secondary"
             onPress={() => {
               setDiscountConfirmed(false);
@@ -3516,7 +2836,8 @@ function ChickenPurchaseContent() {
                   style={[styles.reviewItem, { borderTopColor: theme.border }]}
                 >
                   <AppText weight="semibold">
-                    Batch {index + 1}: {product?.name ?? "Chicken product"}
+                    Purchase item {index + 1}:{" "}
+                    {product?.name ?? "Chicken product"}
                   </AppText>
                   <AppText size="small" tone="secondary">
                     {chickenTypes.find(
@@ -3527,35 +2848,6 @@ function ChickenPurchaseContent() {
                     {" · "}
                     {formatCents(lineSubtotalCents, theme.currency)} subtotal
                   </AppText>
-                  <AppText size="small" tone="secondary">
-                    Batch name:{" "}
-                    {item.batchMode === "existing"
-                      ? (options.data.batches.find(
-                          (batch) => batch.id === item.existingBatchId,
-                        )?.name ?? "Choose a batch")
-                      : item.customBatchName && item.newBatchName.trim()
-                        ? `${item.newBatchName.trim()} (custom)`
-                        : "Generated automatically on arrival"}
-                  </AppText>
-                  {item.batchMode === "create" ? (
-                    <AppText size="small" tone="secondary">
-                      Age: {item.age || "Not set"} {item.ageUnit}
-                    </AppText>
-                  ) : null}
-                  {item.blockAllocations.some(
-                    (allocation) => allocation.blockId,
-                  ) ? (
-                    <AppText size="small" tone="secondary">
-                      Housing:{" "}
-                      {item.blockAllocations
-                        .filter((allocation) => allocation.blockId)
-                        .map(
-                          (allocation) =>
-                            `${options.data.blocks.find((block) => block.id === allocation.blockId)?.name ?? "Block"} (${allocation.quantity})`,
-                        )
-                        .join(" · ")}
-                    </AppText>
-                  ) : null}
                 </View>
               );
             })}
@@ -3662,12 +2954,8 @@ function ChickenPurchaseContent() {
           <Button label="Continue" onPress={goNext} />
         ) : (
           <Button
-            label={
-              receiveOnPurchase
-                ? "Record purchase & arrival"
-                : "Record purchase"
-            }
-            loading={createPurchase.isPending || createReceipt.isPending}
+            label="Record purchase"
+            loading={createPurchase.isPending}
             onPress={() => void submitPurchase()}
           />
         )}
@@ -3681,13 +2969,14 @@ function ScreenShell({ children }: { children: React.ReactNode }) {
   return (
     <KeyboardAvoidingView
       style={[styles.screen, { backgroundColor: theme.background }]}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
       <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
         <ScrollView
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
+          automaticallyAdjustKeyboardInsets
         >
           {children}
         </ScrollView>
@@ -3839,6 +3128,7 @@ function SearchableSelectField({
             <ScrollView
               keyboardShouldPersistTaps="handled"
               contentContainerStyle={styles.selectOptions}
+              automaticallyAdjustKeyboardInsets
             >
               {filteredOptions.map((option) => {
                 const isSelected = option.value === value;
@@ -4053,8 +3343,8 @@ const styles = StyleSheet.create({
   },
   progressTrack: { flexDirection: "row", gap: 5 },
   progressSegment: { flex: 1, height: 4, borderRadius: 2 },
-  stepContent: { gap: 16 },
-  sectionIntro: { gap: 3, paddingBottom: 2 },
+  stepContent: { gap: 22 },
+  sectionIntro: { gap: 6, paddingBottom: 6 },
   inputSection: { gap: 8 },
   newSupplierCard: { gap: 12 },
   supplierFormActions: {
@@ -4121,7 +3411,7 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   multilineInput: { minHeight: 88 },
-  itemCard: { gap: 14 },
+  itemCard: { gap: 19, borderRadius: 18, padding: 19 },
   itemHeading: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -4134,8 +3424,8 @@ const styles = StyleSheet.create({
     gap: 5,
     paddingHorizontal: 6,
   },
-  numberFields: { flexDirection: "row", gap: 10 },
-  numberField: { flex: 1, minWidth: 0 },
+  numberFields: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
+  numberField: { flex: 1, minWidth: 150 },
   totalRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -4146,8 +3436,10 @@ const styles = StyleSheet.create({
   },
   paymentToggle: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
+    alignItems: "flex-start",
+    gap: 14,
+    borderRadius: 16,
+    padding: 16,
   },
   reminderSection: { gap: 10 },
   reminderToggle: {
@@ -4197,8 +3489,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
   },
-  reviewCard: { gap: 13 },
-  pricingCard: { gap: 13 },
+  reviewCard: { gap: 15, borderRadius: 16, padding: 17 },
+  pricingCard: { gap: 18, borderRadius: 18, padding: 19 },
   pricingSummary: {
     gap: 10,
     borderTopWidth: 1,
@@ -4241,8 +3533,16 @@ const styles = StyleSheet.create({
   },
   reminderErrorCard: { gap: 10 },
   receiptSuccessItem: { gap: 3, paddingTop: 6 },
-  arrivalCard: { gap: 14 },
-  arrivalBatch: { gap: 10, paddingVertical: 4 },
+  arrivalCard: { gap: 17, borderRadius: 16, padding: 17 },
+  arrivalBatch: {
+    gap: 12,
+    padding: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#D8DED5",
+    borderRadius: 14,
+  },
+  arrivalQuantityContext: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  arrivalQuantityStat: { flex: 1, minWidth: 115, gap: 3 },
   allocationSection: { gap: 9 },
   allocationRow: { gap: 7 },
   allocationFields: { flexDirection: "row", alignItems: "flex-start", gap: 9 },

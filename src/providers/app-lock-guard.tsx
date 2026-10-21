@@ -96,14 +96,11 @@ export function AppLockGuard({ children }: { children: ReactNode }) {
         return;
       }
 
-      const sessionIsValid = await auth.verifyStoredSession();
-      if (sessionIsValid) {
-        setLockState((current) => ({
-          ...current,
-          shouldLockRestoredSession: false,
-          locked: false,
-        }));
-      }
+      setLockState((current) => ({
+        ...current,
+        shouldLockRestoredSession: false,
+        locked: false,
+      }));
     } catch {
       setUnlockError("Device authentication is unavailable. Try again.");
     } finally {
@@ -140,6 +137,7 @@ export function AppLockGuard({ children }: { children: ReactNode }) {
           </AppText>
           <AppText tone="secondary" style={styles.description}>
             Confirm it’s you with your fingerprint, face, or device screen lock.
+            Farm data will sync when the server is available.
           </AppText>
           {unlockError ? (
             <AppText

@@ -189,6 +189,7 @@ const detailLabels: Record<string, string> = {
   email: "Email",
   entry_count: "Entries recorded",
   expense_date: "Expense date",
+  expense_name: "What it was for",
   field: "Field",
   from_block_name: "From housing area",
   initial_payment_count: "Initial payments",
@@ -205,12 +206,15 @@ const detailLabels: Record<string, string> = {
   notes: "Notes",
   over_capacity_limit: "Capacity warning limit",
   payment_date: "Payment date",
+  payment_amount: "Payment amount",
   payment_method: "Payment method",
   payment_reference: "Payment reference",
   phone: "Phone",
   phone_number: "Phone",
   primary_color: "Primary color",
   product_name: "Product",
+  product_names: "Items purchased",
+  purchase_reference: "Purchase reference",
   quantity: "Quantity",
   quantity_delivered: "Quantity delivered",
   quantity_in_base_unit: "Equivalent quantity",
@@ -536,8 +540,33 @@ export function getActivityNarrative(activity: FarmActivity): string {
       const formattedUnit = formatUnitName(unit, details.quantity);
       return `Recorded ${[quantity, formattedUnit].filter(Boolean).join(" ")} of ${stringValue(details.product_name) ?? "inventory"} used.`;
     }
-    case "expense_recorded":
-      return `Recorded a ${humanize(stringValue(details.category) ?? "farm")} expense${amount ? ` of ${amount}` : ""}.`;
+    case "expense_recorded": {
+      const expenseName =
+        stringValue(details.expense_name) ?? stringValue(details.name);
+      const category = stringValue(details.category);
+      const eventAction = stringValue(details.event_action);
+      const paymentAmount = formatMoney(details.payment_amount ?? details.amount);
+      const transactionReference =
+        stringValue(details.transaction_reference) ?? reference;
+      if (eventAction === "payment_recorded") {
+        return `Paid${paymentAmount ? ` ${paymentAmount}` : ""}${expenseName ? ` for ${expenseName}` : " toward an expense"}${category ? ` (${category})` : ""}.`;
+      }
+      if (eventAction === "refund_recorded") {
+        return `Refunded${paymentAmount ? ` ${paymentAmount}` : ""}${expenseName ? ` for ${expenseName}` : " from an expense"}${category ? ` (${category})` : ""}.`;
+      }
+      if (eventAction === "inventory_purchase_recorded") {
+        const products =
+          stringValue(details.product_names) ?? expenseName;
+        return `Purchased ${products ?? "inventory"}${amount ? ` for ${amount}` : ""}${transactionReference ? ` · ${transactionReference}` : ""}.`;
+      }
+      if (eventAction === "updated") {
+        return `Updated ${expenseName ?? "an expense"}${category ? ` under ${category}` : ""}${amount ? ` · ${amount}` : ""}.`;
+      }
+      if (eventAction === "cancelled") {
+        return `Cancelled ${expenseName ?? "an expense"}${category ? ` under ${category}` : ""}.`;
+      }
+      return `Recorded ${expenseName ?? "an expense"}${category ? ` under ${category}` : ""}${amount ? ` for ${amount}` : ""}.`;
+    }
     case "notification_created":
       return stringValue(details.title) ?? "Sent a farm update.";
     case "sale_delivery_created":
@@ -984,12 +1013,24 @@ const activityDetailKeys: Record<string, string[]> = {
     "notes",
   ],
   expense_recorded: [
+    "expense_name",
+    "name",
+    "product_names",
+    "transaction_reference",
     "category",
     "amount",
+    "payment_amount",
+    "amount_paid",
+    "balance_due",
+    "payment_status",
     "expense_date",
+    "payment_date",
     "payment_method",
     "reference_number",
+    "purchase_reference",
     "contact_name",
+    "block_name",
+    "reason",
     "notes",
   ],
   notification_created: ["title", "message", "recipient_count"],
@@ -1053,10 +1094,13 @@ export function getActivityDetailFields(
     if (hiddenDetailKeys.has(key)) continue;
     const value = details[key];
     if (value === null || value === undefined || value === "") continue;
+    if (key === "name" && stringValue(details.expense_name)) continue;
     const formatted = formatActivityDetailValue(key, value, details);
     if (formatted) {
       const label =
-        key === "quantity_in_base_unit" && activity.type === "egg_loss_recorded"
+        activity.type === "expense_recorded" && key === "name"
+          ? "What it was for"
+          : key === "quantity_in_base_unit" && activity.type === "egg_loss_recorded"
           ? "Quantity lost"
           : detailLabels[key] ?? humanize(key);
       fields.push({ label, value: formatted });

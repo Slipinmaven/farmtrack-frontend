@@ -29,6 +29,7 @@ export default function TabLayout() {
       <Tabs
         screenOptions={({ route }) => ({
           headerShown: false,
+          sceneStyle: { backgroundColor: theme.background },
           tabBarActiveTintColor: theme.onPrimary,
           tabBarInactiveTintColor: `${theme.onPrimary}B3`,
           tabBarShowLabel: true,

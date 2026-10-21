@@ -8,4 +8,4 @@ const apiOrigin = (configuredOrigin || "http://localhost:8000").replace(
 );
 
 export const API_BASE_URL = `${apiOrigin}/api/v1`;
-export const REQUEST_TIMEOUT_MS = 15_000;
+export const REQUEST_TIMEOUT_MS = 90_000;

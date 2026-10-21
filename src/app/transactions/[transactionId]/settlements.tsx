@@ -4,10 +4,13 @@ import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Modal,
   Pressable,
+  Platform,
   ScrollView,
   StyleSheet,
+  Switch,
   TextInput,
   View,
 } from "react-native";
@@ -116,6 +119,21 @@ const paymentMethods: SettlementPaymentMethod[] = [
   "other",
 ];
 
+function requiresPaymentReference(method: SettlementPaymentMethod): boolean {
+  return method !== "cash";
+}
+
+function formatPaymentMethod(method: SettlementPaymentMethod): string {
+  switch (method) {
+    case "mpesa":
+      return "M-Pesa";
+    case "bank_transfer":
+      return "Bank transfer";
+    default:
+      return titleCase(method);
+  }
+}
+
 export default function TransactionSettlementsRoute() {
   return (
     <SessionGate>
@@ -134,6 +152,8 @@ function SettlementContent() {
     transactionType: TransactionKind;
     balanceDue: string;
     creditBalance: string;
+    accountBalanceTotal?: string;
+    accountCreditTotal?: string;
     contactName?: string;
     referenceNumber?: string;
   }>();
@@ -144,16 +164,27 @@ function SettlementContent() {
     balance_due: string;
     credit_balance: string;
   } | null>(null);
+  const [accountSnapshot, setAccountSnapshot] = useState<{
+    balanceTotal: number;
+    creditTotal: number;
+  } | null>(null);
   const balanceDue = Number(balanceSnapshot?.balance_due ?? params.balanceDue ?? 0);
   const creditBalance = Number(
     balanceSnapshot?.credit_balance ?? params.creditBalance ?? 0,
   );
   const available = balanceDue > 0 ? balanceDue : creditBalance;
-  const direction: SettlementDirection =
-    (transactionType === "sale" && balanceDue > 0) ||
-    (transactionType === "purchase" && creditBalance > 0)
-      ? "contact_to_farm"
-      : "farm_to_contact";
+  const settlementSource =
+    balanceDue > 0
+      ? "balance_due"
+      : creditBalance > 0
+        ? "credit_balance"
+        : "none";
+  const counterpartyPaysFarm =
+    (transactionType === "sale" && settlementSource === "balance_due") ||
+    (transactionType === "purchase" && settlementSource === "credit_balance");
+  const direction: SettlementDirection = counterpartyPaysFarm
+    ? "contact_to_farm"
+    : "farm_to_contact";
   const products = useProducts(user?.id, farmId);
   const settlements = useTransactionSettlements(user?.id, farmId, transactionId);
   const createSettlement = useCreateTransactionSettlement(
@@ -168,7 +199,7 @@ function SettlementContent() {
     newDraft("cash", direction),
   ]);
   const [expandedLineKey, setExpandedLineKey] = useState(lines[0].key);
-  const [recordExpanded, setRecordExpanded] = useState(false);
+  const [recordExpanded, setRecordExpanded] = useState(true);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [validationError, setValidationError] =
     useState<SettlementValidation | null>(null);
@@ -177,11 +208,11 @@ function SettlementContent() {
   const autoCashKey = lines.find((line) => line.kind === "cash")?.key;
   const autoCashAmount = Math.max(
     0,
-    available -
+    roundMoney(available -
       lines.reduce((sum, line) => {
         if (autofillFullAmount && line.key === autoCashKey) return sum;
         return sum + draftLineValue(line);
-      }, 0),
+      }, 0)),
   );
   const total = useMemo(
     () =>
@@ -205,6 +236,35 @@ function SettlementContent() {
     direction === "contact_to_farm" ? "Farm Track" : contactLabel;
   const directionColor =
     direction === "contact_to_farm" ? theme.success : theme.danger;
+  const accountBalanceTotal = Number(
+    accountSnapshot?.balanceTotal ??
+      params.accountBalanceTotal ??
+      balanceDue,
+  );
+  const accountCreditTotal = Number(
+    accountSnapshot?.creditTotal ??
+      params.accountCreditTotal ??
+      creditBalance,
+  );
+  const hasAccountTotals =
+    params.accountBalanceTotal !== undefined &&
+    params.accountCreditTotal !== undefined;
+  const accountBalanceLabel =
+    transactionType === "sale"
+      ? "Customer owes the farm"
+      : "Farm owes the supplier";
+  const accountCreditLabel =
+    transactionType === "sale"
+      ? "Farm owes the customer"
+      : "Supplier owes the farm";
+  const balanceOwedBy =
+    transactionType === "sale" ? contactLabel : "Farm Track";
+  const balanceOwedTo =
+    transactionType === "sale" ? "Farm Track" : contactLabel;
+  const creditOwedBy =
+    transactionType === "sale" ? "Farm Track" : contactLabel;
+  const creditOwedTo =
+    transactionType === "sale" ? contactLabel : "Farm Track";
 
   useEffect(() => {
     if (!validationError?.fieldKey) return;
@@ -231,6 +291,44 @@ function SettlementContent() {
     if (fieldKey === "settlement:date" || fieldKey === "settlement:reason") {
       setRecordExpanded(true);
     }
+  }
+
+  function changeLineKind(lineKey: string, kind: LineKind) {
+    const nextLine = { ...newDraft(kind, direction), key: lineKey };
+    const replacementCashLine =
+      autofillFullAmount &&
+      lineKey === autoCashKey &&
+      kind !== "cash"
+        ? newCashDraft()
+        : null;
+    setLines((current) => {
+      const updated = current.map((line) =>
+        line.key === lineKey ? nextLine : line,
+      );
+      if (replacementCashLine && !updated.some((line) => line.kind === "cash")) {
+        updated.push(replacementCashLine);
+      }
+      return updated;
+    });
+    setValidationError(null);
+  }
+
+  function removeLine(lineKey: string) {
+    const remaining = lines.filter((line) => line.key !== lineKey);
+    let replacementCashLine: CashDraft | null = null;
+    if (autofillFullAmount && !remaining.some((line) => line.kind === "cash")) {
+      replacementCashLine = newCashDraft();
+      remaining.push(replacementCashLine);
+    }
+    setLines(remaining);
+    if (expandedLineKey === lineKey) {
+      const fallback =
+        replacementCashLine ??
+        remaining.find((line) => line.key !== lineKey) ??
+        remaining[0];
+      setExpandedLineKey(fallback?.key ?? "");
+    }
+    setValidationError(null);
   }
 
   async function submit() {
@@ -263,7 +361,9 @@ function SettlementContent() {
           kind: "cash",
           amount: amount.toFixed(2),
           payment_method: line.payment_method,
-          reference_number: line.reference_number.trim() || undefined,
+          ...(line.reference_number.trim()
+            ? { reference_number: line.reference_number.trim() }
+            : {}),
         });
       } else if (line.kind === "service") {
         if (!line.description.trim() || positive(line.value) <= 0) {
@@ -520,6 +620,22 @@ function SettlementContent() {
         balance_due: result.balance_due,
         credit_balance: result.credit_balance,
       });
+      setAccountSnapshot((current) => ({
+        balanceTotal: Math.max(
+          0,
+          (current?.balanceTotal ??
+            Number(params.accountBalanceTotal ?? balanceDue)) -
+            balanceDue +
+            Number(result.balance_due),
+        ),
+        creditTotal: Math.max(
+          0,
+          (current?.creditTotal ??
+            Number(params.accountCreditTotal ?? creditBalance)) -
+            creditBalance +
+            Number(result.credit_balance),
+        ),
+      }));
       const firstLine = newDraft("cash", direction);
       setLines([firstLine]);
       setExpandedLineKey(firstLine.key);
@@ -528,7 +644,7 @@ function SettlementContent() {
       setAutofillFullAmount(true);
       await dialog.showDialog({
         title: "Settlement recorded",
-        message: `${formatMoney(result.settlement.total_value, theme.currency)} recorded. Remaining balance: ${formatMoney(Math.max(Number(result.balance_due), Number(result.credit_balance)), theme.currency)}.`,
+        message: `${formatMoney(result.settlement.total_value, theme.currency)} recorded. For this transaction, ${balanceOwedBy} owes ${balanceOwedTo} ${formatMoney(result.balance_due, theme.currency)}; ${creditOwedBy} owes ${creditOwedTo} ${formatMoney(result.credit_balance, theme.currency)}.`,
         tone: "success",
       });
     } catch (error: unknown) {
@@ -541,45 +657,164 @@ function SettlementContent() {
   }
 
   return (
-    <SafeAreaView
+    <KeyboardAvoidingView
       style={[styles.screen, { backgroundColor: theme.background }]}
-      edges={["top", "bottom"]}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
-      <ScrollView contentContainerStyle={styles.content}>
+      <SafeAreaView
+        style={styles.screen}
+        edges={["top", "bottom"]}
+      >
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        automaticallyAdjustKeyboardInsets
+      >
         <FarmPageHeader title="Settle balance" showBack />
         <View
           style={[
-            styles.directionCard,
-            { backgroundColor: `${directionColor}18`, borderLeftColor: directionColor },
+            styles.balanceHero,
+            { backgroundColor: theme.backgroundElement, borderColor: theme.border },
           ]}
         >
-          <AppText size="small" weight="semibold" style={{ color: directionColor }}>
-            {direction === "contact_to_farm"
-              ? "PAYMENT COMING IN"
-              : "PAYMENT GOING OUT"}
-          </AppText>
-          <View style={styles.directionFlow}>
-            <View style={styles.directionParty}>
-              <AppText size="small" tone="secondary">FROM</AppText>
-              <AppText weight="semibold">{payer}</AppText>
-            </View>
-            <Ionicons name="arrow-forward" size={20} color={directionColor} />
-            <View style={styles.directionParty}>
-              <AppText size="small" tone="secondary">TO</AppText>
-              <AppText weight="semibold">{payee}</AppText>
+          <View style={styles.balanceHeroTop}>
+            <View style={styles.balanceHeroTitle}>
+              <View
+                style={[
+                  styles.balanceHeroIcon,
+                  {
+                    backgroundColor: `${isAvailable ? directionColor : theme.success}16`,
+                  },
+                ]}
+              >
+                <Ionicons
+                name={isAvailable ? "swap-horizontal" : "checkmark"}
+                  size={19}
+                color={isAvailable ? directionColor : theme.success}
+                />
+              </View>
+              <View style={styles.grow}>
+              <AppText size="small" weight="semibold" style={{ color: isAvailable ? directionColor : theme.success }}>
+                {isAvailable ? `${payer} pays ${payee}` : "No balance currently due"}
+                </AppText>
+                <AppText size="small" tone="secondary">
+                {isAvailable
+                  ? "Direction is based on which side owes value on this transaction."
+                  : "This transaction has no outstanding balance or overpayment."}
+              </AppText>
+              </View>
             </View>
           </View>
-          <AppText size="heading" weight="semibold" style={{ color: directionColor }}>
+          {params.referenceNumber ? (
+            <View style={[styles.referenceBadge, { backgroundColor: theme.backgroundSelected }]}>
+              <AppText size="small" tone="secondary">REF</AppText>
+              <AppText
+                size="small"
+                weight="semibold"
+                numberOfLines={1}
+                ellipsizeMode="middle"
+                style={styles.referenceValue}
+              >
+                {params.referenceNumber}
+              </AppText>
+            </View>
+          ) : null}
+          <AppText
+            size="title"
+            weight="semibold"
+            style={[
+              styles.balanceAmount,
+              { color: isAvailable ? theme.text : theme.textSecondary },
+            ]}
+          >
             {isAvailable
-              ? formatMoney(available, theme.currency)
+              ? formatMoneyWithBreaks(available, theme.currency)
               : "No balance to settle"}
           </AppText>
-          {params.referenceNumber ? (
-            <AppText size="small" tone="secondary">
-              {`${titleCase(transactionType)} · ${params.referenceNumber}`}
-            </AppText>
+          {isAvailable ? (
+            <>
+              <View style={[styles.balanceDivider, { backgroundColor: theme.border }]} />
+              <View style={styles.directionFlow}>
+                <View style={styles.directionParty}>
+                  <AppText size="small" tone="secondary">FROM</AppText>
+                  <AppText weight="semibold">{payer}</AppText>
+                </View>
+                <View style={[styles.flowIcon, { backgroundColor: `${directionColor}12` }]}>
+                  <Ionicons name="arrow-forward" size={17} color={directionColor} />
+                </View>
+                <View style={[styles.directionParty, styles.payeeParty]}>
+                  <AppText size="small" tone="secondary">TO</AppText>
+                  <AppText weight="semibold">{payee}</AppText>
+                </View>
+              </View>
+              <AppText size="small" tone="secondary">
+                {settlementSource === "balance_due"
+                  ? `${balanceOwedBy} owes ${balanceOwedTo} on this transaction.`
+                  : `${creditOwedBy} owes ${creditOwedTo} through an overpayment or return credit.`}
+              </AppText>
+            </>
           ) : null}
         </View>
+
+        <Card style={styles.accountSnapshotCard}>
+          <View style={styles.accountSnapshotHeading}>
+            <View
+              style={[
+                styles.accountSnapshotIcon,
+                { backgroundColor: `${theme.secondary}14` },
+              ]}
+            >
+              <Ionicons
+                name="people-outline"
+                size={19}
+                color={theme.secondary}
+              />
+            </View>
+            <View style={styles.grow}>
+              <AppText weight="semibold">
+                {contactLabel} account overview
+              </AppText>
+              <AppText size="small" tone="secondary">
+                {hasAccountTotals
+                  ? `All open transactions with this ${transactionType === "sale" ? "customer" : "supplier"}, not just this one.`
+                  : "Account-wide totals were not provided; these figures reflect this transaction."}
+              </AppText>
+            </View>
+          </View>
+          <View
+            style={[
+              styles.accountSnapshotMetric,
+              { backgroundColor: `${theme.danger}0A` },
+            ]}
+          >
+            <AppText size="small" tone="secondary">
+              {accountBalanceLabel}
+            </AppText>
+            <AppText
+              weight="semibold"
+              style={[styles.accountSnapshotAmount, { color: theme.danger }]}
+            >
+              {formatMoneyWithBreaks(accountBalanceTotal, theme.currency)}
+            </AppText>
+          </View>
+          <View
+            style={[
+              styles.accountSnapshotMetric,
+              { backgroundColor: `${theme.primary}0A` },
+            ]}
+          >
+            <AppText size="small" tone="secondary">
+              {accountCreditLabel} (credit / overpayment)
+            </AppText>
+            <AppText
+              weight="semibold"
+              style={[styles.accountSnapshotAmount, { color: theme.primary }]}
+            >
+              {formatMoneyWithBreaks(accountCreditTotal, theme.currency)}
+            </AppText>
+          </View>
+        </Card>
 
         {products.isError ? (
           <Card style={[styles.section, { borderColor: theme.border }]}>
@@ -610,44 +845,64 @@ function SettlementContent() {
           <>
             <Card style={styles.section}>
               <View style={styles.sectionHeading}>
-                <View style={[styles.sectionIcon, { backgroundColor: `${theme.primary}18` }]}>
-                  <Ionicons name="list-outline" size={20} color={theme.primary} />
-                </View>
                 <View style={styles.grow}>
-                  <AppText weight="semibold">Settlement items</AppText>
-                </View>
-              </View>
-              <View style={styles.autofillRow}>
-                <View style={styles.grow}>
-                  <AppText weight="semibold">Use remaining balance as cash</AppText>
+                  <AppText size="heading" weight="semibold">How is this balance being settled?</AppText>
                   <AppText size="small" tone="secondary">
-                    {formatMoney(autoCashAmount, theme.currency)}
+                    Add cash, goods, or services. You can combine different methods.
                   </AppText>
                 </View>
-                <Choice
-                  label={autofillFullAmount ? "On" : "Off"}
-                  selected={autofillFullAmount}
-                  onPress={() => {
-                    if (autofillFullAmount) {
-                      setLines((current) =>
-                        current.map((candidate) =>
-                          candidate.kind === "cash" && candidate.key === autoCashKey
-                            ? { ...candidate, amount: autoCashAmount.toFixed(2) }
-                            : candidate,
-                        ),
-                      );
-                    }
-                    setAutofillFullAmount((current) => !current);
-                  }}
-                />
+                <AppText size="small" tone="secondary">
+                  {lines.length} {lines.length === 1 ? "item" : "items"}
+                </AppText>
+              </View>
+              <View style={[styles.autofillCard, { backgroundColor: theme.background, borderColor: theme.border }]}>
+                <View style={styles.grow}>
+                  <AppText weight="semibold">Cover the full balance</AppText>
+                  <AppText size="small" tone="secondary">
+                    Payment adjusts after goods or services are added
+                  </AppText>
+                </View>
+                <View style={styles.autofillControl}>
+                  <AppText size="small" weight="semibold" style={{ color: autofillFullAmount ? theme.success : theme.textSecondary }}>
+                    {autofillFullAmount
+                      ? `Total ${formatMoney(available, theme.currency)}`
+                      : "Partial"}
+                  </AppText>
+                  <Switch
+                    accessibilityLabel="Cover the full available balance"
+                    value={autofillFullAmount}
+                    onValueChange={(value) => {
+                      if (value && !autoCashKey) {
+                        const cashLine = newDraft("cash", direction);
+                        setLines((current) => [...current, cashLine]);
+                        setExpandedLineKey(cashLine.key);
+                      }
+                      if (!value && autoCashKey) {
+                        setLines((current) =>
+                          current.map((candidate) =>
+                            candidate.kind === "cash" && candidate.key === autoCashKey
+                              ? { ...candidate, amount: autoCashAmount.toFixed(2) }
+                              : candidate,
+                          ),
+                        );
+                      }
+                      setAutofillFullAmount(value);
+                    }}
+                    trackColor={{ false: theme.border, true: `${theme.primary}80` }}
+                    thumbColor={autofillFullAmount ? theme.primary : theme.backgroundElement}
+                  />
+                </View>
               </View>
               {lines.map((line, index) => (
                 <View
                   key={line.key}
                   style={[
                     styles.lineCard,
-                    { borderTopColor: theme.border },
-                    index > 0 && styles.lineDivider,
+                    index > 0 && {
+                      borderTopColor: theme.border,
+                      borderTopWidth: StyleSheet.hairlineWidth,
+                      paddingTop: 14,
+                    },
                   ]}
                 >
                   <View style={styles.lineHeader}>
@@ -674,10 +929,17 @@ function SettlementContent() {
                             <AppText weight="semibold">
                               {line.kind === "goods"
                                 ? products.data?.find((product) => product.id === line.product_id)?.name ?? "Goods"
-                                : titleCase(line.kind)}
+                                : line.kind === "cash"
+                                  ? formatPaymentMethod(line.payment_method)
+                                  : line.description.trim() || "Service"}
                             </AppText>
                             <AppText size="small" tone="secondary">
-                              {formatMoney(draftLineValue(line), theme.currency)}
+                              {formatMoney(
+                                autofillFullAmount && line.kind === "cash" && line.key === autoCashKey
+                                  ? autoCashAmount
+                                  : draftLineValue(line),
+                                theme.currency,
+                              )}
                             </AppText>
                           </View>
                           <Ionicons
@@ -698,15 +960,7 @@ function SettlementContent() {
                         accessibilityLabel={`Remove settlement item ${index + 1}`}
                         hitSlop={8}
                         onPress={() => {
-                          setLines((current) =>
-                            current.filter((candidate) => candidate.key !== line.key),
-                          )
-                          if (expandedLineKey === line.key) {
-                            setExpandedLineKey(
-                              lines.find((candidate) => candidate.key !== line.key)?.key ??
-                                "",
-                            );
-                          }
+                          removeLine(line.key);
                         }}
                       >
                         <Ionicons name="trash-outline" size={20} color={theme.danger} />
@@ -721,25 +975,14 @@ function SettlementContent() {
                             key={kind}
                             label={titleCase(kind)}
                             selected={line.kind === kind}
-                            onPress={() =>
-                              setLines((current) =>
-                                current.map((candidate) =>
-                                  candidate.key === line.key
-                                    ? {
-                                        ...newDraft(kind, direction),
-                                        key: candidate.key,
-                                      }
-                                    : candidate,
-                                ),
-                              )
-                            }
+                            onPress={() => changeLineKind(line.key, kind)}
                           />
                         ))}
                       </View>
                       {line.kind === "cash" ? (
                         <>
                           <TextField
-                            label="Cash amount"
+                            label="Payment amount"
                             style={styles.fieldInput}
                             ref={inputRef(`${line.key}:amount`)}
                             error={
@@ -760,6 +1003,11 @@ function SettlementContent() {
                             placeholder="0.00"
                             editable={!(autofillFullAmount && line.key === autoCashKey)}
                           />
+                          {autofillFullAmount && line.key === autoCashKey ? (
+                            <AppText size="small" tone="secondary">
+                              This payment adjusts to cover the balance after other settlement items.
+                            </AppText>
+                          ) : null}
                           <AppText size="small" weight="semibold">
                             Payment method
                           </AppText>
@@ -767,31 +1015,60 @@ function SettlementContent() {
                             {paymentMethods.map((method) => (
                               <Choice
                                 key={method}
-                                label={titleCase(method.replace("_", " "))}
+                                label={formatPaymentMethod(method)}
                                 selected={line.payment_method === method}
-                                onPress={() =>
+                                onPress={() => {
                                   updateLine(line.key, (draft) =>
                                     draft.kind === "cash"
-                                      ? { ...draft, payment_method: method }
+                                      ? { ...draft, payment_method: method, reference_number: "" }
                                       : draft,
-                                  )
-                                }
+                                  );
+                                }}
                               />
                             ))}
                           </View>
-                          <TextField
-                            label="Payment reference (optional)"
-                            style={styles.fieldInput}
-                            value={line.reference_number}
-                            onChangeText={(reference_number) =>
-                              updateLine(line.key, (draft) =>
-                                draft.kind === "cash"
-                                  ? { ...draft, reference_number }
-                                  : draft,
-                              )
-                            }
-                            placeholder="Receipt, M-Pesa code, etc."
-                          />
+                          {requiresPaymentReference(line.payment_method) ? (
+                            <>
+                              <TextField
+                                label={
+                                  line.payment_method === "mpesa"
+                                    ? "M-Pesa transaction code (optional)"
+                                    : line.payment_method === "bank_transfer"
+                                      ? "Bank transfer reference (optional)"
+                                      : "Transaction reference (optional)"
+                                }
+                                style={styles.fieldInput}
+                                ref={inputRef(`${line.key}:reference`)}
+                                error={
+                                  validationError?.fieldKey === `${line.key}:reference`
+                                    ? validationError.message
+                                    : undefined
+                                }
+                                value={line.reference_number}
+                                onChangeText={(reference_number) => {
+                                  setValidationError(null);
+                                  updateLine(line.key, (draft) =>
+                                    draft.kind === "cash"
+                                      ? { ...draft, reference_number }
+                                      : draft,
+                                  );
+                                }}
+                                placeholder={
+                                  line.payment_method === "mpesa"
+                                    ? "e.g. QHX7ABC123"
+                                    : line.payment_method === "bank_transfer"
+                                      ? "Enter bank reference"
+                                      : "Enter reference if available"
+                                }
+                                autoCapitalize="characters"
+                                autoCorrect={false}
+                                maxLength={100}
+                              />
+                              <AppText size="small" tone="secondary">
+                                Add a reference if you have one for this {line.payment_method === "mpesa" ? "M-Pesa payment" : line.payment_method === "bank_transfer" ? "bank transfer" : "transaction"}.
+                              </AppText>
+                            </>
+                          ) : null}
                         </>
                       ) : null}
                       {line.kind === "service" ? (
@@ -883,7 +1160,7 @@ function SettlementContent() {
               />
             </Card>
 
-            <Card style={styles.section}>
+            <Card style={[styles.section, styles.historyCard]}>
               <Pressable
                 accessibilityRole="button"
                 accessibilityState={{ expanded: recordExpanded }}
@@ -894,7 +1171,12 @@ function SettlementContent() {
                   <Ionicons name="document-text-outline" size={20} color={theme.primary} />
                 </View>
                 <View style={styles.grow}>
-                  <AppText weight="semibold">Settlement record</AppText>
+                  <AppText weight="semibold">Date and details</AppText>
+                  {!recordExpanded ? (
+                    <AppText size="small" tone="secondary">
+                      {formatDate(settlementDate)} · {reason.trim() || "Add a reason"}
+                    </AppText>
+                  ) : null}
                 </View>
                 <Ionicons
                   name={recordExpanded ? "chevron-up" : "chevron-down"}
@@ -946,37 +1228,62 @@ function SettlementContent() {
               ) : null}
             </Card>
 
-            <Card style={[styles.totalCard, { borderColor: theme.border }]}>
-              <View style={styles.totalRow}>
-                <View style={styles.grow}>
-                  <AppText size="small" tone="secondary">Settlement total</AppText>
-                  <AppText
-                    size="heading"
-                    weight="semibold"
-                    style={total > available ? { color: theme.danger } : undefined}
-                  >
-                    {formatMoney(total, theme.currency)}
-                  </AppText>
+            <Card style={[styles.totalCard, { backgroundColor: theme.backgroundElement, borderColor: theme.border }]}>
+              <View style={styles.totalHeading}>
+                <View>
+                  <AppText weight="semibold">Settlement summary</AppText>
+                  <AppText size="small" tone="secondary">Review before recording</AppText>
                 </View>
-                <View style={styles.grow}>
-                  <AppText size="small" tone="secondary">Balance after settlement</AppText>
-                  <AppText
-                    size="heading"
-                    weight="semibold"
-                    style={
-                      total === available
-                        ? { color: theme.success }
-                        : undefined
-                    }
-                  >
-                    {formatMoney(Math.max(available - total, 0), theme.currency)}
+                <View style={[styles.totalIcon, { backgroundColor: `${total > available ? theme.danger : theme.primary}14` }]}>
+                  <Ionicons
+                    name={total > available ? "alert-circle-outline" : "calculator-outline"}
+                    size={19}
+                    color={total > available ? theme.danger : theme.primary}
+                  />
+                </View>
+              </View>
+              <View style={[styles.totalBreakdown, { backgroundColor: theme.background, borderColor: theme.border }]}>
+                <View style={styles.totalRow}>
+                  <View style={styles.grow}>
+                    <AppText size="small" tone="secondary">Settlement total</AppText>
+                    <AppText
+                      size="heading"
+                      weight="semibold"
+                      style={total > available ? { color: theme.danger } : undefined}
+                    >
+                      {formatMoney(total, theme.currency)}
+                    </AppText>
+                  </View>
+                  <View style={styles.grow}>
+                    <AppText size="small" tone="secondary">Balance after settlement</AppText>
+                    <AppText
+                      size="heading"
+                      weight="semibold"
+                      style={
+                        total === available
+                          ? { color: theme.success }
+                          : undefined
+                      }
+                    >
+                      {formatMoney(Math.max(available - total, 0), theme.currency)}
+                    </AppText>
+                  </View>
+                </View>
+                <View style={[styles.totalDivider, { backgroundColor: theme.border }]} />
+                <View style={styles.totalRow}>
+                  <AppText size="small" tone="secondary">Available balance</AppText>
+                  <AppText size="small" weight="semibold">
+                    {formatMoney(available, theme.currency)}
                   </AppText>
                 </View>
               </View>
               {total > available ? (
-                <AppText size="small" style={{ color: theme.danger }}>
-                  Total is greater than the available balance.
-                </AppText>
+                <View style={[styles.overageNotice, { backgroundColor: `${theme.danger}10` }]}>
+                  <Ionicons name="alert-circle-outline" size={18} color={theme.danger} />
+                  <AppText size="small" style={[styles.grow, { color: theme.danger }]}>
+                    Total is greater than the available balance.
+                  </AppText>
+                </View>
               ) : null}
               <Button
                 label="Record settlement"
@@ -995,13 +1302,18 @@ function SettlementContent() {
             onPress={() => setHistoryExpanded((current) => !current)}
             style={styles.accordionHeader}
           >
-            <View style={styles.grow}>
-              <AppText weight="semibold">Settlement history</AppText>
-              {!historyExpanded && settlements.data?.length ? (
-                <AppText size="small" tone="secondary">
-                  {settlements.data.length} previous {settlements.data.length === 1 ? "entry" : "entries"}
-                </AppText>
-              ) : null}
+            <View style={styles.historyHeading}>
+              <View style={[styles.historyIcon, { backgroundColor: theme.backgroundSelected }]}>
+                <Ionicons name="time-outline" size={19} color={theme.primary} />
+              </View>
+              <View style={styles.grow}>
+                <AppText weight="semibold">Settlement history</AppText>
+                {!historyExpanded && settlements.data?.length ? (
+                  <AppText size="small" tone="secondary">
+                    {settlements.data.length} previous {settlements.data.length === 1 ? "entry" : "entries"}
+                  </AppText>
+                ) : null}
+              </View>
             </View>
             <Ionicons
               name={historyExpanded ? "chevron-up" : "chevron-down"}
@@ -1027,7 +1339,7 @@ function SettlementContent() {
               settlements.data.map((record) => (
                 <View
                   key={record.id}
-                  style={[styles.historyItem, { borderColor: theme.border }]}
+                  style={[styles.historyItem, { borderColor: theme.border, backgroundColor: theme.background }]}
                 >
                   <View style={styles.historyTop}>
                     <AppText weight="semibold">
@@ -1053,7 +1365,8 @@ function SettlementContent() {
           ) : null}
         </Card>
       </ScrollView>
-    </SafeAreaView>
+      </SafeAreaView>
+    </KeyboardAvoidingView>
   );
 
   function updateLine(key: string, update: (line: DraftLine) => DraftLine) {
@@ -1273,6 +1586,7 @@ function GoodsFields({
                 <ScrollView
                   style={styles.modalOptionList}
                   keyboardShouldPersistTaps="handled"
+                  automaticallyAdjustKeyboardInsets
                 >
                   {filteredProducts.length ? filteredProducts.map((product) => (
                     <Pressable
@@ -1993,6 +2307,7 @@ function SearchableChickenPicker({
                 <ScrollView
                   style={styles.modalOptionList}
                   keyboardShouldPersistTaps="handled"
+                  automaticallyAdjustKeyboardInsets
                 >
                   {options.map((option) => (
                     <Pressable
@@ -2178,9 +2493,13 @@ function newDraft(
   if (kind === "service") {
     return { key, kind, description: "", value: "" };
   }
+  return newCashDraft();
+}
+
+function newCashDraft(): CashDraft {
   return {
-    key,
-    kind,
+    key: `${Date.now()}-${Math.random()}`,
+    kind: "cash",
     amount: "",
     payment_method: "cash",
     reference_number: "",
@@ -2280,6 +2599,10 @@ function formatMoney(value: number | string, currency: string) {
   })}`;
 }
 
+function formatMoneyWithBreaks(value: number | string, currency: string) {
+  return formatMoney(value, currency).replace(/,/g, ",\u200B");
+}
+
 function describeLine(line: {
   kind: string;
   value: string;
@@ -2339,28 +2662,106 @@ const chickenTypes: ChickenType[] = [
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   content: {
-    padding: 16,
-    gap: 14,
-    paddingBottom: 36,
+    padding: 15,
+    gap: 12,
+    paddingBottom: 72,
     width: "100%",
     maxWidth: 760,
     alignSelf: "center",
   },
-  directionCard: {
-    padding: 16,
+  balanceHero: {
+    padding: 17,
+    gap: 11,
+    borderRadius: 18,
+    borderWidth: 1,
+    shadowColor: "#14211B",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.06,
+    shadowRadius: 16,
+    elevation: 3,
+  },
+  accountSnapshotCard: {
+    gap: 10,
+    padding: 14,
+    borderRadius: 15,
+  },
+  accountSnapshotHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingBottom: 2,
+  },
+  accountSnapshotIcon: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+  },
+  accountSnapshotMetric: {
+    minWidth: 0,
+    gap: 3,
+    padding: 11,
+    borderRadius: 11,
+  },
+  accountSnapshotAmount: {
+    width: "100%",
+    minWidth: 0,
+    flexShrink: 1,
+    flexWrap: "wrap",
+  },
+  balanceHeroTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     gap: 12,
+  },
+  balanceHeroTitle: { flexDirection: "row", alignItems: "center", gap: 11, flex: 1 },
+  balanceHeroIcon: {
+    width: 38,
+    height: 38,
+    alignItems: "center",
+    justifyContent: "center",
     borderRadius: 14,
-    borderLeftWidth: 4,
+  },
+  referenceBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    alignSelf: "flex-start",
+    maxWidth: "100%",
+    minWidth: 0,
+    borderRadius: 9,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+  },
+  referenceValue: { flexShrink: 1, minWidth: 0 },
+  balanceAmount: {
+    width: "100%",
+    minWidth: 0,
+    flexShrink: 1,
+    flexWrap: "wrap",
+    fontSize: 26,
+    lineHeight: 33,
+    letterSpacing: -0.4,
+  },
+  balanceDivider: { height: StyleSheet.hairlineWidth, marginVertical: 1 },
+  flowIcon: {
+    width: 30,
+    height: 30,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 10,
   },
   directionFlow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    flexWrap: "wrap",
+    gap: 10,
   },
-  directionParty: { flex: 1, minWidth: 100, gap: 3 },
+  directionParty: { flex: 1, minWidth: 0, gap: 3 },
+  payeeParty: { alignItems: "flex-end" },
   grow: { flex: 1, gap: 6 },
-  section: { padding: 16, gap: 16, borderRadius: 14 },
+  section: { padding: 15, gap: 13, borderRadius: 16 },
   sectionHeading: { flexDirection: "row", alignItems: "center", gap: 12 },
   accordionHeader: {
     minHeight: 44,
@@ -2369,11 +2770,17 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   sectionBody: { gap: 14, paddingTop: 12 },
-  autofillRow: {
+  autofillCard: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    paddingVertical: 4,
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 11,
+  },
+  autofillControl: {
+    alignItems: "flex-end",
+    gap: 1,
   },
   sectionIcon: {
     height: 40,
@@ -2382,8 +2789,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  lineCard: { paddingVertical: 12, gap: 14 },
-  lineDivider: { borderTopWidth: StyleSheet.hairlineWidth },
+  lineCard: { gap: 11 },
   lineHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   lineTitle: { flexDirection: "row", alignItems: "center", gap: 10, flex: 1 },
   expandLine: {
@@ -2391,10 +2797,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
-    minHeight: 40,
+    minHeight: 36,
   },
-  lineEditor: { gap: 14 },
-  fieldInput: { borderWidth: 1, borderRadius: 8, minHeight: 48 },
+  lineEditor: { gap: 11 },
+  fieldInput: { borderWidth: 1, borderRadius: 10, minHeight: 48 },
   lineNumber: {
     width: 32,
     height: 32,
@@ -2402,8 +2808,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  pills: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  choice: { paddingHorizontal: 12, paddingVertical: 9, borderRadius: 20 },
+  pills: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
+  choice: { paddingHorizontal: 10, paddingVertical: 7, borderRadius: 18 },
   selectedItem: {
     flexDirection: "row",
     alignItems: "center",
@@ -2434,7 +2840,34 @@ const styles = StyleSheet.create({
   placementGroup: { gap: 12, paddingVertical: 12 },
   placementHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   allocationTotal: { flexDirection: "row", justifyContent: "space-between" },
-  totalCard: { padding: 16, gap: 14, borderRadius: 14 },
+  totalCard: {
+    padding: 15,
+    gap: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+  },
+  totalHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  totalIcon: {
+    width: 38,
+    height: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+  },
+  totalBreakdown: { gap: 10, borderWidth: 1, borderRadius: 12, padding: 11 },
+  totalDivider: { height: StyleSheet.hairlineWidth },
+  overageNotice: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 9,
+    borderRadius: 12,
+    padding: 11,
+  },
   totalRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -2504,6 +2937,9 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   pickerPager: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  historyItem: { paddingVertical: 12, gap: 6, borderBottomWidth: StyleSheet.hairlineWidth },
-  historyTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  historyCard: { marginBottom: 6 },
+  historyHeading: { flexDirection: "row", alignItems: "center", gap: 11, flex: 1 },
+  historyIcon: { width: 38, height: 38, alignItems: "center", justifyContent: "center", borderRadius: 12 },
+  historyItem: { padding: 13, gap: 7, borderWidth: 1, borderRadius: 13, marginTop: 3 },
+  historyTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 10 },
 });

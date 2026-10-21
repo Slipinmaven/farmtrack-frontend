@@ -159,8 +159,17 @@ async function exportPdf(data: ReportExportData, filename: string): Promise<void
     return;
   }
 
-  const result = await Print.printToFileAsync({ html });
-  await shareFile(result.uri, `${filename}.pdf`, "application/pdf");
+  const result = await Print.printToFileAsync({ html, base64: true });
+  if (!result.base64) {
+    throw new Error("The PDF renderer did not return the generated file data.");
+  }
+  if (!Paths.cache) {
+    throw new Error("The device file cache is not available for report export.");
+  }
+  const pdfFile = new File(Paths.cache, `${filename}.pdf`);
+  pdfFile.create({ intermediates: true, overwrite: true });
+  pdfFile.write(result.base64, { encoding: "base64" });
+  await shareFile(pdfFile.uri, `${filename}.pdf`, "application/pdf");
 }
 
 async function downloadWebPdf(html: string, filename: string): Promise<void> {

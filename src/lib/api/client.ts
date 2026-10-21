@@ -3,6 +3,7 @@ import { create, isAxiosError, type InternalAxiosRequestConfig } from "axios";
 import type { AuthenticationResponse } from "@/features/auth/types";
 import { API_BASE_URL, REQUEST_TIMEOUT_MS } from "@/lib/config";
 import { normalizeApiError } from "@/lib/api/errors";
+import { beginApiRequest, endApiRequest } from "@/lib/api/request-status";
 import { getLoginDeviceMetadata } from "@/lib/storage/device";
 import {
   clearSession,
@@ -14,6 +15,7 @@ import {
 
 type RetriableRequest = InternalAxiosRequestConfig & {
   farmTrackRetried?: boolean;
+  farmTrackStatusTracked?: boolean;
 };
 
 export const apiClient = create({
@@ -28,12 +30,29 @@ let refreshPromise: Promise<SessionCredentials> | null = null;
 apiClient.interceptors.request.use(async (config) => {
   const session = await readSession();
   if (session) config.headers.Authorization = `Bearer ${session.accessToken}`;
+  const trackedConfig = config as RetriableRequest;
+  trackedConfig.farmTrackStatusTracked = true;
+  beginApiRequest();
   return config;
 });
 
 apiClient.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    const config = response.config as RetriableRequest;
+    if (config.farmTrackStatusTracked) {
+      config.farmTrackStatusTracked = false;
+      endApiRequest();
+    }
+    return response;
+  },
   async (error: unknown) => {
+    if (isAxiosError(error) && error.config) {
+      const failedConfig = error.config as RetriableRequest;
+      if (failedConfig.farmTrackStatusTracked) {
+        failedConfig.farmTrackStatusTracked = false;
+        endApiRequest();
+      }
+    }
     if (!isAxiosError(error)) throw normalizeApiError(error);
     const config = error.config as RetriableRequest | undefined;
     const isAuthRequest = ["/auth/login", "/auth/refresh", "/auth/logout"].some(

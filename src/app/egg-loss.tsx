@@ -226,6 +226,7 @@ function EggLossContent() {
         <ScrollView
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
+          automaticallyAdjustKeyboardInsets
         >
           <FarmPageHeader
             title={stage === "select" ? "Record egg loss" : "Review egg loss"}

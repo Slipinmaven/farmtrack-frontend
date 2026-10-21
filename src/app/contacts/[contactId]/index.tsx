@@ -1,6 +1,13 @@
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams, type Href } from "expo-router";
-import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import {
+  Linking,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { LoadingState } from "@/components/feedback/loading-state";
@@ -75,6 +82,24 @@ function ContactDetailsContent() {
     }
   }
 
+  async function openContactLink(url: string, target: string) {
+    try {
+      if (!(await Linking.canOpenURL(url))) {
+        throw new Error(`No compatible ${target} app is available.`);
+      }
+      await Linking.openURL(url);
+    } catch (error: unknown) {
+      await dialog.showDialog({
+        title: `Couldn’t open ${target}`,
+        message:
+          error instanceof Error
+            ? error.message
+            : `No compatible ${target} app could open this link.`,
+        tone: "error",
+      });
+    }
+  }
+
   if (contactQuery.isLoading) return <LoadingState label="Loading contact" />;
 
   return (
@@ -82,7 +107,19 @@ function ContactDetailsContent() {
       style={[styles.screen, { backgroundColor: theme.background }]}
       edges={["top", "bottom"]}
     >
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={
+          <RefreshControl
+            refreshing={contactQuery.isRefetching || historyQuery.isRefetching}
+            onRefresh={() =>
+              void Promise.all([contactQuery.refetch(), historyQuery.refetch()])
+            }
+            tintColor={theme.primary}
+            colors={[theme.primary]}
+          />
+        }
+      >
         <FarmPageHeader title="Contact details" showBack backHref="/contacts" />
         {contactQuery.isError ? (
           <Card style={styles.state}>
@@ -99,49 +136,103 @@ function ContactDetailsContent() {
         ) : null}
         {contact ? (
           <>
-            <View style={styles.titleRow}>
-              <View style={[styles.avatar, { backgroundColor: theme.primary }]}>
-                <AppText
-                  size="heading"
-                  weight="semibold"
-                  style={{ color: theme.onPrimary }}
+            <Card
+              style={[
+                styles.profileCard,
+                { borderColor: theme.border, backgroundColor: theme.backgroundElement },
+              ]}
+            >
+              <View
+                style={[
+                  styles.profileAccent,
+                  { backgroundColor: theme.primary },
+                ]}
+              />
+              <View style={styles.profileContent}>
+                <View
+                  style={[
+                    styles.avatar,
+                    { backgroundColor: theme.backgroundSelected },
+                  ]}
                 >
-                  {contact.name.trim().slice(0, 1).toUpperCase()}
-                </AppText>
+                  <AppText
+                    size="heading"
+                    weight="semibold"
+                    style={{ color: theme.primary }}
+                  >
+                    {contactInitials(contact.name)}
+                  </AppText>
+                </View>
+                <View style={styles.titleCopy}>
+                  <AppText size="small" tone="secondary">
+                    {farm.selectedFarm?.name ?? "Farm"} · Contact
+                  </AppText>
+                  <AppText
+                    size="title"
+                    weight="semibold"
+                    style={styles.contactName}
+                  >
+                    {contact.name}
+                  </AppText>
+                  <View style={styles.roles}>
+                    {contact.roles.map((role) => (
+                      <ContactRoleBadge key={role} role={role} />
+                    ))}
+                  </View>
+                </View>
               </View>
-              <View style={styles.titleCopy}>
-                <AppText size="small" tone="secondary">
-                  {farm.selectedFarm?.name ?? "Farm"}
-                </AppText>
-                <AppText
-                  size="title"
-                  weight="semibold"
-                  style={styles.contactName}
+            </Card>
+
+            <Card style={[styles.section, styles.informationCard]}>
+              <View style={styles.sectionHeading}>
+                <View style={styles.sectionHeadingCopy}>
+                  <AppText size="heading" weight="semibold">
+                    Contact information
+                  </AppText>
+                  <AppText size="small" tone="secondary">
+                    Details for getting in touch.
+                  </AppText>
+                </View>
+                <View
+                  style={[
+                    styles.sectionIcon,
+                    { backgroundColor: theme.backgroundSelected },
+                  ]}
                 >
-                  {contact.name}
-                </AppText>
+                  <Ionicons
+                    name="person-outline"
+                    size={18}
+                    color={theme.primary}
+                  />
+                </View>
               </View>
-            </View>
-
-            <View style={styles.roles}>
-              {contact.roles.map((role) => (
-                <ContactRoleBadge key={role} role={role} />
-              ))}
-            </View>
-
-            <Card style={styles.section}>
-              <AppText size="heading" weight="semibold">
-                Contact information
-              </AppText>
               <InfoRow
                 icon="call-outline"
                 label="Phone"
                 value={contact.phone ?? "Not provided"}
+                onPress={
+                  contact.phone?.trim()
+                    ? () =>
+                        void openContactLink(
+                          `tel:${contact.phone!.replace(/[^\d+]/g, "")}`,
+                          "phone app",
+                        )
+                    : undefined
+                }
               />
               <InfoRow
                 icon="mail-outline"
                 label="Email"
                 value={contact.email ?? "Not provided"}
+                onPress={
+                  contact.email?.trim()
+                    ? () =>
+                        void openContactLink(
+                          `mailto:${encodeURIComponent(contact.email!.trim())}`,
+                          "email app",
+                        )
+                    : undefined
+                }
               />
               <InfoRow
                 icon="location-outline"
@@ -149,8 +240,13 @@ function ContactDetailsContent() {
                 value={contact.address ?? "Not provided"}
               />
               {contact.notes ? (
-                <View style={styles.notes}>
-                  <AppText size="small" tone="secondary">
+                <View
+                  style={[
+                    styles.notes,
+                    { backgroundColor: theme.background },
+                  ]}
+                >
+                  <AppText size="small" weight="semibold" tone="secondary">
                     Notes
                   </AppText>
                   <AppText>{contact.notes}</AppText>
@@ -375,22 +471,47 @@ function InfoRow({
   icon,
   label,
   value,
+  onPress,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
   value: string;
+  onPress?: () => void;
 }) {
   const { theme } = useTheme();
   return (
-    <View style={[styles.infoRow, { borderBottomColor: theme.border }]}>
-      <Ionicons name={icon} size={18} color={theme.textSecondary} />
+    <Pressable
+      accessibilityRole={onPress ? "button" : undefined}
+      accessibilityLabel={onPress ? `${label}: ${value}` : undefined}
+      disabled={!onPress}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.infoRow,
+        { borderBottomColor: theme.border, opacity: pressed ? 0.68 : 1 },
+      ]}
+    >
+      <View
+        style={[
+          styles.infoIcon,
+          { backgroundColor: theme.backgroundSelected },
+        ]}
+      >
+        <Ionicons name={icon} size={17} color={theme.primary} />
+      </View>
       <View style={styles.infoCopy}>
         <AppText size="small" tone="secondary">
           {label}
         </AppText>
         <AppText style={styles.wrappingText}>{value}</AppText>
       </View>
-    </View>
+      {onPress ? (
+        <Ionicons
+          name="open-outline"
+          size={16}
+          color={theme.textSecondary}
+        />
+      ) : null}
+    </Pressable>
   );
 }
 
@@ -426,6 +547,15 @@ function formatTransactionDate(value: string): string {
       });
 }
 
+function contactInitials(name: string): string {
+  return name
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part.slice(0, 1).toUpperCase())
+    .join("");
+}
+
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   content: {
@@ -434,37 +564,67 @@ const styles = StyleSheet.create({
     alignSelf: "center",
     padding: 20,
     paddingBottom: 36,
-    gap: 16,
+    gap: 14,
   },
   state: { gap: 10 },
-  titleRow: {
+  profileCard: {
+    padding: 0,
+    overflow: "hidden",
+    borderRadius: 16,
+  },
+  profileAccent: { height: 5 },
+  profileContent: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 15,
+    padding: 18,
     minWidth: 0,
   },
   avatar: {
-    width: 56,
-    height: 56,
+    width: 68,
+    height: 68,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 28,
+    borderRadius: 22,
   },
-  titleCopy: { flex: 1, gap: 2, minWidth: 0 },
+  titleCopy: { flex: 1, gap: 5, minWidth: 0 },
   contactName: { flexShrink: 1 },
-  roles: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  section: { gap: 10 },
-  infoRow: {
-    minHeight: 58,
+  roles: { flexDirection: "row", flexWrap: "wrap", gap: 7, marginTop: 2 },
+  section: { gap: 12, borderRadius: 14 },
+  informationCard: { paddingVertical: 15 },
+  sectionHeading: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
     gap: 12,
+    marginBottom: 1,
+  },
+  sectionHeadingCopy: { flex: 1, gap: 3, minWidth: 0 },
+  sectionIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  infoRow: {
+    minHeight: 64,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    paddingVertical: 8,
+    paddingVertical: 9,
+  },
+  infoIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
   },
   infoCopy: { flex: 1, gap: 2, minWidth: 0 },
   wrappingText: { flexShrink: 1 },
-  notes: { gap: 4, paddingTop: 5, minWidth: 0 },
+  notes: { gap: 5, padding: 12, borderRadius: 10, minWidth: 0 },
   historyHeading: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -482,16 +642,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 10,
     borderWidth: 1,
-    borderRadius: 8,
-    padding: 10,
+    borderRadius: 11,
+    padding: 11,
     minWidth: 0,
   },
   transactionIcon: {
-    width: 36,
-    height: 36,
+    width: 40,
+    height: 40,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 8,
+    borderRadius: 12,
   },
   transactionCopy: { flex: 1, gap: 4, minWidth: 0 },
   transactionTitleLine: {
@@ -522,6 +682,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 8,
     borderWidth: 1,
-    borderRadius: 6,
+    borderRadius: 10,
   },
 });

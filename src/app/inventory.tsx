@@ -80,6 +80,7 @@ function InventoryContent() {
   const openingStatus = useInventoryOpeningSetupStatus(user?.id, farmId);
   const chickenOptions = useChickenSaleOptions(user?.id, farmId);
   const eggOptions = useEggCollectionOptions(user?.id, farmId);
+  const [showFilters, setShowFilters] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState<InventoryFilter>("all");
   const [chickenTypeFilter, setChickenTypeFilter] =
     useState<ChickenType | "all">("all");
@@ -191,6 +192,67 @@ function InventoryContent() {
       style={[styles.screen, { backgroundColor: theme.background }]}
       edges={["top", "bottom"]}
     >
+      <View
+        style={[
+          styles.fixedHeader,
+          {
+            borderBottomColor: theme.border,
+            backgroundColor: theme.background,
+          },
+        ]}
+      >
+        <FarmPageHeader title="Inventory" showBack fallbackHref="/(tabs)" />
+        <View style={styles.supplyActions}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Purchase supplies"
+            onPress={() => router.push("/inventory/purchase" as Href)}
+            style={({ pressed }) => [
+              styles.supplyActionButton,
+              {
+                backgroundColor: theme.primary,
+                opacity: pressed ? 0.78 : 1,
+              },
+            ]}
+          >
+            <Ionicons name="add" size={18} color={theme.onPrimary} />
+            <AppText
+              size="small"
+              weight="semibold"
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              style={{ color: theme.onPrimary }}
+            >
+              Purchase supplies
+            </AppText>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Record supply use"
+            onPress={() => router.push("/inventory/consumption" as Href)}
+            style={({ pressed }) => [
+              styles.supplyActionButton,
+              styles.supplyActionSecondary,
+              {
+                backgroundColor: theme.backgroundElement,
+                borderColor: theme.border,
+                opacity: pressed ? 0.72 : 1,
+              },
+            ]}
+          >
+            <Ionicons name="remove" size={18} color={theme.primary} />
+            <AppText
+              size="small"
+              weight="semibold"
+              numberOfLines={1}
+              adjustsFontSizeToFit
+              style={{ color: theme.primary }}
+            >
+              Record use
+            </AppText>
+          </Pressable>
+        </View>
+      </View>
       <ScrollView
         contentContainerStyle={styles.content}
         refreshControl={
@@ -202,8 +264,6 @@ function InventoryContent() {
           />
         }
       >
-        <FarmPageHeader title="Inventory" showBack fallbackHref="/(tabs)" />
-
         <View style={styles.intro}>
           <View style={styles.grow}>
             <AppText size="heading" weight="semibold">Farm inventory</AppText>
@@ -228,33 +288,86 @@ function InventoryContent() {
           </Pressable>
         </View>
 
-        <View style={styles.summaryStrip}>
-          <SummaryMetric
-            chickenIcon
-            label="Flock"
-            value={chickenOptions.isLoading || chickenOptions.isError ? "—" : formatCount(chickenTotalCount)}
-            unit="birds"
-          />
-          <SummaryMetric
-            icon="egg-outline"
-            label={eggCountsShareUnit ? "Eggs" : "Egg products"}
-            value={
-              eggOptions.isLoading || eggOptions.isError
+        <View
+          style={[styles.snapshotCard, { backgroundColor: theme.primary }]}
+        >
+          <View style={styles.snapshotHeading}>
+            <View
+              style={[
+                styles.snapshotIcon,
+                { backgroundColor: withOpacity(theme.onPrimary, 0.14) },
+              ]}
+            >
+              <Ionicons
+                name="layers-outline"
+                size={17}
+                color={theme.onPrimary}
+              />
+            </View>
+            <View style={styles.grow}>
+              <AppText
+                size="small"
+                weight="semibold"
+                style={{ color: theme.onPrimary }}
+              >
+                Stock snapshot
+              </AppText>
+              <AppText
+                size="small"
+                style={{ color: withOpacity(theme.onPrimary, 0.78) }}
+              >
+                Current holdings across your farm
+              </AppText>
+            </View>
+          </View>
+          <View
+            style={[
+              styles.summaryStrip,
+              { borderTopColor: withOpacity(theme.onPrimary, 0.26) },
+            ]}
+          >
+            <SummaryMetric
+              chickenIcon
+              label="Flock"
+              value={chickenOptions.isLoading || chickenOptions.isError ? "—" : formatCount(chickenTotalCount)}
+              unit="birds"
+              color={theme.onPrimary}
+            />
+            <View
+              style={[
+                styles.summaryDivider,
+                { backgroundColor: withOpacity(theme.onPrimary, 0.26) },
+              ]}
+            />
+            <SummaryMetric
+              icon="egg-outline"
+              label={eggCountsShareUnit ? "Eggs" : "Egg products"}
+              value={
+                eggOptions.isLoading || eggOptions.isError
+                  ? "—"
+                  : eggCountsShareUnit
+                    ? formatCount(eggCount)
+                    : String(eggs.length)
+              }
+              unit={eggCountsShareUnit ? eggBaseUnits[0] ?? "available" : "tracked"}
+              color={theme.onPrimary}
+            />
+            <View
+              style={[
+                styles.summaryDivider,
+                { backgroundColor: withOpacity(theme.onPrimary, 0.26) },
+              ]}
+            />
+            <SummaryMetric
+              icon="file-tray-stacked-outline"
+              label="Supplies"
+              value={productsQuery.isLoading || productsQuery.isError || inventory.isLoading || inventory.isError
                 ? "—"
-                : eggCountsShareUnit
-                  ? formatCount(eggCount)
-                  : String(eggs.length)
-            }
-            unit={eggCountsShareUnit ? eggBaseUnits[0] ?? "available" : "tracked"}
-          />
-          <SummaryMetric
-            icon="file-tray-stacked-outline"
-            label="Supplies"
-            value={productsQuery.isLoading || productsQuery.isError || inventory.isLoading || inventory.isError
-              ? "—"
-              : String(stockedSupplyCount)}
-            unit="in stock"
-          />
+                : String(stockedSupplyCount)}
+              unit="in stock"
+              color={theme.onPrimary}
+            />
+          </View>
         </View>
 
         {[
@@ -285,50 +398,108 @@ function InventoryContent() {
             </Card>
           ))}
 
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.filterList}
-        >
-          {inventoryFilters.map((filter) => (
-            <InventoryFilterChip
-              key={filter.value}
-              label={filter.label}
-              selected={categoryFilter === filter.value}
-              onPress={() => {
-                setCategoryFilter(filter.value);
-                if (filter.value !== "chickens") setChickenTypeFilter("all");
-              }}
-            />
-          ))}
-        </ScrollView>
-
-        {showChickens && chickenTypes.length > 0 ? (
-          <View style={styles.subFilterSection}>
-            <AppText size="small" weight="semibold" tone="secondary">
-              FLOCK TYPE
-            </AppText>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.filterList}
+        <View style={styles.filterSection}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ expanded: showFilters }}
+            onPress={() => setShowFilters((expanded) => !expanded)}
+            style={({ pressed }) => [
+              styles.filterToggle,
+              {
+                backgroundColor: theme.backgroundElement,
+                borderColor: theme.border,
+                opacity: pressed ? 0.78 : 1,
+              },
+            ]}
+          >
+            <View
+              style={[
+                styles.filterToggleIcon,
+                { backgroundColor: theme.backgroundSelected },
+              ]}
             >
-              <InventoryFilterChip
-                label="All types"
-                selected={chickenTypeFilter === "all"}
-                onPress={() => setChickenTypeFilter("all")}
-              />
-              {chickenTypes.map((type) => (
-                <InventoryFilterChip
-                  key={type}
-                  label={chickenTypeLabels[type]}
-                  selected={chickenTypeFilter === type}
-                  onPress={() => setChickenTypeFilter(type)}
-                />
-              ))}
-            </ScrollView>
-          </View>
-        ) : null}
+              <Ionicons name="filter-outline" size={17} color={theme.primary} />
+            </View>
+            <View style={styles.grow}>
+              <AppText size="small" weight="semibold">Filter inventory</AppText>
+              <AppText size="small" tone="secondary">
+                {categoryFilter === "all"
+                  ? "Showing all stock categories"
+                  : `${inventoryFilters.find((filter) => filter.value === categoryFilter)?.label ?? "All"}${categoryFilter === "chickens" && chickenTypeFilter !== "all" ? ` · ${chickenTypeLabels[chickenTypeFilter]}` : ""}`}
+              </AppText>
+            </View>
+            <Ionicons
+              name={showFilters ? "chevron-up" : "chevron-down"}
+              size={18}
+              color={theme.textSecondary}
+            />
+          </Pressable>
+          {showFilters ? (
+            <View
+              style={[
+                styles.filterPanel,
+                {
+                  backgroundColor: theme.backgroundElement,
+                  borderColor: theme.border,
+                },
+              ]}
+            >
+              <View style={styles.categoryHeading}>
+                <AppText size="small" weight="semibold" tone="secondary">
+                  STOCK TYPE
+                </AppText>
+                {categoryFilter !== "all" ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                      setCategoryFilter("all");
+                      setChickenTypeFilter("all");
+                    }}
+                  >
+                    <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+                      Clear
+                    </AppText>
+                  </Pressable>
+                ) : null}
+              </View>
+              <View style={styles.filterGrid}>
+                {inventoryFilters.map((filter) => (
+                  <InventoryFilterChip
+                    key={filter.value}
+                    label={filter.label}
+                    selected={categoryFilter === filter.value}
+                    onPress={() => {
+                      setCategoryFilter(filter.value);
+                      if (filter.value !== "chickens") setChickenTypeFilter("all");
+                    }}
+                  />
+                ))}
+              </View>
+              {showChickens && chickenTypes.length > 0 ? (
+                <View style={[styles.chickenFilterGroup, { borderTopColor: theme.border }]}>
+                  <AppText size="small" weight="semibold" tone="secondary">
+                    FLOCK TYPE
+                  </AppText>
+                  <View style={styles.filterGrid}>
+                    <InventoryFilterChip
+                      label="All types"
+                      selected={chickenTypeFilter === "all"}
+                      onPress={() => setChickenTypeFilter("all")}
+                    />
+                    {chickenTypes.map((type) => (
+                      <InventoryFilterChip
+                        key={type}
+                        label={chickenTypeLabels[type]}
+                        selected={chickenTypeFilter === type}
+                        onPress={() => setChickenTypeFilter(type)}
+                      />
+                    ))}
+                  </View>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+        </View>
 
         {showChickens ? (
         <StockOverviewCard
@@ -415,7 +586,10 @@ function InventoryContent() {
         >
           {eggs.length ? (
             eggs.map((product) => (
-              <View key={product.id} style={styles.detailRow}>
+              <View
+                key={product.id}
+                style={[styles.detailRow, { borderBottomColor: theme.border }]}
+              >
                 <View style={styles.grow}>
                   <AppText size="small" weight="semibold">{product.name}</AppText>
                   <AppText size="small" tone="secondary">
@@ -457,23 +631,21 @@ function InventoryContent() {
 
         {showSupplies ? (
         <Card style={styles.suppliesCard}>
-          <View style={styles.sectionHeading}>
-            <View
-              style={[
-                styles.sectionIcon,
-                { backgroundColor: theme.backgroundSelected },
-              ]}
-            >
-              <Ionicons name="file-tray-stacked-outline" size={19} color={theme.primary} />
-            </View>
-            <View style={styles.grow}>
-              <AppText size="heading" weight="semibold">{supplyHeading}</AppText>
-              <AppText size="small" tone="secondary">
-                Products currently on hand
-              </AppText>
+          <View style={styles.suppliesHeader}>
+            <View style={styles.sectionHeading}>
+              <View
+                style={[
+                  styles.sectionIcon,
+                  { backgroundColor: theme.backgroundSelected },
+                ]}
+              >
+                <Ionicons name="file-tray-stacked-outline" size={19} color={theme.primary} />
+              </View>
+              <View style={styles.grow}>
+                <AppText size="heading" weight="semibold">{supplyHeading}</AppText>
+              </View>
             </View>
           </View>
-
           {productsQuery.isLoading || inventory.isLoading ? (
             <View style={styles.loadingRow}>
               <ActivityIndicator size="small" color={theme.primary} />
@@ -490,28 +662,61 @@ function InventoryContent() {
               );
               if (!groupedProducts.length) return null;
               return (
-                <View key={group.type} style={styles.productGroup}>
-                  <View style={styles.groupHeading}>
-                    <Ionicons name={group.icon} size={16} color={theme.primary} />
-                    <AppText size="small" weight="semibold" tone="secondary">
-                      {group.title.toUpperCase()}
-                    </AppText>
+                <View
+                  key={group.type}
+                  style={[
+                    styles.productGroup,
+                    { borderColor: theme.border, backgroundColor: theme.backgroundElement },
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.groupHeading,
+                      {
+                        backgroundColor: theme.backgroundSelected,
+                        borderBottomColor: theme.border,
+                      },
+                    ]}
+                  >
+                    <View style={styles.groupTitleRow}>
+                      <Ionicons
+                        name={group.icon}
+                        size={17}
+                        color={theme.primary}
+                      />
+                      <AppText size="small" weight="semibold" style={styles.grow}>
+                        {group.title}
+                      </AppText>
+                    </View>
+                    <View style={styles.groupCount}>
+                      <AppText size="small" tone="secondary">
+                        {groupedProducts.length}{" "}
+                        {groupedProducts.length === 1 ? "product" : "products"}
+                      </AppText>
+                    </View>
                   </View>
-                  {groupedProducts.map((product) => (
-                    <SupplyRow
-                      key={product.id}
-                      product={product}
-                      quantity={Number(
-                        balanceByProduct.get(product.id)?.quantity ?? 0,
-                      )}
-                      unit={
-                        balanceByProduct.get(product.id)?.unit_abbreviation ??
-                        product.product_units.find((unit) => unit.is_base_unit)
-                          ?.unit_abbreviation ??
-                        ""
-                      }
-                    />
-                  ))}
+                  <View
+                    style={[
+                      styles.productRows,
+                      { backgroundColor: theme.background },
+                    ]}
+                  >
+                    {groupedProducts.map((product) => (
+                      <SupplyRow
+                        key={product.id}
+                        product={product}
+                        quantity={Number(
+                          balanceByProduct.get(product.id)?.quantity ?? 0,
+                        )}
+                        unit={
+                          balanceByProduct.get(product.id)?.unit_abbreviation ??
+                          product.product_units.find((unit) => unit.is_base_unit)
+                            ?.unit_abbreviation ??
+                          ""
+                        }
+                      />
+                    ))}
+                  </View>
                 </View>
               );
             })
@@ -531,45 +736,6 @@ function InventoryContent() {
             </View>
           )}
 
-          <View style={[styles.purchaseAction, { borderTopColor: theme.border }]}>
-            <Ionicons name="bag-handle-outline" size={18} color={theme.primary} />
-            <View style={styles.grow}>
-              <AppText weight="semibold">Need more supplies?</AppText>
-              <AppText size="small" tone="secondary">
-                Record a purchase and update stock with its supplier and payment.
-              </AppText>
-            </View>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => router.push("/inventory/purchase" as Href)}
-              style={[
-                styles.purchaseButton,
-                { backgroundColor: theme.backgroundSelected },
-              ]}
-            >
-              <Ionicons name="arrow-forward" size={18} color={theme.primary} />
-            </Pressable>
-          </View>
-          <View style={[styles.purchaseAction, { borderTopColor: theme.border }]}>
-            <Ionicons name="nutrition-outline" size={18} color={theme.primary} />
-            <View style={styles.grow}>
-            <AppText weight="semibold">Used some stock?</AppText>
-            <AppText size="small" tone="secondary">
-              Record feed, medication, or supply use and update the balance.
-            </AppText>
-            </View>
-            <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Record product consumption"
-            onPress={() => router.push("/inventory/consumption" as Href)}
-            style={[
-              styles.purchaseButton,
-              { backgroundColor: theme.backgroundSelected },
-            ]}
-            >
-            <Ionicons name="arrow-forward" size={18} color={theme.primary} />
-            </Pressable>
-          </View>
         </Card>
         ) : null}
 
@@ -640,7 +806,10 @@ function StockOverviewCard({
         <Pressable
           accessibilityRole="button"
           onPress={onPress}
-          style={styles.viewLink}
+          style={[
+            styles.viewLink,
+            { backgroundColor: theme.backgroundSelected },
+          ]}
         >
           <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
             {action}
@@ -648,8 +817,19 @@ function StockOverviewCard({
           <Ionicons name="arrow-forward" size={15} color={theme.primary} />
         </Pressable>
       </View>
-      <View style={styles.quantityBox}>
-        <AppText size="title" weight="semibold">{quantity}</AppText>
+      <View
+        style={[
+          styles.quantityBox,
+          { backgroundColor: theme.backgroundSelected },
+        ]}
+      >
+        <AppText
+          size="title"
+          weight="semibold"
+          style={{ color: theme.primary }}
+        >
+          {quantity}
+        </AppText>
         <AppText size="small" tone="secondary">{unit}</AppText>
       </View>
       {children ? (
@@ -679,7 +859,10 @@ function SupplyRow({
       }
       style={[
         styles.supplyRow,
-        { borderBottomColor: theme.border },
+        {
+          backgroundColor: theme.backgroundElement,
+          borderColor: theme.border,
+        },
       ]}
     >
       <View
@@ -696,15 +879,41 @@ function SupplyRow({
       </View>
       <View style={styles.supplyName}>
         <AppText size="small" weight="semibold" numberOfLines={1}>{product.name}</AppText>
-        <AppText size="small" style={{ color: quantity > 0 ? theme.success : theme.textSecondary }}>
-          {quantity > 0 ? "ON HAND" : "OUT OF STOCK"}
-        </AppText>
-        <AppText size="small" tone="secondary" numberOfLines={2}>
-          {conversionSummary(product)}
-        </AppText>
+        <View
+          style={[
+            styles.stockStatus,
+            {
+              backgroundColor: withOpacity(
+                quantity > 0 ? theme.success : theme.danger,
+                0.1,
+              ),
+            },
+          ]}
+        >
+          <View
+            style={[
+              styles.stockStatusDot,
+              { backgroundColor: quantity > 0 ? theme.success : theme.danger },
+            ]}
+          />
+          <AppText
+            size="small"
+            weight="semibold"
+            style={{ color: quantity > 0 ? theme.success : theme.danger }}
+          >
+            {quantity > 0 ? "In stock" : "Out of stock"}
+          </AppText>
+        </View>
       </View>
-      <View style={styles.quantityBox}>
-        <AppText weight="semibold">{formatCount(quantity)}</AppText>
+      <View
+        style={[
+          styles.supplyQuantity,
+          { backgroundColor: theme.backgroundSelected },
+        ]}
+      >
+        <AppText size="small" weight="semibold" style={{ color: theme.text }}>
+          {formatCount(quantity)}
+        </AppText>
         <AppText size="small" tone="secondary">{unit}</AppText>
       </View>
       <Ionicons name="chevron-forward" size={17} color={theme.textSecondary} />
@@ -718,38 +927,48 @@ function SummaryMetric({
   label,
   value,
   unit,
+  color,
 }: {
   icon?: keyof typeof Ionicons.glyphMap;
   chickenIcon?: boolean;
   label: string;
   value: string;
   unit: string;
+  color: string;
 }) {
-  const { theme } = useTheme();
   return (
-    <View
-      style={[
-        styles.summaryMetric,
-        {
-          borderColor: theme.border,
-          backgroundColor: theme.backgroundElement,
-        },
-      ]}
-    >
+    <View style={styles.summaryMetric}>
       <View style={styles.summaryLabel}>
         {chickenIcon ? (
           <MaterialCommunityIcons
             name="bird"
             size={14}
-            color={theme.textSecondary}
+            color={color}
           />
         ) : icon ? (
-          <Ionicons name={icon} size={14} color={theme.textSecondary} />
+          <Ionicons name={icon} size={14} color={color} />
         ) : null}
-        <AppText size="small" weight="semibold">{label}</AppText>
+        <AppText
+          size="small"
+          weight="semibold"
+          numberOfLines={1}
+          style={{ color }}
+        >
+          {label}
+        </AppText>
       </View>
-      <AppText size="heading" weight="semibold">{value}</AppText>
-      <AppText size="small" tone="secondary">{unit}</AppText>
+      <AppText
+        size="heading"
+        weight="semibold"
+        numberOfLines={1}
+        adjustsFontSizeToFit
+        style={{ color }}
+      >
+        {value}
+      </AppText>
+      <AppText size="small" style={{ color: withOpacity(color, 0.78) }}>
+        {unit}
+      </AppText>
     </View>
   );
 }
@@ -790,14 +1009,19 @@ function InventoryFilterChip({
   );
 }
 
-function conversionSummary(product: Product) {
-  return unitConversionSummary(
-    product.product_units.map((unit) => ({
-      abbreviation: unit.unit_abbreviation,
-      conversion_factor: unit.conversion_factor,
-      is_base_unit: unit.is_base_unit,
-    })),
-  );
+function withOpacity(color: string, opacity: number): string {
+  const hex = color.replace("#", "");
+  const expanded =
+    hex.length === 3
+      ? hex
+          .split("")
+          .map((channel) => `${channel}${channel}`)
+          .join("")
+      : hex;
+  const red = Number.parseInt(expanded.slice(0, 2), 16);
+  const green = Number.parseInt(expanded.slice(2, 4), 16);
+  const blue = Number.parseInt(expanded.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${opacity})`;
 }
 
 function eggConversionSummary(
@@ -844,25 +1068,56 @@ function formatCount(value: number) {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
+  fixedHeader: {
+    gap: 10,
+    paddingHorizontal: 18,
+    paddingTop: 7,
+    paddingBottom: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
   content: {
     width: "100%",
     maxWidth: 760,
     alignSelf: "center",
-    padding: 12,
-    paddingBottom: 36,
-    gap: 9,
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    paddingBottom: 42,
+    gap: 16,
   },
   intro: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 2 },
-  summaryStrip: { flexDirection: "row", gap: 8 },
+  snapshotCard: {
+    gap: 17,
+    borderRadius: 20,
+    padding: 17,
+    marginBottom: 2,
+  },
+  snapshotHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  snapshotIcon: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+  },
+  summaryStrip: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    gap: 10,
+    paddingTop: 14,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
   summaryMetric: {
     flex: 1,
     minWidth: 0,
-    borderWidth: 1,
-    borderRadius: 14,
-    padding: 10,
-    gap: 3,
+    justifyContent: "flex-start",
+    gap: 4,
   },
   summaryLabel: { flexDirection: "row", alignItems: "center", gap: 5 },
+  summaryDivider: { width: StyleSheet.hairlineWidth, marginVertical: 2 },
   grow: { flex: 1, minWidth: 0, gap: 4 },
   refreshButton: {
     width: 36,
@@ -872,29 +1127,58 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  liveRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 2 },
-  liveDot: { width: 8, height: 8, borderRadius: 4 },
   stockCard: {
     flexDirection: "row",
     flexWrap: "wrap",
     alignItems: "center",
-    gap: 10,
-    padding: 12,
+    gap: 12,
+    padding: 17,
     borderWidth: 1,
-    borderRadius: 16,
+    borderRadius: 19,
   },
   stockIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
+    width: 43,
+    height: 43,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
   },
   stockDetails: { flex: 1, minWidth: 0, gap: 3 },
-  viewLink: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 2 },
-  quantityBox: { alignItems: "flex-end", gap: 1 },
-  stockBreakdown: { flexBasis: "100%", gap: 7, paddingTop: 8, borderTopWidth: StyleSheet.hairlineWidth },
-  detailRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 2 },
+  viewLink: {
+    minHeight: 30,
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 6,
+    marginTop: 4,
+    borderRadius: 9,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  quantityBox: {
+    minWidth: 68,
+    alignItems: "flex-end",
+    gap: 1,
+    borderRadius: 13,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  stockBreakdown: {
+    flexBasis: "100%",
+    gap: 8,
+    paddingTop: 11,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    marginTop: 2,
+  },
+  detailRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 7,
+    paddingHorizontal: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(93, 119, 116, 0.18)",
+  },
   chickenBlockRow: {
     minHeight: 46,
     flexDirection: "row",
@@ -911,36 +1195,111 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  filterList: { gap: 7, paddingVertical: 2, paddingRight: 4 },
-  filterChip: {
-    minHeight: 36,
-    borderRadius: 18,
-    borderWidth: 1,
-    paddingHorizontal: 13,
+  filterSection: { gap: 8, marginTop: 1 },
+  filterToggle: {
+    minHeight: 62,
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
+    gap: 11,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
   },
-  subFilterSection: { gap: 4, paddingTop: 1 },
-  suppliesCard: { gap: 10, padding: 12 },
-  sectionHeading: { flexDirection: "row", alignItems: "center", gap: 9 },
-  sectionIcon: {
+  filterToggleIcon: {
     width: 36,
     height: 36,
     borderRadius: 11,
     alignItems: "center",
     justifyContent: "center",
   },
-  productGroup: { gap: 5 },
-  groupHeading: { flexDirection: "row", alignItems: "center", gap: 7, marginTop: 3 },
-  supplyRow: {
-    minHeight: 48,
+  filterPanel: {
+    gap: 12,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 13,
+  },
+  categoryHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 2,
+  },
+  filterGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 7,
+  },
+  chickenFilterGroup: {
+    gap: 9,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 11,
+  },
+  filterChip: {
+    minHeight: 36,
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingHorizontal: 11,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  suppliesCard: { gap: 16, padding: 17, borderRadius: 19 },
+  suppliesHeader: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
+  },
+  sectionHeading: { flexDirection: "row", alignItems: "center", gap: 11, flex: 1 },
+  sectionIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  productGroup: {
+    overflow: "hidden",
+    borderWidth: 1,
+    borderRadius: 14,
+  },
+  groupHeading: {
+    minHeight: 58,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    paddingVertical: 5,
-    paddingHorizontal: 7,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  groupTitleRow: { flex: 1, flexDirection: "row", alignItems: "center", gap: 9, minWidth: 0 },
+  groupCount: { alignItems: "flex-end", gap: 1 },
+  productRows: {
+    gap: 7,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+  },
+  supplyActions: { flexDirection: "row", gap: 9 },
+  supplyActionButton: {
+    minHeight: 42,
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
     borderRadius: 11,
+    paddingHorizontal: 8,
+  },
+  supplyActionSecondary: { borderWidth: 1 },
+  supplyRow: {
+    minHeight: 64,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 9,
+    paddingHorizontal: 10,
   },
   supplyIcon: {
     width: 30,
@@ -949,21 +1308,25 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  supplyName: { flex: 1, minWidth: 0, gap: 2 },
-  purchaseAction: {
+  supplyName: { flex: 1, minWidth: 0, gap: 3 },
+  supplyQuantity: {
+    minWidth: 62,
+    alignItems: "flex-end",
+    gap: 1,
+    borderRadius: 11,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+  },
+  stockStatus: {
+    alignSelf: "flex-start",
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: 10,
+    gap: 5,
+    borderRadius: 10,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
   },
-  purchaseButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-  },
+  stockStatusDot: { width: 6, height: 6, borderRadius: 3 },
   emptyCardMessage: {
     borderRadius: 10,
     padding: 10,

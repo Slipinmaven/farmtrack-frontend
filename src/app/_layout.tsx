@@ -5,6 +5,7 @@ import { Platform } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { AppDialogProvider } from "@/components/ui/app-dialog";
+import { ApiWakeupNotice } from "@/components/feedback/api-wakeup-notice";
 import { queryClient } from "@/lib/query/client";
 import { AuthProvider } from "@/providers/auth-provider";
 import { FarmProvider } from "@/providers/farm-provider";
@@ -39,6 +40,7 @@ function AppRoutes() {
   return (
     <>
       <StatusBar style={theme.mode === "dark" ? "light" : "dark"} />
+      <ApiWakeupNotice />
       <Stack
         screenOptions={{
           headerShown: false,

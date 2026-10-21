@@ -1,7 +1,14 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
-import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import {
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { LoadingState } from "@/components/feedback/loading-state";
@@ -12,7 +19,10 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { DatePickerField } from "@/components/ui/date-picker-field";
 import { TextField } from "@/components/ui/text-field";
-import type { SettlementPaymentMethod } from "@/features/management/api";
+import {
+  getExpenseDisplayName,
+  type SettlementPaymentMethod,
+} from "@/features/management/api";
 import {
   useCancelExpense,
   useExpense,
@@ -131,8 +141,8 @@ function ExpenseDetailsContent() {
       setError("Enter a valid amount greater than zero.");
       return;
     }
-    if (paymentMethod !== "cash" && !reference.trim()) {
-      setError("A reference is required for non-cash payments.");
+    if (paymentMethod !== "cash" && reference.trim() && !/^[A-Za-z0-9- ]{1,100}$/.test(reference.trim())) {
+      setError("Reference must be letters, numbers, spaces, or dashes, with up to 100 characters.");
       return;
     }
     if (mode === "refund" && reason.trim().length < 3) {
@@ -184,7 +194,16 @@ function ExpenseDetailsContent() {
       style={[styles.screen, { backgroundColor: theme.background }]}
       edges={["top", "bottom"]}
     >
-      <ScrollView contentContainerStyle={styles.content}>
+      <KeyboardAvoidingView
+        style={styles.keyboardContainer}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardDismissMode="on-drag"
+        keyboardShouldPersistTaps="handled"
+        automaticallyAdjustKeyboardInsets
+      >
         <FarmPageHeader title="Expense details" showBack />
         {!farm.selectedFarm ? (
           <Card><AppText weight="semibold">Choose a farm to view this expense.</AppText></Card>
@@ -247,21 +266,59 @@ function ExpenseDetailsContent() {
                 <>
                   <View style={styles.titleRow}>
                     <View style={styles.grow}>
-                      <AppText size="heading" weight="semibold">{expense.name}</AppText>
+                      <AppText size="heading" weight="semibold">{getExpenseDisplayName(expense)}</AppText>
                       <AppText size="small" tone="secondary">
                         {expense.category_name} · {expense.expense_date}
                       </AppText>
                     </View>
-                    <View style={[styles.status, { backgroundColor: expense.payment_status === "cancelled" ? `${theme.danger}18` : theme.backgroundSelected }]}>
-                      <AppText size="small" weight="semibold" style={{ color: expense.payment_status === "cancelled" ? theme.danger : theme.primary }}>
+                    <View
+                      style={[
+                        styles.status,
+                        {
+                          backgroundColor: `${expense.payment_status === "paid" ? theme.success : expense.payment_status === "cancelled" || expense.payment_status === "unpaid" ? theme.danger : theme.secondary}18`,
+                        },
+                      ]}
+                    >
+                      <AppText
+                        size="small"
+                        weight="semibold"
+                        style={{
+                          color:
+                            expense.payment_status === "paid"
+                              ? theme.success
+                              : expense.payment_status === "cancelled" ||
+                                  expense.payment_status === "unpaid"
+                                ? theme.danger
+                                : theme.secondary,
+                        }}
+                      >
                         {humanize(expense.payment_status)}
                       </AppText>
                     </View>
                   </View>
                   <View style={[styles.amountGrid, { borderColor: theme.border }]}>
-                    <Amount label="Total" value={expense.amount} currency={theme.currency} />
-                    <Amount label="Paid" value={expense.amount_paid} currency={theme.currency} />
-                    <Amount label="Balance" value={expense.balance_due} currency={theme.currency} />
+                    <Amount
+                      label="Total"
+                      value={expense.amount}
+                      currency={theme.currency}
+                      color={theme.text}
+                    />
+                    <Amount
+                      label="Paid"
+                      value={expense.amount_paid}
+                      currency={theme.currency}
+                      color={theme.success}
+                    />
+                    <Amount
+                      label="Balance"
+                      value={expense.balance_due}
+                      currency={theme.currency}
+                      color={
+                        Number(expense.balance_due) > 0
+                          ? theme.danger
+                          : theme.textSecondary
+                      }
+                    />
                   </View>
                   {expense.purchase_transaction_id ? (
                     <Pressable
@@ -349,17 +406,63 @@ function ExpenseDetailsContent() {
             </Card>
 
             {!editing && !expense.purchase_transaction_id && expense.payment_status !== "cancelled" ? (
-              <Card style={styles.card}>
-                <AppText size="heading" weight="semibold">Actions</AppText>
-                <View style={styles.actions}>
-                  <Button label="Edit expense" variant="secondary" onPress={startEditing} />
-                  {Number(expense.balance_due) > 0 ? (
-                    <Button label="Record payment" onPress={() => openAction("payment")} />
-                  ) : null}
+              <Card style={[styles.card, styles.actionCard]}>
+                <View style={styles.actionHeader}>
+                  <View style={styles.actionHeaderCopy}>
+                    <AppText weight="semibold">Manage expense</AppText>
+                    <AppText size="small" tone="secondary">
+                      Update details or record a money movement.
+                    </AppText>
+                  </View>
+                  <Ionicons name="options-outline" size={19} color={theme.textSecondary} />
+                </View>
+                {Number(expense.balance_due) > 0 ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => openAction("payment")}
+                    style={({ pressed }) => [
+                      styles.primaryAction,
+                      {
+                        backgroundColor: theme.primary,
+                        opacity: pressed ? 0.82 : 1,
+                      },
+                    ]}
+                  >
+                    <Ionicons name="wallet-outline" size={18} color={theme.onPrimary} />
+                    <AppText
+                      weight="semibold"
+                      style={[styles.primaryActionLabel, { color: theme.onPrimary }]}
+                    >
+                      Record payment
+                    </AppText>
+                    <AppText
+                      size="small"
+                      weight="semibold"
+                      style={{ color: theme.onPrimary }}
+                    >
+                      {formatMoney(Number(expense.balance_due), theme.currency)}
+                    </AppText>
+                  </Pressable>
+                ) : null}
+                <View style={styles.secondaryActions}>
+                  <ExpenseAction
+                    icon="create-outline"
+                    label="Edit"
+                    onPress={startEditing}
+                  />
                   {Number(expense.amount_paid) > 0 ? (
-                    <Button label="Record refund" variant="secondary" onPress={() => openAction("refund")} />
+                    <ExpenseAction
+                      icon="arrow-undo-outline"
+                      label="Refund"
+                      onPress={() => openAction("refund")}
+                    />
                   ) : null}
-                  <Button label="Cancel expense" variant="quiet" onPress={() => openAction("cancel")} />
+                  <ExpenseAction
+                    icon="close-circle-outline"
+                    label="Cancel"
+                    destructive
+                    onPress={() => openAction("cancel")}
+                  />
                 </View>
                 {mode === "payment" || mode === "refund" ? (
                   <View style={styles.actionForm}>
@@ -383,7 +486,7 @@ function ExpenseDetailsContent() {
                       ))}
                     </View>
                     {paymentMethod !== "cash" ? (
-                      <TextField label="Reference (required)" value={reference} onChangeText={setReference} autoCapitalize="characters" />
+                      <TextField label="Reference (optional)" value={reference} onChangeText={setReference} autoCapitalize="characters" />
                     ) : null}
                     {mode === "refund" ? <TextField label="Refund reason (required)" value={reason} onChangeText={setReason} multiline /> : null}
                     <View style={styles.actions}>
@@ -421,7 +524,42 @@ function ExpenseDetailsContent() {
           </>
         )}
       </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
+  );
+}
+
+function ExpenseAction({
+  icon,
+  label,
+  destructive = false,
+  onPress,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  destructive?: boolean;
+  onPress: () => void;
+}) {
+  const { theme } = useTheme();
+  const color = destructive ? theme.danger : theme.text;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.secondaryAction,
+        {
+          borderColor: destructive ? `${theme.danger}55` : theme.border,
+          backgroundColor: destructive ? `${theme.danger}0A` : theme.backgroundElement,
+          opacity: pressed ? 0.7 : 1,
+        },
+      ]}
+    >
+      <Ionicons name={icon} size={16} color={color} />
+      <AppText size="small" weight="semibold" style={{ color }}>
+        {label}
+      </AppText>
+    </Pressable>
   );
 }
 
@@ -447,11 +585,23 @@ function ChoiceChip({ label, selected, onPress }: { label: string; selected: boo
   );
 }
 
-function Amount({ label, value, currency }: { label: string; value: string; currency: string }) {
+function Amount({
+  label,
+  value,
+  currency,
+  color,
+}: {
+  label: string;
+  value: string;
+  currency: string;
+  color: string;
+}) {
   return (
     <View style={styles.amountCell}>
       <AppText size="small" tone="secondary">{label}</AppText>
-      <AppText size="small" weight="semibold">{formatMoney(Number(value), currency)}</AppText>
+      <AppText size="small" weight="semibold" style={{ color }}>
+        {formatMoney(Number(value), currency)}
+      </AppText>
     </View>
   );
 }
@@ -487,13 +637,20 @@ function today(): string {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
-  content: { padding: 16, gap: 14, paddingBottom: 30 },
-  card: { gap: 11 },
+  keyboardContainer: { flex: 1 },
+  content: { padding: 14, gap: 12, paddingBottom: 30 },
+  card: { gap: 12, borderRadius: 12, padding: 14 },
   grow: { flex: 1, gap: 3 },
   titleRow: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
-  status: { borderRadius: 6, paddingHorizontal: 9, paddingVertical: 5 },
-  amountGrid: { flexDirection: "row", borderTopWidth: StyleSheet.hairlineWidth, borderBottomWidth: StyleSheet.hairlineWidth, paddingVertical: 12, gap: 8 },
-  amountCell: { flex: 1, gap: 5 },
+  status: { borderRadius: 8, paddingHorizontal: 9, paddingVertical: 5 },
+  amountGrid: {
+    flexDirection: "row",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 11,
+    gap: 8,
+  },
+  amountCell: { flex: 1, gap: 4 },
   detail: { borderTopWidth: StyleSheet.hairlineWidth, paddingTop: 9, flexDirection: "row", alignItems: "flex-start", gap: 10 },
   detailLabel: { flex: 0.8 },
   detailValue: { flex: 1.2, textAlign: "right" },
@@ -501,6 +658,28 @@ const styles = StyleSheet.create({
   purchaseIcon: { width: 34, height: 34, borderRadius: 10, alignItems: "center", justifyContent: "center" },
   auditLine: { paddingTop: 2 },
   paymentRow: { borderTopWidth: StyleSheet.hairlineWidth, paddingVertical: 10, flexDirection: "row", alignItems: "center", gap: 10 },
+  actionCard: { gap: 11 },
+  actionHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
+  actionHeaderCopy: { flex: 1, gap: 2 },
+  primaryAction: {
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+  },
+  primaryActionLabel: { flex: 1 },
+  secondaryActions: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
+  secondaryAction: {
+    minHeight: 36,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: 9,
+    paddingHorizontal: 10,
+  },
   actions: { gap: 8 },
   actionForm: { gap: 12, paddingTop: 8 },
   chips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },

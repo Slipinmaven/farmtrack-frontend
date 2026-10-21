@@ -54,18 +54,12 @@ import { useAuth } from "@/providers/auth-provider";
 import { useFarm } from "@/providers/farm-provider";
 import { useTheme } from "@/providers/theme-provider";
 
-type AllocationDraft = {
-  id: string;
-  batchId: string;
-  blockId: string;
-  quantity: string;
-};
-
 type SaleLineDraft = {
   id: string;
   productId: string;
+  chickenType: ChickenType | "";
+  quantity: string;
   unitPrice: string;
-  allocations: AllocationDraft[];
 };
 
 type SalePaymentDraft = {
@@ -92,22 +86,18 @@ function newPayment(): SalePaymentDraft {
   };
 }
 
-function newAllocation(): AllocationDraft {
-  return {
-    id: `${Date.now()}-${Math.random()}`,
-    batchId: "",
-    blockId: "",
-    quantity: "",
-  };
-}
-
 function newSaleLine(): SaleLineDraft {
   return {
     id: `${Date.now()}-${Math.random()}`,
     productId: "",
+    chickenType: "",
+    quantity: "",
     unitPrice: "",
-    allocations: [newAllocation()],
   };
+}
+
+function chickenTypeLabel(chickenType: ChickenType): string {
+  return chickenType[0].toUpperCase() + chickenType.slice(1);
 }
 
 function farmToday(timezone: string | null | undefined): string {
@@ -172,13 +162,6 @@ function parseCalendarDate(value: string): Date | undefined {
   return date;
 }
 
-function parseCostToTenThousandths(value: string): bigint | null {
-  const normalized = value.trim();
-  if (!/^\d+(?:\.\d{0,4})?$/.test(normalized)) return null;
-  const [whole, fraction = ""] = normalized.split(".");
-  return BigInt(whole) * 10000n + BigInt(fraction.padEnd(4, "0") || "0");
-}
-
 export default function ChickenSaleScreen() {
   return (
     <SessionGate>
@@ -214,7 +197,6 @@ function ChickenSaleContent() {
   const [newCustomerNotes, setNewCustomerNotes] = useState("");
   const [showCustomerDetails, setShowCustomerDetails] = useState(false);
   const [lines, setLines] = useState<SaleLineDraft[]>([newSaleLine()]);
-  const [expandedBlocks, setExpandedBlocks] = useState<Record<string, boolean>>({});
   const [step, setStep] = useState(0);
   const timezone = farm.selectedFarm?.settings?.timezone;
   const [transactionDate, setTransactionDate] = useState<string | null>(null);
@@ -250,11 +232,19 @@ function ChickenSaleContent() {
   const noSaleProducts =
     !options.isError && options.data !== undefined && saleProducts.length === 0;
   const batches = options.data?.batches ?? [];
+  function availableStockFor(chickenType: ChickenType): number {
+    return batches
+      .filter((batch) => batch.chicken_type === chickenType)
+      .flatMap((batch) => batch.stocks)
+      .reduce((sum, stock) => sum + stock.quantity, 0);
+  }
+
   const lineTotals = lines.map((line) => {
-    const quantity = line.allocations.reduce((sum, allocation) => {
-      const parsed = Number(allocation.quantity);
-      return sum + (Number.isInteger(parsed) && parsed > 0 ? parsed : 0);
-    }, 0);
+    const parsedQuantity = Number(line.quantity);
+    const quantity =
+      Number.isInteger(parsedQuantity) && parsedQuantity > 0
+        ? parsedQuantity
+        : 0;
     const unitPriceCents = parseMoneyToCents(line.unitPrice);
     return {
       quantity,
@@ -283,31 +273,6 @@ function ChickenSaleContent() {
       ? subtotalCents
       : calculatedDiscountCents;
   const totalCents = subtotalCents - discountCents;
-  const selectedCostRows = lines.flatMap((line) =>
-    line.allocations
-      .filter((allocation) => Number(allocation.quantity) > 0)
-      .map((allocation) => {
-        const batch = batches.find((entry) => entry.id === allocation.batchId);
-        const cost = batch?.estimated_unit_cost;
-        const unitCost = cost == null
-          ? null
-          : parseCostToTenThousandths(String(cost));
-        return {
-          quantity: Number(allocation.quantity),
-          unitCost,
-        };
-      }),
-  );
-  const hasUnknownCost =
-    selectedCostRows.length === 0 ||
-    selectedCostRows.some((row) => row.unitCost === null);
-  const estimatedCostTenThousandths = selectedCostRows.reduce(
-    (sum, row) =>
-      sum + (row.unitCost ?? 0n) * BigInt(row.quantity),
-    0n,
-  );
-  const estimatedCostCents = (estimatedCostTenThousandths + 50n) / 100n;
-  const estimatedProfitCents = totalCents - estimatedCostCents;
   const paidCents = recordPayment
     ? payments.reduce(
         (total, payment) =>
@@ -327,19 +292,6 @@ function ChickenSaleContent() {
     setLines((current) =>
       current.map((line) => (line.id === lineId ? update(line) : line)),
     );
-  }
-
-  function updateAllocation(
-    lineId: string,
-    allocationId: string,
-    update: (allocation: AllocationDraft) => AllocationDraft,
-  ) {
-    updateLine(lineId, (line) => ({
-      ...line,
-      allocations: line.allocations.map((allocation) =>
-        allocation.id === allocationId ? update(allocation) : allocation,
-      ),
-    }));
   }
 
   function remainingForFullPayment(paymentId: string): bigint {
@@ -398,7 +350,6 @@ function ChickenSaleContent() {
     | { payload: ChickenSaleInput } {
     if (lines.length === 0) return { error: "Add at least one sale item." } as const;
 
-    const requiredStock = new Map<string, number>();
     const payloadItems: ChickenSaleItemInput[] = [];
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
       const line = lines[lineIndex];
@@ -412,63 +363,20 @@ function ChickenSaleContent() {
           error: `${product.name} needs a base unit representing one chicken before it can be sold.`,
         } as const;
       }
-
-      const activeAllocations = line.allocations.filter(
-        (allocation) =>
-          allocation.batchId || allocation.blockId || allocation.quantity,
-      );
-      if (!activeAllocations.length) {
+      const quantity = Number(line.quantity);
+      if (
+        !/^\d+$/.test(line.quantity.trim()) ||
+        !Number.isInteger(quantity) ||
+        quantity <= 0
+      ) {
         return {
-          error: `Allocate chickens from at least one batch for item ${lineIndex + 1}.`,
+          error: `Enter a whole number of chickens greater than zero for item ${lineIndex + 1}.`,
         } as const;
       }
-      const saleType: ChickenType | undefined = batches.find(
-        (batch) => batch.id === activeAllocations[0].batchId,
-      )?.chicken_type;
-      if (!saleType) {
-        return { error: `Choose a batch for item ${lineIndex + 1}.` } as const;
-      }
-      const allocations = [];
-      const seenPairs = new Set<string>();
-      let quantity = 0;
-      for (const allocation of activeAllocations) {
-        const batch = batches.find((option) => option.id === allocation.batchId);
-        const stock = batch?.stocks.find(
-          (option) => option.block_id === allocation.blockId,
-        );
-        const parsedQuantity = Number(allocation.quantity);
-        if (!batch || !stock || !Number.isInteger(parsedQuantity) || parsedQuantity <= 0) {
-          return {
-            error: `Complete the batch, block and whole-chicken quantity for item ${lineIndex + 1}.`,
-          } as const;
-        }
-        if (batch.chicken_type !== saleType) {
-          return {
-            error: `All allocations in item ${lineIndex + 1} must have the same chicken type.`,
-          } as const;
-        }
-        const pair = `${batch.id}:${stock.block_id}`;
-        if (seenPairs.has(pair)) {
-          return {
-            error: "Remove duplicate batch and block allocations within a sale item.",
-          } as const;
-        }
-        seenPairs.add(pair);
-        const stockKey = pair;
-        const cumulativeQuantity =
-          (requiredStock.get(stockKey) ?? 0) + parsedQuantity;
-        if (cumulativeQuantity > stock.quantity) {
-          return {
-            error: `Only ${stock.quantity.toLocaleString()} chickens are available from ${batch.name} in ${stock.block_name}.`,
-          } as const;
-        }
-        requiredStock.set(stockKey, cumulativeQuantity);
-        quantity += parsedQuantity;
-        allocations.push({
-          batch_id: batch.id,
-          block_id: stock.block_id,
-          quantity: parsedQuantity,
-        });
+      if (!line.chickenType) {
+        return {
+          error: `Choose a chicken type for item ${lineIndex + 1}.`,
+        } as const;
       }
       const unitPriceCents = parseMoneyToCents(line.unitPrice);
       if (unitPriceCents === null) {
@@ -478,11 +386,10 @@ function ChickenSaleContent() {
       }
       payloadItems.push({
         product_id: product.id,
-        chicken_type: saleType,
+        chicken_type: line.chickenType,
         quantity,
         unit_id: baseUnit.unit_id,
         unit_price: centsToDecimal(unitPriceCents),
-        batch_allocations: allocations,
       });
     }
 
@@ -592,7 +499,8 @@ function ChickenSaleContent() {
     }
     try {
       const sale = await createSale.mutateAsync(result.payload);
-      let reminderMessage = "";
+      let reminderNotice = "";
+      let reminderNoticeTone: "info" | "warning" = "info";
       const saleBalanceDueCents =
         parseMoneyToCents(String(sale.balance_due)) ?? 0n;
       const saleCreditCents =
@@ -634,41 +542,31 @@ function ChickenSaleContent() {
           if (deliveryChannel === "in_app") {
             let phoneAlertMessage = "";
             if (Platform.OS === "web") {
-              phoneAlertMessage = " Phone alerts are available in the mobile app.";
+              phoneAlertMessage =
+                " Device alerts are available in the mobile app.";
             } else {
               try {
                 await scheduleReminderNotification(reminder);
-                phoneAlertMessage =
-                  " A phone alert is also scheduled on this device.";
               } catch (localAlertError: unknown) {
-                phoneAlertMessage = ` The in-app reminder is saved, but a phone alert could not be scheduled: ${normalizeApiError(localAlertError).message}`;
+                phoneAlertMessage = ` A device alert could not be scheduled: ${normalizeApiError(localAlertError).message}`;
+                reminderNoticeTone = "warning";
               }
             }
-            reminderMessage = `In-app sale follow-up reminder saved for ${effectiveReminderDueDate} at ${reminderDueTime}.${phoneAlertMessage} Push setup was unavailable: ${normalizeApiError(pushSetupError).message}`;
-          } else {
-            reminderMessage = `Sale follow-up reminder saved in the app with push delivery enabled for ${effectiveReminderDueDate} at ${reminderDueTime}.`;
+            reminderNotice = `Follow-up reminder saved in FarmTrack for ${effectiveReminderDueDate} at ${reminderDueTime}.${phoneAlertMessage} Push setup was unavailable: ${normalizeApiError(pushSetupError).message}`;
           }
         } catch (reminderError: unknown) {
-          reminderMessage = `Sale saved, but the balance reminder could not be saved: ${normalizeApiError(reminderError).message}`;
+          reminderNotice = `The sale was recorded, but the balance reminder could not be saved: ${normalizeApiError(reminderError).message}`;
+          reminderNoticeTone = "warning";
         }
       }
-      await dialog.showDialog({
-        title: "Chicken sale recorded",
-        message: [
-          sale.reference_number ?? "Sale saved",
-          `Total: ${formatCents(totalCents, theme.currency)}`,
-          `Paid: ${formatCents(parseMoneyToCents(String(sale.amount_paid)) ?? 0n, theme.currency)}`,
-          Number(sale.balance_due) > 0
-            ? `Customer balance due: ${formatCents(parseMoneyToCents(String(sale.balance_due)) ?? 0n, theme.currency)}`
-            : Number(sale.credit_balance) > 0
-              ? `Customer credit: ${formatCents(parseMoneyToCents(String(sale.credit_balance)) ?? 0n, theme.currency)}`
-              : "Paid in full",
-          "Inventory has been deducted from the selected batches and blocks.",
-          reminderMessage,
-        ].join("\n"),
-        tone: "success",
+      router.replace({
+        pathname: "/sales/[saleId]",
+        params: {
+          saleId: sale.id,
+          created: "true",
+          ...(reminderNotice ? { reminderNotice, reminderNoticeTone } : {}),
+        },
       });
-      router.replace("/(tabs)/flock");
     } catch (saleError: unknown) {
       setError(normalizeApiError(saleError).message);
     }
@@ -683,9 +581,14 @@ function ChickenSaleContent() {
     >
       <KeyboardAvoidingView
         style={styles.screen}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
-        <ScrollView contentContainerStyle={styles.content}>
+        <ScrollView
+          contentContainerStyle={styles.content}
+          keyboardShouldPersistTaps="handled"
+          automaticallyAdjustKeyboardInsets
+          keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+        >
           <FarmPageHeader title="Record chicken sale" showBack />
           {options.isError ? (
             <Card style={styles.section}>
@@ -820,7 +723,7 @@ function ChickenSaleContent() {
                     size={19}
                     color={theme.textSecondary}
                   />
-                  <TextInput
+                                  <TextInput
                     accessibilityLabel="Search customers by name, phone, or email"
                     placeholder="Search customers"
                     placeholderTextColor={theme.textSecondary}
@@ -1159,7 +1062,14 @@ function ChickenSaleContent() {
           {step === 1 ? (
           <View style={styles.section}>
             <SectionTitle number="2" title="Chickens and price" />
-            {lines.map((line, lineIndex) => (
+            {lines.map((line, lineIndex) => {
+              const available = line.chickenType
+                ? availableStockFor(line.chickenType)
+                : 0;
+              const ordered = Number(line.quantity);
+              const exceedsStock =
+                Number.isInteger(ordered) && ordered > available;
+              return (
               <Card key={line.id} style={styles.saleLine}>
                 <View style={styles.lineHeading}>
                   <AppText weight="semibold">Sale item {lineIndex + 1}</AppText>
@@ -1198,285 +1108,149 @@ function ChickenSaleContent() {
 
                 <View style={styles.inventoryIntro}>
                   <AppText size="small" weight="semibold">
-                    Choose birds by block
+                    Order details
                   </AppText>
                   <AppText size="small" tone="secondary">
-                    Select a block to view its batches and available stock.
+                    Record the customer’s full order. Stock is reduced only when you record each delivery.
                   </AppText>
                 </View>
-                {options.data?.blocks.map((block) => {
-                  const selectedType = batches.find((batch) =>
-                    line.allocations.some(
-                      (allocation) => allocation.batchId === batch.id,
-                    ),
-                  )?.chicken_type;
-                  const blockBatches = batches
-                    .map((batch) => ({
-                      batch,
-                      stock: batch.stocks.find(
-                        (stock) => stock.block_id === block.id,
-                      ),
-                    }))
-                    .filter(
-                      (entry) =>
-                        entry.stock &&
-                        entry.stock.quantity > 0 &&
-                        (!selectedType ||
-                          entry.batch.chicken_type === selectedType),
-                    );
-                  return (
-                    <View
-                      key={block.id}
-                      style={[
-                        styles.blockCard,
-                        {
-                          backgroundColor: theme.background,
-                          borderColor: expandedBlocks[`${line.id}:${block.id}`]
-                            ? theme.primary
-                            : theme.border,
-                        },
-                      ]}
-                    >
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityState={{
-                          expanded: Boolean(expandedBlocks[`${line.id}:${block.id}`]),
-                        }}
-                        onPress={() =>
-                          setExpandedBlocks((current) => ({
-                            ...current,
-                            [`${line.id}:${block.id}`]:
-                              !current[`${line.id}:${block.id}`],
-                          }))
-                        }
-                        style={styles.blockHeading}
-                      >
-                        <View style={styles.blockTitle}>
-                          <View
-                            style={[
-                              styles.blockIcon,
-                              { backgroundColor: `${theme.primary}1A` },
-                            ]}
-                          >
-                            <Ionicons name="home-outline" size={17} color={theme.primary} />
-                          </View>
-                          <View style={styles.blockNameGroup}>
-                            <AppText weight="semibold">{block.name}</AppText>
-                            <AppText size="small" tone="secondary">
-                              {block.current_chickens.toLocaleString()} birds in block
-                            </AppText>
-                          </View>
-                        </View>
-                        <View style={styles.blockSummary}>
-                          <Ionicons
-                            name={
-                              expandedBlocks[`${line.id}:${block.id}`]
-                                ? "chevron-up"
-                                : "chevron-down"
-                            }
-                            size={18}
-                            color={theme.textSecondary}
-                          />
-                        </View>
-                      </Pressable>
-                      <View style={styles.blockMeta}>
-                        <AppText size="small" tone="secondary">
-                          {blockBatches.length} {blockBatches.length === 1 ? "batch" : "batches"} with available stock
-                        </AppText>
-                        {line.allocations.some(
-                          (allocation) => allocation.blockId === block.id,
-                        ) ? (
-                          <AppText size="small" weight="semibold" style={{ color: theme.success }}>
-                            {line.allocations
-                              .filter((allocation) => allocation.blockId === block.id)
-                              .reduce(
-                                (sum, allocation) =>
-                                  sum + (Number(allocation.quantity) || 0),
-                                0,
-                              )
-                              .toLocaleString()} selected
-                          </AppText>
-                        ) : null}
-                      </View>
-                      {expandedBlocks[`${line.id}:${block.id}`] ? (
-                        <>
-                      {blockBatches.length ? (
-                        blockBatches.map(({ batch, stock }) => {
-                          if (!stock) return null;
-                          const allocation = line.allocations.find(
-                            (entry) =>
-                              entry.batchId === batch.id &&
-                              entry.blockId === block.id,
-                          );
-                          return (
-                            <View
-                              key={batch.id}
-                              style={[
-                                styles.batchStock,
-                                {
-                                  borderTopColor: theme.border,
-                                  backgroundColor: allocation
-                                    ? `${theme.primary}0A`
-                                    : theme.background,
-                                  borderColor: allocation ? `${theme.primary}55` : theme.border,
-                                },
-                              ]}
-                            >
-                              <Pressable
-                                accessibilityRole="checkbox"
-                                accessibilityState={{
-                                  checked: Boolean(allocation),
-                                }}
-                                onPress={() => {
-                                  if (allocation) {
-                                    updateLine(line.id, (current) => ({
-                                      ...current,
-                                      allocations: current.allocations.filter(
-                                        (entry) => entry.id !== allocation.id,
-                                      ),
-                                    }));
-                                  } else {
-                                    updateLine(line.id, (current) => ({
-                                      ...current,
-                                      allocations: [
-                                        ...current.allocations,
-                                        {
-                                          id: `${Date.now()}-${Math.random()}`,
-                                          batchId: batch.id,
-                                          blockId: block.id,
-                                          quantity: "",
-                                        },
-                                      ],
-                                    }));
-                                  }
-                                }}
-                                style={styles.batchSelect}
-                              >
-                                <View
-                                  style={[
-                                    styles.batchCheck,
-                                    {
-                                      backgroundColor: allocation
-                                        ? theme.primary
-                                        : theme.backgroundElement,
-                                      borderColor: allocation
-                                        ? theme.primary
-                                        : theme.border,
-                                    },
-                                  ]}
-                                >
-                                  {allocation ? (
-                                    <Ionicons
-                                      name="checkmark"
-                                      size={13}
-                                      color={theme.onPrimary}
-                                    />
-                                  ) : null}
-                                </View>
-                                <View style={styles.batchDescription}>
-                                  <AppText size="small" weight="semibold" numberOfLines={1}>
-                                    {batch.name}
-                                  </AppText>
-                                  <AppText size="small" tone="secondary">
-                                    {batch.chicken_type}
-                                  </AppText>
-                                </View>
-                                <View style={styles.batchIndicators}>
-                                  <View
-                                    style={[
-                                      styles.stockPill,
-                                      { backgroundColor: `${theme.success}1A` },
-                                    ]}
-                                  >
-                                    <AppText
-                                      size="small"
-                                      weight="semibold"
-                                      style={{ color: theme.success }}
-                                    >
-                                      {stock.quantity.toLocaleString()} available
-                                    </AppText>
-                                  </View>
-                                  <View
-                                    style={[
-                                      styles.stockPill,
-                                      { backgroundColor: `${theme.primary}1A` },
-                                    ]}
-                                  >
-                                    <AppText
-                                      size="small"
-                                      weight="semibold"
-                                      style={{ color: theme.primary }}
-                                    >
-                                      Age {formatBatchAge(batch.hatch_date)}
-                                    </AppText>
-                                  </View>
-                                </View>
-                              </Pressable>
-                              {allocation ? (
-                                <TextInput
-                                  accessibilityLabel={`${batch.name} quantity in ${block.name}`}
-                                  keyboardType="number-pad"
-                                  placeholder={`Quantity to sell (max ${stock.quantity})`}
-                                  placeholderTextColor={theme.textSecondary}
-                                  value={allocation.quantity}
-                                  onChangeText={(quantity) =>
-                                    updateAllocation(
-                                      line.id,
-                                      allocation.id,
-                                      (current) => ({ ...current, quantity }),
-                                    )
-                                  }
-                                  style={[
-                                    styles.input,
-                                    {
-                                      backgroundColor: theme.backgroundElement,
-                                      borderColor: theme.border,
-                                      color: theme.text,
-                                    },
-                                  ]}
-                                />
-                              ) : null}
-                            </View>
-                          );
-                        })
-                      ) : (
-                        <AppText size="small" tone="secondary">
-                          No active batch stock in this block.
-                        </AppText>
-                      )}
-                        </>
-                      ) : null}
+                <AppText size="small" weight="semibold">
+                  Chicken type
+                </AppText>
+                <View style={styles.chips}>
+                  {([
+                    ["layers", "Layers"],
+                    ["broiler", "Broiler"],
+                    ["kienyeji", "Kienyeji"],
+                    ["breeder", "Breeder"],
+                    ["other", "Other"],
+                  ] as const).map(([value, label]) => (
+                    <ChoiceChip
+                      key={value}
+                      label={label}
+                      selected={line.chickenType === value}
+                      onPress={() =>
+                        updateLine(line.id, (current) => ({
+                          ...current,
+                          chickenType: value,
+                        }))
+                      }
+                    />
+                  ))}
+                </View>
+                {line.chickenType ? (
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "flex-start",
+                      gap: 10,
+                      padding: 13,
+                      borderRadius: 12,
+                      borderWidth: 1,
+                      borderColor: exceedsStock ? `${theme.secondary}55` : theme.border,
+                      backgroundColor: exceedsStock
+                        ? `${theme.secondary}10`
+                        : theme.backgroundElement,
+                    }}
+                  >
+                    <Ionicons
+                      name={
+                        exceedsStock ? "alert-circle-outline" : "cube-outline"
+                      }
+                      size={19}
+                      color={
+                        exceedsStock ? theme.secondary : theme.primary
+                      }
+                    />
+                    <View style={styles.flexCopy}>
+                      <AppText size="small" weight="semibold">
+                        {available.toLocaleString()}{" "}
+                        {chickenTypeLabel(line.chickenType)} currently available
+                      </AppText>
+                      <AppText size="small" tone="secondary">
+                        {exceedsStock
+                          ? `This order exceeds current stock by ${(ordered - available).toLocaleString()}. Record it now and deliver in parts as stock becomes available.`
+                          : "You can record a partial delivery now and fulfil the remainder later."}
+                      </AppText>
                     </View>
-                  );
-                })}
-
-                <TextInput
-                  accessibilityLabel="Price per chicken"
-                  keyboardType="decimal-pad"
-                  placeholder="Price per chicken"
-                  placeholderTextColor={theme.textSecondary}
-                  value={line.unitPrice}
-                  onChangeText={(value) =>
-                    updateLine(line.id, (current) => ({
-                      ...current,
-                      unitPrice: value,
-                    }))
-                  }
+                  </View>
+                ) : null}
+                <View style={styles.formField}>
+                  <AppText size="small" weight="semibold">
+                    Quantity ordered
+                  </AppText>
+                  <TextInput
+                    accessibilityLabel="Ordered chicken quantity"
+                    keyboardType="number-pad"
+                    placeholder="For example, 500"
+                    placeholderTextColor={theme.textSecondary}
+                    value={line.quantity}
+                    onChangeText={(quantity) =>
+                      updateLine(line.id, (current) => ({ ...current, quantity }))
+                    }
+                    style={[
+                      styles.input,
+                      {
+                        backgroundColor: theme.background,
+                        borderColor: theme.border,
+                        color: theme.text,
+                      },
+                    ]}
+                  />
+                </View>
+                <View style={styles.formField}>
+                  <AppText size="small" weight="semibold">
+                    Price per chicken
+                  </AppText>
+                  <TextInput
+                    accessibilityLabel="Price per chicken"
+                    keyboardType="decimal-pad"
+                    placeholder={`Price in ${theme.currency}`}
+                    placeholderTextColor={theme.textSecondary}
+                    value={line.unitPrice}
+                    onChangeText={(value) =>
+                      updateLine(line.id, (current) => ({
+                        ...current,
+                        unitPrice: value,
+                      }))
+                    }
+                    style={[
+                      styles.input,
+                      {
+                        backgroundColor: theme.background,
+                        borderColor: theme.border,
+                        color: theme.text,
+                      },
+                    ]}
+                  />
+                </View>
+                <View
                   style={[
-                    styles.input,
+                    styles.lineTotal,
                     {
-                      backgroundColor: theme.background,
+                      backgroundColor: theme.backgroundElement,
                       borderColor: theme.border,
-                      color: theme.text,
                     },
                   ]}
-                />
-                <AppText size="small" tone="secondary">
-                  {lineTotals[lineIndex].quantity.toLocaleString()} chickens ·{" "}
-                  {formatCents(lineTotals[lineIndex].totalCents, theme.currency)}
-                </AppText>
+                >
+                  <View style={styles.flexCopy}>
+                    <AppText size="small" weight="semibold">
+                      Line total
+                    </AppText>
+                    <AppText size="small" tone="secondary">
+                      {lineTotals[lineIndex].quantity.toLocaleString()} chickens
+                    </AppText>
+                  </View>
+                  <AppText
+                    weight="semibold"
+                    style={{ color: theme.primary, flexShrink: 1, textAlign: "right" }}
+                  >
+                    {formatCents(lineTotals[lineIndex].totalCents, theme.currency)}
+                  </AppText>
+                </View>
               </Card>
-            ))}
+              );
+            })}
             <Button
               label="Add another sale item"
               variant="secondary"
@@ -1856,8 +1630,8 @@ function ChickenSaleContent() {
             <Card style={styles.section}>
               <SectionTitle number="4" title="Review the sale" />
               <AppText size="small" tone="secondary">
-                Check the summary before saving. The selected birds will be
-                deducted from their blocks.
+                Check the order, price and payment before saving. Stock changes
+                only when you record a delivery.
               </AppText>
               <View style={styles.reviewRow}>
                 <Ionicons name="person-outline" size={18} color={theme.primary} />
@@ -1886,14 +1660,9 @@ function ChickenSaleContent() {
                       </AppText>
                     </View>
                     <AppText size="small" tone="secondary">
-                      {line.allocations
-                        .filter((allocation) => Number(allocation.quantity) > 0)
-                        .map((allocation) => {
-                          const batch = batches.find((item) => item.id === allocation.batchId);
-                          const block = options.data?.blocks.find((item) => item.id === allocation.blockId);
-                          return `${Number(allocation.quantity).toLocaleString()} from ${batch?.name ?? "batch"} in ${block?.name ?? "block"}`;
-                        })
-                        .join(" · ")}
+                      {line.chickenType
+                        ? `${chickenTypeLabel(line.chickenType)} · ${lineTotals[index].quantity.toLocaleString()} ordered`
+                        : "Chicken type not selected"}
                     </AppText>
                   </View>
                 );
@@ -1987,61 +1756,19 @@ function ChickenSaleContent() {
               ) : null}
               <View
                 style={[
-                  styles.profitCard,
+                  styles.deliveryNote,
                   {
-                    backgroundColor: hasUnknownCost
-                      ? theme.backgroundElement
-                      : `${estimatedProfitCents < 0n ? theme.danger : theme.success}12`,
-                    borderColor: hasUnknownCost
-                      ? theme.border
-                      : `${estimatedProfitCents < 0n ? theme.danger : theme.success}55`,
+                    backgroundColor: `${theme.primary}0A`,
+                    borderColor: `${theme.primary}35`,
                   },
                 ]}
               >
-                <Ionicons
-                  name={
-                    hasUnknownCost
-                      ? "information-circle-outline"
-                      : estimatedProfitCents < 0n
-                        ? "trending-down-outline"
-                        : "trending-up-outline"
-                  }
-                  size={22}
-                  color={
-                    hasUnknownCost
-                      ? theme.textSecondary
-                      : estimatedProfitCents < 0n
-                        ? theme.danger
-                        : theme.success
-                  }
-                />
+                <Ionicons name="cube-outline" size={22} color={theme.primary} />
                 <View style={styles.flexCopy}>
-                  <AppText weight="semibold">
-                    {hasUnknownCost ? "Profit estimate incomplete" : "Estimated profit"}
+                  <AppText weight="semibold">Delivery is recorded separately</AppText>
+                  <AppText size="small" tone="secondary">
+                    Save the full order now. On the sale details page, record the quantity handed over; each delivery updates flock stock and leaves the balance outstanding for later.
                   </AppText>
-                  {hasUnknownCost ? (
-                    <AppText size="small" tone="secondary">
-                      Purchase cost is missing for at least one selected batch.
-                    </AppText>
-                  ) : (
-                    <>
-                      <AppText
-                        size="heading"
-                        weight="semibold"
-                        style={{ color: estimatedProfitCents < 0n ? theme.danger : theme.success }}
-                      >
-                        {formatCents(estimatedProfitCents, theme.currency)}
-                      </AppText>
-                      <AppText size="small" tone="secondary">
-                        Sale total less the birds’ recorded purchase cost.
-                        Feed and care costs are not included.
-                      </AppText>
-                      <SummaryLine
-                        label="Estimated purchase cost"
-                        value={formatCents(estimatedCostCents, theme.currency)}
-                      />
-                    </>
-                  )}
                 </View>
               </View>
             </Card>
@@ -2100,7 +1827,7 @@ function ChickenSaleContent() {
               />
             ) : (
               <Button
-                label="Record sale and update stock"
+                label="Record sale order"
                 style={{ flex: 1 }}
                 loading={createSale.isPending}
                 disabled={options.isError || !options.data}
@@ -2147,22 +1874,6 @@ function SummaryLine({
       </AppText>
     </View>
   );
-}
-
-function formatBatchAge(hatchDate: string | null): string {
-  if (!hatchDate) return "unknown";
-  const hatch = new Date(`${hatchDate}T00:00:00`);
-  if (Number.isNaN(hatch.getTime())) return "unknown";
-  const days = Math.max(
-    0,
-    Math.floor((Date.now() - hatch.getTime()) / 86_400_000),
-  );
-  const weeks = Math.floor(days / 7);
-  const remainingDays = days % 7;
-  if (weeks === 0) return `${days} ${days === 1 ? "day" : "days"}`;
-  return `${weeks} ${weeks === 1 ? "week" : "weeks"}${
-    remainingDays ? ` ${remainingDays} ${remainingDays === 1 ? "day" : "days"}` : ""
-  }`;
 }
 
 function ChoiceChip({
@@ -2300,6 +2011,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
+  formField: { gap: 7 },
   customerPickerHeading: {
     flexDirection: "row",
     alignItems: "center",
@@ -2431,6 +2143,17 @@ const styles = StyleSheet.create({
   walkInRadioSelected: { width: 10, height: 10, borderRadius: 5 },
   stepActions: { flexDirection: "row", gap: 10 },
   saleLine: { gap: 11 },
+  lineTotal: {
+    minHeight: 58,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 13,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderRadius: 11,
+  },
   lineHeading: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -2562,7 +2285,7 @@ const styles = StyleSheet.create({
   notesInput: { minHeight: 78, textAlignVertical: "top" },
   reviewRow: { flexDirection: "row", alignItems: "center", gap: 9 },
   reviewLine: { gap: 6, paddingVertical: 9, borderBottomWidth: 1 },
-  profitCard: {
+  deliveryNote: {
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 11,

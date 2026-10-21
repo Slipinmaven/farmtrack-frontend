@@ -209,6 +209,7 @@ function FarmSetupContent({
         <ScrollView
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
+          automaticallyAdjustKeyboardInsets
         >
           <View style={styles.farmHeading}>
             <AppText size="small" weight="semibold" style={{ color: primary }}>
@@ -750,6 +751,7 @@ function CreateFarmForm({
         <ScrollView
           contentContainerStyle={styles.createContent}
           keyboardShouldPersistTaps="handled"
+          automaticallyAdjustKeyboardInsets
         >
           <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
             FARMTRACK  /  NEW FARM

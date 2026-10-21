@@ -102,7 +102,6 @@ function FlockContent() {
       ? Math.min(100, (totalBirds / ratedCapacity) * 100)
       : maximumCapacityUsed;
   const birdsToRatedLimit = Math.max(0, ratedCapacity - totalBirds);
-  const extraAllowance = Math.max(0, maximumCapacity - ratedCapacity);
   const activeBlockCount = blocks.filter(
     (block) => block.current_chickens > 0,
   ).length;
@@ -217,15 +216,7 @@ function FlockContent() {
                 </View>
               </View>
 
-              <View
-                style={[
-                  styles.capacityInsight,
-                  {
-                    backgroundColor: theme.background,
-                    borderColor: theme.border,
-                  },
-                ]}
-              >
+              <View style={styles.capacityInsight}>
                 <View style={styles.capacityInsightHeading}>
                   <View style={styles.capacityInsightTitle}>
                     <Ionicons
@@ -233,8 +224,8 @@ function FlockContent() {
                       size={17}
                       color={theme.primary}
                     />
-                    <AppText size="small" weight="semibold">
-                      Housing
+                    <AppText size="small" weight="semibold" numberOfLines={1}>
+                      Housing capacity
                     </AppText>
                   </View>
                   <View
@@ -272,10 +263,10 @@ function FlockContent() {
                 <View style={styles.capacityDataRow}>
                   <AppText size="small" tone="secondary">
                     {ratedCapacity > 0
-                      ? "Occupancy vs standard"
+                      ? "Used"
                       : maximumCapacity > 0
-                        ? "Occupancy vs maximum"
-                        : "Capacity not configured"}
+                        ? "Maximum used"
+                        : "Not configured"}
                   </AppText>
                   <AppText weight="semibold">
                     {maximumCapacity > 0
@@ -310,14 +301,14 @@ function FlockContent() {
                 ) : null}
                 <AppText size="small" tone="secondary" numberOfLines={2}>
                   {maximumCapacity <= 0
-                    ? "Set block capacities to track housing use."
+                    ? "Set block capacity to track space."
                     : blocksOverMaximum > 0
-                      ? `${birdsOverMaximum.toLocaleString()} birds above maximum across ${blocksOverMaximum} ${blocksOverMaximum === 1 ? "block" : "blocks"}`
+                      ? `${birdsOverMaximum.toLocaleString()} above max · ${blocksOverMaximum} ${blocksOverMaximum === 1 ? "block" : "blocks"}`
                       : birdsOverRatedCapacity > 0
-                        ? `${birdsOverRatedCapacity.toLocaleString()} birds above standard in ${blocksOverRatedCapacity} ${blocksOverRatedCapacity === 1 ? "block" : "blocks"}`
+                        ? `${birdsOverRatedCapacity.toLocaleString()} above standard · ${blocksOverRatedCapacity} ${blocksOverRatedCapacity === 1 ? "block" : "blocks"}`
                         : ratedCapacity > 0
-                          ? `${birdsToRatedLimit.toLocaleString()} birds of standard room · ${maximumCapacity.toLocaleString()} max${extraAllowance ? ` incl. ${extraAllowance.toLocaleString()} extra` : ""}`
-                          : `Maximum capacity: ${maximumCapacity.toLocaleString()} birds`}
+                          ? `${birdsToRatedLimit.toLocaleString()} standard spaces left`
+                          : `Maximum ${maximumCapacity.toLocaleString()} birds`}
                 </AppText>
               </View>
 
@@ -756,7 +747,11 @@ function FlockContent() {
                 size={22}
                 color={theme.textSecondary}
               />
-              <AppText size="small" tone="secondary">
+              <AppText
+                size="small"
+                tone="secondary"
+                style={styles.emptyActivityCopy}
+              >
                 Chicken movements and losses will appear here as they’re recorded.
               </AppText>
             </View>
@@ -781,26 +776,24 @@ function SummaryStat({
   theme: ReturnType<typeof useTheme>["theme"];
 }) {
   return (
-    <View
-      style={[
-        styles.summaryStat,
-        { borderColor: theme.border, backgroundColor: theme.backgroundElement },
-      ]}
-    >
-      <View style={styles.summaryStatTop}>
-        <View style={[styles.summaryStatIcon, { backgroundColor: `${accent}18` }]}>
-          <Ionicons
-            name={icon}
-            size={16}
-            color={theme.mode === "dark" ? theme.onPrimary : accent}
-          />
-        </View>
-        <AppText style={[styles.summaryStatValue, { color: theme.text }]}>
-          {value}
-        </AppText>
+    <View style={styles.summaryStat}>
+      <View style={[styles.summaryStatIcon, { backgroundColor: `${accent}18` }]}>
+        <Ionicons
+          name={icon}
+          size={15}
+          color={theme.mode === "dark" ? theme.onPrimary : accent}
+        />
       </View>
-      <AppText size="small" tone="secondary">
+      <AppText size="small" tone="secondary" numberOfLines={1} style={styles.summaryStatLabel}>
         {label}
+      </AppText>
+      <AppText
+        size="small"
+        weight="semibold"
+        numberOfLines={1}
+        style={[styles.summaryStatValue, { color: theme.text }]}
+      >
+        {value}
       </AppText>
     </View>
   );
@@ -950,7 +943,7 @@ function BatchInventoryCard({
         </AppText>
       </View>
       <View style={[styles.batchAllocationDivider, { borderTopColor: theme.border }]} />
-      <AppText size="small" weight="semibold">
+      <AppText size="small" weight="semibold" numberOfLines={1}>
         Housing allocation · {batch.stocks.length}{" "}
         {batch.stocks.length === 1 ? "block" : "blocks"}
       </AppText>
@@ -1068,7 +1061,7 @@ function ActivityRow({
             {subtitle}
           </AppText>
         ) : null}
-        <AppText size="small" tone="secondary">
+        <AppText size="small" tone="secondary" numberOfLines={1}>
           {formatRelativeDate(entry.created_at)}
         </AppText>
       </View>
@@ -1179,9 +1172,9 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   flockSummary: {
-    gap: 15,
-    padding: 16,
-    borderRadius: 14,
+    gap: 13,
+    padding: 14,
+    borderRadius: 8,
   },
   flockHero: {
     flexDirection: "row",
@@ -1209,10 +1202,10 @@ const styles = StyleSheet.create({
     fontVariant: ["tabular-nums"],
   },
   capacityInsight: {
-    gap: 9,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 11,
-    padding: 12,
+    gap: 8,
+    paddingTop: 11,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#80808040",
   },
   capacityInsightHeading: {
     flexDirection: "row",
@@ -1252,36 +1245,28 @@ const styles = StyleSheet.create({
   },
   summaryStats: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
+    alignItems: "center",
+    paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#80808040",
   },
   summaryStat: {
-    alignItems: "stretch",
-    flexGrow: 1,
-    flexBasis: "45%",
-    minHeight: 92,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 9,
-    gap: 7,
-    padding: 11,
-  },
-  summaryStatTop: {
+    flex: 1,
+    minWidth: 0,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    gap: 8,
+    gap: 7,
+    paddingHorizontal: 4,
   },
   summaryStatIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 9,
+    width: 27,
+    height: 27,
+    borderRadius: 7,
     alignItems: "center",
     justifyContent: "center",
   },
+  summaryStatLabel: { flex: 1, minWidth: 0 },
   summaryStatValue: {
-    fontSize: 24,
-    lineHeight: 30,
-    fontWeight: "600",
     fontVariant: ["tabular-nums"],
   },
   actionGrid: {
@@ -1494,7 +1479,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  activityCopy: { flex: 1, gap: 3 },
+  activityCopy: { flex: 1, minWidth: 0, gap: 3 },
   activityChevron: { alignSelf: "center" },
   activityHistoryAction: {
     flexDirection: "row",
@@ -1506,8 +1491,9 @@ const styles = StyleSheet.create({
   },
   emptyActivity: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 9,
     paddingVertical: 8,
   },
+  emptyActivityCopy: { flex: 1, minWidth: 0, flexShrink: 1 },
 });

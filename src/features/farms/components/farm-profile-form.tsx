@@ -221,6 +221,7 @@ function FarmProfileFormContent() {
         <ScrollView
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
+          automaticallyAdjustKeyboardInsets
         >
           <FarmPageHeader title="Farm profile" showBack />
           <FarmSelector />

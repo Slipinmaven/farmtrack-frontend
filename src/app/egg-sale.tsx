@@ -64,20 +64,6 @@ type PaymentDraft = {
   reference: string;
 };
 
-type SaleCompletion = {
-  id: string;
-  referenceNumber: string | null;
-  totalCents: bigint;
-  paidCents: bigint;
-  balanceDueCents: bigint;
-  creditCents: bigint;
-  saleDate: string;
-  customerName: string;
-  itemSummaries: { label: string; amount: string }[];
-  paymentSummaries: { label: string; amount: string }[];
-  reminderMessage: string;
-};
-
 const paymentMethods = [
   { label: "Cash", value: "cash" },
   { label: "M-Pesa", value: "mpesa" },
@@ -220,7 +206,7 @@ function EggSaleContent() {
     [sellableProducts],
   );
 
-  const [stage, setStage] = useState<"edit" | "review" | "success">("edit");
+  const [stage, setStage] = useState<"edit" | "review">("edit");
   const [step, setStep] = useState(0);
   const [productId, setProductId] = useState("");
   const [lines, setLines] = useState<SaleLine[]>([]);
@@ -242,9 +228,6 @@ function EggSaleContent() {
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-  const [completion, setCompletion] = useState<SaleCompletion | null>(null);
-  const [referenceCopied, setReferenceCopied] = useState(false);
-  const [copyError, setCopyError] = useState("");
   const scrollRef = useRef<ScrollView>(null);
   const inputRefs = useRef<Record<string, TextInput | null>>({});
 
@@ -568,8 +551,6 @@ function EggSaleContent() {
         parseMoneyToCents(String(result.balance_due)) ?? balanceDueCents;
       const savedCredit =
         parseMoneyToCents(String(result.credit_balance)) ?? creditCents;
-      const savedPaid =
-        parseMoneyToCents(String(result.amount_paid)) ?? paidCents;
       let reminderMessage = "";
       if (scheduleSaleFollowUp && (savedBalanceDue > 0n || savedCredit > 0n)) {
         try {
@@ -614,36 +595,21 @@ function EggSaleContent() {
           reminderMessage = `The sale was recorded, but the reminder could not be saved. ${normalizeApiError(reminderError).message}`;
         }
       }
-      setCompletion({
-        id: result.id,
-        referenceNumber: result.reference_number,
-        totalCents,
-        paidCents: savedPaid,
-        balanceDueCents: savedBalanceDue,
-        creditCents: savedCredit,
-        saleDate: effectiveSaleDate,
-        customerName: customer?.name ?? "Walk-in customer",
-        itemSummaries: lines.map((line) => {
-          const unit = product.units.find((item) => item.id === line.unitId);
-          return {
-            label: `${line.quantity} ${unit?.abbreviation ?? "unit"} × ${formatCurrency(salePriceCents(line.unitPrice) ?? 0n, currency)}`,
-            amount: formatCurrency(lineTotalCents(line) ?? 0n, currency),
-          };
-        }),
-        paymentSummaries: recordPayment
-          ? payments.map((payment, index) => ({
-              label: `Payment ${index + 1} · ${paymentMethods.find((method) => method.value === payment.method)?.label ?? "Payment"}${payment.reference.trim() ? ` · ${payment.reference.trim()}` : ""}`,
-              amount: formatCurrency(
-                salePriceCents(payment.amount) ?? 0n,
-                currency,
-              ),
-            }))
-          : [],
-        reminderMessage,
+      router.replace({
+        pathname: "/sales/[saleId]",
+        params: {
+          saleId: result.id,
+          created: "true",
+          ...(reminderMessage
+            ? {
+                reminderNotice: reminderMessage,
+                ...(reminderMessage.includes("could not be saved")
+                  ? { reminderNoticeTone: "warning" }
+                  : {}),
+              }
+            : {}),
+        },
       });
-      setReferenceCopied(false);
-      setCopyError("");
-      setStage("success");
     } catch (submitError: unknown) {
       setStage("edit");
       setStep(0);
@@ -683,23 +649,6 @@ function EggSaleContent() {
     }
   }
 
-  async function copySaleReference() {
-    if (!completion) return;
-    try {
-      const Clipboard = await import("expo-clipboard");
-      await Clipboard.setStringAsync(
-        completion.referenceNumber ?? completion.id,
-      );
-      setReferenceCopied(true);
-      setCopyError("");
-    } catch (clipboardError: unknown) {
-      setReferenceCopied(false);
-      setCopyError(
-        `Could not copy the reference. ${normalizeApiError(clipboardError).message}`,
-      );
-    }
-  }
-
   if (options.isLoading) {
     return <LoadingState label="Loading egg sale options" />;
   }
@@ -711,26 +660,22 @@ function EggSaleContent() {
     >
       <KeyboardAvoidingView
         style={styles.screen}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
         <ScrollView
           ref={scrollRef}
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
+          automaticallyAdjustKeyboardInsets
+          keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
         >
           <FarmPageHeader
-            title={
-              stage === "success"
-                ? "Sale recorded"
-                : stage === "edit"
-                  ? "Sell eggs"
-                  : "Review egg sale"
-            }
+            title={stage === "edit" ? "Sell eggs" : "Review egg sale"}
             showBack
             backHref="/(tabs)/eggs"
           />
 
-          {stage !== "success" && options.isError ? (
+          {options.isError ? (
             <Card style={styles.card}>
               <AppText weight="semibold">Could not load egg stock</AppText>
               <AppText size="small" tone="secondary">
@@ -744,8 +689,7 @@ function EggSaleContent() {
             </Card>
           ) : null}
 
-          {stage !== "success" &&
-          !options.isError &&
+          {!options.isError &&
           sellableProducts.length === 0 ? (
             <Card style={styles.empty}>
               <Ionicons
@@ -767,8 +711,7 @@ function EggSaleContent() {
             </Card>
           ) : null}
 
-          {stage !== "success" &&
-          !options.isError &&
+          {!options.isError &&
           sellableProducts.length > 0 &&
           inStockProducts.length === 0 ? (
             <Card style={styles.empty}>
@@ -789,161 +732,6 @@ function EggSaleContent() {
                 onPress={() => router.push("/egg-collection")}
               />
             </Card>
-          ) : null}
-
-          {stage === "success" && completion ? (
-            <View style={styles.successContent}>
-              <Card style={styles.successHero}>
-                <View
-                  style={[
-                    styles.successIcon,
-                    { backgroundColor: `${theme.success}18` },
-                  ]}
-                >
-                  <Ionicons name="checkmark" size={30} color={theme.success} />
-                </View>
-                <AppText size="heading" weight="semibold">
-                  Egg sale recorded
-                </AppText>
-                <AppText size="small" tone="secondary">
-                  The sale and inventory update are complete.
-                </AppText>
-              </Card>
-
-              <Card style={styles.card}>
-                <AppText weight="semibold">
-                  {completion.referenceNumber
-                    ? "Transaction reference"
-                    : "Transaction ID"}
-                </AppText>
-                <View style={styles.referenceRow}>
-                  <AppText
-                    size="heading"
-                    weight="semibold"
-                    style={styles.referenceValue}
-                    selectable
-                  >
-                    {completion.referenceNumber ?? completion.id}
-                  </AppText>
-                  <Button
-                    label={referenceCopied ? "Copied" : "Copy"}
-                    variant="secondary"
-                    onPress={() => void copySaleReference()}
-                  />
-                </View>
-                {copyError ? (
-                  <AppText size="small" style={{ color: theme.danger }}>
-                    {copyError}
-                  </AppText>
-                ) : null}
-              </Card>
-
-              <Card style={styles.card}>
-                <AppText weight="semibold">Sale details</AppText>
-                {completion.itemSummaries.map((item, index) => (
-                  <View
-                    key={`${item.label}-${index}`}
-                    style={styles.summaryRow}
-                  >
-                    <AppText size="small" tone="secondary">
-                      {item.label}
-                    </AppText>
-                    <AppText size="small">{item.amount}</AppText>
-                  </View>
-                ))}
-                <View style={styles.totalRow}>
-                  <AppText weight="semibold">Sale total</AppText>
-                  <AppText weight="semibold">
-                    {formatCurrency(completion.totalCents, currency)}
-                  </AppText>
-                </View>
-                <SummaryRow label="Customer" value={completion.customerName} />
-                <SummaryRow label="Sale date" value={completion.saleDate} />
-                {completion.paymentSummaries.map((payment, index) => (
-                  <SummaryRow
-                    key={`${payment.label}-${index}`}
-                    label={payment.label}
-                    value={payment.amount}
-                  />
-                ))}
-                <SummaryRow
-                  label="Paid"
-                  value={formatCurrency(completion.paidCents, currency)}
-                />
-                {completion.balanceDueCents > 0n ? (
-                  <SummaryRow
-                    label="Balance due"
-                    value={formatCurrency(completion.balanceDueCents, currency)}
-                  />
-                ) : null}
-                {completion.creditCents > 0n ? (
-                  <SummaryRow
-                    label="Customer credit"
-                    value={formatCurrency(completion.creditCents, currency)}
-                  />
-                ) : null}
-                {completion.balanceDueCents === 0n &&
-                completion.creditCents === 0n ? (
-                  <AppText
-                    size="small"
-                    weight="semibold"
-                    style={{ color: theme.success }}
-                  >
-                    Paid in full
-                  </AppText>
-                ) : null}
-              </Card>
-
-              {completion.reminderMessage ? (
-                <View
-                  accessibilityRole="alert"
-                  style={[
-                    styles.completionReminder,
-                    {
-                      borderColor: completion.reminderMessage.includes(
-                        "could not be saved",
-                      )
-                        ? theme.danger
-                        : theme.border,
-                      backgroundColor: completion.reminderMessage.includes(
-                        "could not be saved",
-                      )
-                        ? `${theme.danger}10`
-                        : theme.backgroundElement,
-                    },
-                  ]}
-                >
-                  <Ionicons
-                    name={
-                      completion.reminderMessage.includes("could not be saved")
-                        ? "alert-circle-outline"
-                        : "notifications-outline"
-                    }
-                    size={20}
-                    color={
-                      completion.reminderMessage.includes("could not be saved")
-                        ? theme.danger
-                        : theme.primary
-                    }
-                  />
-                  <AppText size="small" style={styles.formErrorText}>
-                    {completion.reminderMessage}
-                  </AppText>
-                </View>
-              ) : null}
-
-              <View style={styles.successActions}>
-                <Button
-                  label="View sales"
-                  variant="secondary"
-                  onPress={() => router.replace("/(tabs)/sales")}
-                />
-                <Button
-                  label="Return to eggs"
-                  onPress={() => router.replace("/(tabs)/eggs")}
-                />
-              </View>
-            </View>
           ) : null}
 
           {inStockProducts.length > 0 && stage === "edit" ? (
@@ -2080,36 +1868,6 @@ const styles = StyleSheet.create({
     alignSelf: "center",
     padding: 20,
     gap: 14,
-  },
-  successContent: { gap: 14 },
-  successHero: {
-    alignItems: "center",
-    gap: 8,
-    paddingVertical: 24,
-  },
-  successIcon: {
-    width: 56,
-    height: 56,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 28,
-    marginBottom: 4,
-  },
-  referenceRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  referenceValue: { flex: 1 },
-  successActions: { gap: 9 },
-  completionReminder: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 9,
-    borderWidth: 1,
-    borderRadius: 8,
-    padding: 12,
   },
   card: { gap: 13 },
   progressCard: {

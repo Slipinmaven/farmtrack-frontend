@@ -170,6 +170,7 @@ function ChickenLossContent() {
         <ScrollView
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
+          automaticallyAdjustKeyboardInsets
         >
           <FarmPageHeader title="Record chicken loss" showBack />
           <AppText tone="secondary">

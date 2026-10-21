@@ -16,7 +16,13 @@ export function AuthRecoveryState({
 }) {
   const { theme } = useTheme();
   const cannotConnect =
-    errorCode === "NETWORK_ERROR" || errorCode === "CLIENT_ERROR";
+    errorCode === "NETWORK_ERROR" ||
+    errorCode === "CLIENT_ERROR" ||
+    errorCode === "SERVER_WAKE_TIMEOUT";
+  const connectionMessage =
+    errorCode === "SERVER_WAKE_TIMEOUT"
+      ? "The FarmTrack server took too long to wake. Try again shortly; your saved sign-in is still on this device."
+      : "Check your internet connection, then try again. Your saved sign-in is still on this device.";
 
   return (
     <View style={[styles.screen, { backgroundColor: theme.background }]}>
@@ -36,7 +42,7 @@ export function AuthRecoveryState({
       </AppText>
       <AppText tone="secondary" style={styles.message}>
         {cannotConnect
-          ? "Check your internet connection, then try again. Your saved sign-in is still on this device."
+          ? connectionMessage
           : (error ??
             "FarmTrack couldn’t verify your saved sign-in. Try again shortly.")}
       </AppText>

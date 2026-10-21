@@ -1,7 +1,14 @@
 import { Ionicons } from "@expo/vector-icons";
 import { router, type Href } from "expo-router";
 import { useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import {
+  ActivityIndicator,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { LoadingState } from "@/components/feedback/loading-state";
@@ -132,6 +139,15 @@ function ReportsContent() {
     undefined,
   );
   const activitySummaryQuery = useFarmActivitySummary(user?.id, farmId);
+  const isRefreshing =
+    expensesQuery.isRefetching ||
+    profitabilityQuery.isRefetching ||
+    salesQuery.isRefetching ||
+    flockQuery.isRefetching ||
+    eggsQuery.isRefetching ||
+    inventoryQuery.isRefetching ||
+    activitiesQuery.isRefetching ||
+    activitySummaryQuery.isRefetching;
   const recentActivities =
     activitiesQuery.data?.pages.flatMap((page) => page.items).slice(0, 6) ?? [];
   const expenseTotal = Number(expensesQuery.data?.total_amount ?? 0);
@@ -458,6 +474,19 @@ function ReportsContent() {
     }
   }
 
+  async function refreshReports() {
+    await Promise.all([
+      expensesQuery.refetch(),
+      profitabilityQuery.refetch(),
+      salesQuery.refetch(),
+      flockQuery.refetch(),
+      eggsQuery.refetch(),
+      inventoryQuery.refetch(),
+      activitiesQuery.refetch(),
+      activitySummaryQuery.refetch(),
+    ]);
+  }
+
   if (!farm.selectedFarm) {
     return (
       <SafeAreaView
@@ -482,8 +511,27 @@ function ReportsContent() {
       style={[styles.screen, { backgroundColor: theme.background }]}
       edges={["top", "bottom"]}
     >
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefreshing}
+            onRefresh={() => void refreshReports()}
+            tintColor={theme.primary}
+            colors={[theme.primary]}
+          />
+        }
+      >
         <FarmPageHeader title="Farm reports" showBack />
+
+        {isRefreshing ? (
+          <View style={styles.refreshStatus}>
+            <ActivityIndicator size="small" color={theme.primary} />
+            <AppText size="small" tone="secondary">
+              Updating report data…
+            </AppText>
+          </View>
+        ) : null}
 
         <Card style={styles.card}>
           <View style={styles.periodHeading}>
@@ -630,6 +678,7 @@ function ReportsContent() {
                 currency={currency}
                 detail={`${salesQuery.data?.summary.transaction_count ?? 0} transactions`}
                 accent={theme.primary}
+                valueColor={theme.primary}
                 onPress={() => router.push(reportHref("sales", fromDate, toDate))}
               />
               <MetricCard
@@ -638,7 +687,8 @@ function ReportsContent() {
                 value={expenseTotal}
                 currency={currency}
                 detail={`${expensesQuery.data?.expense_count ?? 0} records`}
-                accent={theme.textSecondary}
+                accent={theme.secondary}
+                valueColor={theme.text}
                 onPress={() => router.push(reportHref("expenses", fromDate, toDate))}
               />
               <MetricCard
@@ -648,6 +698,10 @@ function ReportsContent() {
                 currency={currency}
                 detail="Outstanding on completed sales"
                 accent={customerBalance > 0 ? theme.secondary : theme.success}
+                valueColor={customerBalance > 0 ? theme.secondary : theme.success}
+                statusLabel={customerBalance > 0 ? "To collect" : "Settled"}
+                statusColor={customerBalance > 0 ? theme.secondary : theme.success}
+                statusIcon={customerBalance > 0 ? "alert-circle-outline" : "checkmark-circle-outline"}
                 onPress={() => router.push(reportHref("accounts", fromDate, toDate))}
               />
               <MetricCard
@@ -656,7 +710,11 @@ function ReportsContent() {
                 value={expenseBalance}
                 currency={currency}
                 detail="Remaining expense balances"
-                accent={expenseBalance > 0 ? theme.secondary : theme.success}
+                accent={expenseBalance > 0 ? theme.danger : theme.success}
+                valueColor={expenseBalance > 0 ? theme.danger : theme.success}
+                statusLabel={expenseBalance > 0 ? "Payment due" : "Clear"}
+                statusColor={expenseBalance > 0 ? theme.danger : theme.success}
+                statusIcon={expenseBalance > 0 ? "warning-outline" : "checkmark-circle-outline"}
                 onPress={() => router.push(reportHref("expenses", fromDate, toDate))}
               />
             </View>
@@ -1388,6 +1446,10 @@ function MetricCard({
   currency,
   detail,
   accent,
+  valueColor,
+  statusLabel,
+  statusColor,
+  statusIcon,
   onPress,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
@@ -1396,38 +1458,51 @@ function MetricCard({
   currency: string;
   detail: string;
   accent: string;
+  valueColor: string;
+  statusLabel?: string;
+  statusColor?: string;
+  statusIcon?: keyof typeof Ionicons.glyphMap;
   onPress: () => void;
 }) {
   const { theme } = useTheme();
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={[
+        label,
+        `${currency} ${new Intl.NumberFormat(undefined, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        }).format(value)}`,
+        detail,
+        statusLabel,
+      ].filter(Boolean).join(". ")}
       onPress={onPress}
       style={[
         styles.metricCard,
         { backgroundColor: theme.backgroundElement, borderColor: theme.border },
       ]}
     >
-      <View style={[styles.metricIcon, { backgroundColor: `${accent}1A` }]}>
-        <Ionicons name={icon} size={18} color={accent} />
+      <View style={styles.metricHeader}>
+        <View style={[styles.metricIcon, { backgroundColor: `${accent}1A` }]}>
+          <Ionicons name={icon} size={18} color={accent} />
+        </View>
+        {statusLabel && statusColor && statusIcon ? (
+          <View style={[styles.metricStatus, { backgroundColor: `${statusColor}18` }]}>
+            <Ionicons name={statusIcon} size={15} color={statusColor} />
+          </View>
+        ) : null}
       </View>
-      <AppText size="small" tone="secondary">
+      <AppText size="small" tone="secondary" numberOfLines={2}>
         {label}
       </AppText>
-      <MoneyValue
-        value={value}
-        currency={currency}
-      />
-      <AppText size="small" tone="secondary">
-        {detail}
-      </AppText>
-      <View style={[styles.metricAccent, { backgroundColor: accent }]} />
-      <Ionicons
-        name="chevron-forward"
-        size={15}
-        color={theme.textSecondary}
-        style={styles.metricChevron}
-      />
+      <MoneyValue value={value} currency={currency} color={valueColor} />
+      <View style={styles.metricFooter}>
+        <AppText size="small" tone="secondary" numberOfLines={1} style={styles.metricDetail}>
+          {detail}
+        </AppText>
+        <Ionicons name="chevron-forward" size={15} color={theme.textSecondary} />
+      </View>
     </Pressable>
   );
 }
@@ -1593,8 +1668,14 @@ function reportHref(report: ReportName, fromDate: string, toDate: string): Href 
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
-  content: { padding: 16, gap: 14, paddingBottom: 32 },
-  card: { gap: 13 },
+  content: { padding: 14, gap: 12, paddingBottom: 30 },
+  card: { gap: 12, borderRadius: 12, padding: 14   },
+  refreshStatus: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 4,
+  },
   intro: { gap: 4, paddingHorizontal: 2 },
   grow: { flex: 1, gap: 3 },
   periodHeading: { flexDirection: "row", alignItems: "center", gap: 10 },
@@ -1615,33 +1696,38 @@ const styles = StyleSheet.create({
   },
   dateFilters: { flexDirection: "row", gap: 10 },
   dateField: { flex: 1 },
-  metricGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  metricGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   metricCard: {
-    width: "48%",
-    minHeight: 148,
+    width: "47%",
+    minHeight: 116,
     borderWidth: 1,
-    borderRadius: 14,
-    padding: 12,
-    gap: 7,
-    overflow: "hidden",
-    position: "relative",
+    borderRadius: 12,
+    padding: 10,
+    gap: 5,
+  },
+  metricHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 6,
+    marginBottom: 2,
   },
   metricIcon: {
-    width: 33,
-    height: 33,
+    width: 30,
+    height: 30,
     alignItems: "center",
     justifyContent: "center",
     borderRadius: 10,
-    marginBottom: 2,
   },
-  metricAccent: {
-    position: "absolute",
-    top: 0,
-    bottom: 0,
-    left: 0,
-    width: 3,
+  metricFooter: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: "auto" },
+  metricDetail: { flex: 1 },
+  metricStatus: {
+    width: 27,
+    height: 27,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 14,
   },
-  metricChevron: { position: "absolute", top: 13, right: 10 },
   moneyValue: { gap: 1 },
   profitabilityCard: { gap: 14 },
   profitabilityHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
@@ -1770,14 +1856,14 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     paddingTop: 10,
   },
-  shortcutGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  shortcutGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   shortcutCard: {
-    width: "48%",
-    minHeight: 140,
+    width: "47%",
+    minHeight: 116,
     borderWidth: 1,
-    borderRadius: 14,
-    padding: 12,
-    gap: 7,
+    borderRadius: 12,
+    padding: 10,
+    gap: 5,
   },
   shortcutIcon: {
     width: 34,

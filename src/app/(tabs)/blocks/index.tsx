@@ -89,6 +89,9 @@ export default function BlocksScreen() {
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.list}
           keyboardShouldPersistTaps="handled"
+          automaticallyAdjustKeyboardInsets
+          refreshing={query.isRefetching}
+          onRefresh={() => void query.refetch()}
           renderItem={({ item }) => (
             <Pressable
               accessibilityRole="button"

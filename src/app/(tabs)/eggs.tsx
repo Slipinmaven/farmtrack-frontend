@@ -176,9 +176,6 @@ function EggsContent() {
                   <AppText size="small" weight="semibold" tone="secondary">
                     SELLABLE STOCK
                   </AppText>
-                  <AppText size="small" tone="secondary">
-                    Stocked product types available for sale
-                  </AppText>
                 </View>
                 <View
                   style={[
@@ -238,7 +235,7 @@ function EggsContent() {
                   />
                 </View>
               ) : null}
-              <View style={styles.statGrid}>
+              <View style={[styles.statGrid, { borderTopColor: theme.border }]}>
                 <EggStat
                   label="Products with stock"
                   value={inStockCount.toLocaleString()}
@@ -430,7 +427,11 @@ function EggsContent() {
                 size={22}
                 color={theme.textSecondary}
               />
-              <AppText size="small" tone="secondary">
+              <AppText
+                size="small"
+                tone="secondary"
+                style={styles.emptyActivityCopy}
+              >
                 Egg collections and losses will appear here once recorded.
               </AppText>
             </View>
@@ -471,30 +472,25 @@ function EggStat({
   theme: ReturnType<typeof useTheme>["theme"];
 }) {
   return (
-    <View
-      style={[
-        styles.statCard,
-        { backgroundColor: theme.backgroundElement, borderColor: theme.border },
-      ]}
-    >
-      <View style={styles.statCardTop}>
-        <View style={[styles.statIcon, { backgroundColor: `${color}18` }]}>
-          <Ionicons
-            name={icon}
-            size={16}
-            color={theme.mode === "dark" ? theme.onPrimary : color}
-          />
-        </View>
-        <AppText
-          style={[styles.statValue, { color: theme.text }]}
-          numberOfLines={1}
-          adjustsFontSizeToFit
-        >
-          {value}
-        </AppText>
+    <View style={styles.statCard}>
+      <View style={[styles.statIcon, { backgroundColor: `${color}18` }]}>
+        <Ionicons
+          name={icon}
+          size={15}
+          color={theme.mode === "dark" ? theme.onPrimary : color}
+        />
       </View>
-      <AppText size="small" tone="secondary">
+      <AppText size="small" tone="secondary" numberOfLines={1} style={styles.statLabel}>
         {label}
+      </AppText>
+      <AppText
+        size="small"
+        weight="semibold"
+        style={[styles.statValue, { color: theme.text }]}
+        numberOfLines={1}
+        adjustsFontSizeToFit
+      >
+        {value}
       </AppText>
     </View>
   );
@@ -758,14 +754,14 @@ function EggActivityRow({
         />
       </View>
       <View style={styles.activityCopy}>
-        <AppText size="small" weight="semibold">
+        <AppText size="small" weight="semibold" numberOfLines={1}>
           {activityLabels[entry.type] ?? "Egg activity"}
           {product ? ` · ${product.name}` : ""}
         </AppText>
         <AppText size="small" tone="secondary" numberOfLines={1}>
           {summary}
         </AppText>
-        <AppText size="small" tone="secondary">
+        <AppText size="small" tone="secondary" numberOfLines={1}>
           {formatRelativeDate(entry.created_at)}
         </AppText>
       </View>
@@ -813,9 +809,10 @@ const styles = StyleSheet.create({
     width: "100%",
     maxWidth: 900,
     alignSelf: "center",
-    padding: 18,
-    paddingBottom: 32,
-    gap: 16,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 28,
+    gap: 13,
   },
   pageHeading: {
     flexDirection: "row",
@@ -823,24 +820,24 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   headingCopy: { flex: 1, gap: 3 },
-  actionGroup: { gap: 9 },
-  secondaryActionRow: { flexDirection: "row", gap: 9 },
+  actionGroup: { gap: 7 },
+  secondaryActionRow: { flexDirection: "row", gap: 7 },
   operationAction: {
-    minHeight: 54,
+    minHeight: 46,
     flexDirection: "row",
     flexGrow: 1,
     flexBasis: 0,
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
+    gap: 7,
     borderWidth: 1,
-    borderRadius: 11,
-    paddingHorizontal: 10,
-    paddingVertical: 9,
+    borderRadius: 7,
+    paddingHorizontal: 8,
+    paddingVertical: 7,
   },
-  prominentAction: { minHeight: 58 },
+  prominentAction: { minHeight: 50 },
   stateCard: { alignItems: "center", gap: 9, paddingVertical: 20 },
-  summaryCard: { gap: 15, borderRadius: 14, padding: 17 },
+  summaryCard: { gap: 12, borderRadius: 8, padding: 14 },
   sectionHeading: {
     flexDirection: "row",
     alignItems: "center",
@@ -850,18 +847,18 @@ const styles = StyleSheet.create({
   readinessHeader: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 11,
+    gap: 9,
   },
   readinessIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
+    width: 34,
+    height: 34,
+    borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
   },
   readinessCopy: { flex: 1, gap: 2 },
   readinessBadge: {
-    maxWidth: "39%",
+    maxWidth: "42%",
     borderRadius: 20,
     paddingHorizontal: 9,
     paddingVertical: 5,
@@ -869,56 +866,51 @@ const styles = StyleSheet.create({
   readinessValueRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 13,
-    paddingTop: 2,
+    gap: 10,
+    paddingTop: 0,
   },
   readinessValue: {
-    fontSize: 42,
-    lineHeight: 49,
+    fontSize: 32,
+    lineHeight: 38,
     fontWeight: "700",
     fontVariant: ["tabular-nums"],
   },
   readinessValueCopy: { flex: 1, gap: 2 },
   readinessTrack: { height: 8, borderRadius: 4, overflow: "hidden" },
   readinessFill: { height: "100%", borderRadius: 4 },
-  statGrid: { flexDirection: "row", gap: 9 },
+  statGrid: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingTop: 9,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
   statCard: {
     flex: 1,
     minWidth: 0,
-    minHeight: 84,
-    justifyContent: "space-between",
-    gap: 7,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 11,
-    padding: 12,
-  },
-  statCardTop: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    gap: 8,
+    gap: 7,
+    paddingHorizontal: 3,
   },
   statIcon: {
-    width: 31,
-    height: 31,
-    borderRadius: 8,
+    width: 26,
+    height: 26,
+    borderRadius: 6,
     alignItems: "center",
     justifyContent: "center",
   },
+  statLabel: { flex: 1, minWidth: 0 },
   statValue: {
-    fontSize: 25,
-    lineHeight: 31,
-    fontWeight: "600",
     fontVariant: ["tabular-nums"],
   },
-  inventoryCard: { gap: 13, borderRadius: 14 },
+  inventoryCard: { gap: 11, borderRadius: 8 },
   textAction: { flexDirection: "row", alignItems: "center", gap: 2 },
   productList: { gap: 10 },
   productCard: {
     gap: 10,
     borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 12,
-    padding: 13,
+    borderRadius: 8,
+    padding: 11,
   },
   productHeading: {
     flexDirection: "row",
@@ -926,9 +918,9 @@ const styles = StyleSheet.create({
     gap: 9,
   },
   productIcon: {
-    width: 35,
-    height: 35,
-    borderRadius: 9,
+    width: 31,
+    height: 31,
+    borderRadius: 7,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -946,8 +938,8 @@ const styles = StyleSheet.create({
   },
   productAvailable: { alignItems: "flex-end", gap: 1 },
   productQuantity: {
-    fontSize: 20,
-    lineHeight: 26,
+    fontSize: 18,
+    lineHeight: 24,
     fontVariant: ["tabular-nums"],
   },
   movementDivider: { borderTopWidth: StyleSheet.hairlineWidth },
@@ -963,21 +955,20 @@ const styles = StyleSheet.create({
   movementStat: {
     flex: 1,
     minWidth: 0,
-    gap: 5,
-    borderRadius: 9,
-    paddingVertical: 9,
-    paddingHorizontal: 9,
+    gap: 3,
+    paddingVertical: 4,
+    paddingHorizontal: 3,
   },
   emptyState: { alignItems: "center", gap: 8, paddingVertical: 20 },
   emptyCopy: { maxWidth: 370, textAlign: "center" },
-  activityCard: { gap: 12, borderRadius: 14 },
+  activityCard: { gap: 10, borderRadius: 8 },
   historyAction: {
     flexDirection: "row",
     alignItems: "center",
     gap: 2,
-    borderRadius: 8,
-    paddingHorizontal: 9,
-    paddingVertical: 6,
+    borderRadius: 6,
+    paddingHorizontal: 7,
+    paddingVertical: 5,
   },
   loadingInline: {
     flexDirection: "row",
@@ -990,6 +981,7 @@ const styles = StyleSheet.create({
   activityList: { gap: 0 },
   activityRow: {
     width: "100%",
+    minWidth: 0,
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
@@ -1005,11 +997,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  activityCopy: { flex: 1, gap: 3 },
+  activityCopy: { flex: 1, minWidth: 0, gap: 3 },
   emptyActivity: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 9,
     paddingVertical: 8,
   },
+  emptyActivityCopy: { flex: 1, minWidth: 0, flexShrink: 1 },
 });

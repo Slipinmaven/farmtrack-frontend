@@ -5,7 +5,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { FarmPageHeader } from "@/components/layout/farm-page-header";
 import { SessionGate } from "@/components/layout/session-gate";
 import { useAppDialog } from "@/components/ui/app-dialog";
-import { AppText } from "@/components/ui/app-text";
 import { ContactForm } from "@/features/management/components/contact-form";
 import { useCreateContact } from "@/features/management/hooks";
 import { useAuth } from "@/providers/auth-provider";
@@ -30,13 +29,10 @@ function CreateContactContent() {
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: theme.background }}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
       <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
         <FarmPageHeader title="New contact" showBack backHref="/contacts" />
-        <AppText size="small" tone="secondary" style={styles.intro}>
-          Save contact details and how they work with your farm.
-        </AppText>
         <ContactForm
           submitLabel="Create contact"
           isSubmitting={create.isPending}
@@ -57,5 +53,4 @@ function CreateContactContent() {
 
 const styles = {
   screen: { flex: 1 },
-  intro: { paddingHorizontal: 18, paddingTop: 4 },
 };

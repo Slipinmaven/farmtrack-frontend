@@ -194,7 +194,7 @@ export type ChickenSaleItemInput = {
   quantity: number;
   unit_id: string;
   unit_price: number | string;
-  batch_allocations: ChickenSaleAllocationInput[];
+  batch_allocations?: ChickenSaleAllocationInput[];
 };
 
 export type ChickenSaleInput = {
@@ -313,6 +313,8 @@ export type ChickenSaleFulfillment = {
   items: {
     transaction_item_id: string;
     chicken_type: ChickenType | null;
+    unit_name?: string | null;
+    unit_abbreviation?: string | null;
     ordered_quantity: number | string;
     delivered_quantity: number | string;
     returned_quantity: number | string;
@@ -328,7 +330,7 @@ export type ChickenSaleDeliveryInput = {
   notes?: string;
   items: {
     transaction_item_id: string;
-    quantity_delivered: number;
+    quantity_delivered: number | string;
     batch_allocations: { batch_id: string; block_id: string; quantity: number }[];
   }[];
 };
@@ -401,6 +403,7 @@ export type ChickenPurchaseResult = {
     hatch_date?: string | null;
     quantity: number;
     chicken_type: ChickenType | null;
+    product_type?: "eggs" | "chickens" | "feed" | "medication" | "equipment" | "other" | null;
     product_name?: string | null;
     unit_name?: string | null;
     unit_price: number | string;
@@ -424,6 +427,17 @@ export type ChickenPurchaseResult = {
     notes?: string | null;
   }[];
 };
+
+export function isChickenPurchaseItem(
+  item: Pick<
+    ChickenPurchaseResult["items"][number],
+    "product_type" | "chicken_type"
+  >,
+): boolean {
+  return item.product_type
+    ? item.product_type === "chickens"
+    : item.chicken_type !== null;
+}
 
 export type ChickenPurchaseDetails = {
   transaction: ChickenPurchaseResult;

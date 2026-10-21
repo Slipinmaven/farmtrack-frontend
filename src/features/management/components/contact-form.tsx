@@ -27,16 +27,19 @@ const roleOptions: {
   value: ContactRole;
   label: string;
   description: string;
+  icon: keyof typeof Ionicons.glyphMap;
 }[] = [
   {
     value: "customer",
     label: "Customer",
-    description: "Buys products or services from your farm",
+    description: "Buys products from your farm",
+    icon: "cart-outline",
   },
   {
     value: "supplier",
     label: "Supplier",
-    description: "Provides products or services to your farm",
+    description: "Provides goods or services",
+    icon: "cube-outline",
   },
 ];
 
@@ -103,14 +106,44 @@ export function ContactForm({
       style={styles.scroll}
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
+      automaticallyAdjustKeyboardInsets
     >
-      <Card style={styles.form}>
-        <View style={styles.section}>
-          <AppText size="heading" weight="semibold">
-            Contact information
-          </AppText>
+      <View style={styles.form}>
+        <View style={[styles.formIntro, { backgroundColor: theme.backgroundSelected }]}>
+          <View style={[styles.formIcon, { backgroundColor: theme.primary }]}>
+            <Ionicons name="person-outline" size={22} color={theme.onPrimary} />
+          </View>
+          <View style={styles.formIntroCopy}>
+            <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+              FARM NETWORK
+            </AppText>
+            <AppText size="heading" weight="semibold" style={styles.formTitle}>
+              {initialContact ? "Update contact" : "Add a contact"}
+            </AppText>
+            <AppText size="small" tone="secondary">
+              Keep their details and relationship with your farm together.
+            </AppText>
+          </View>
+        </View>
+
+        <Card style={styles.sectionCard}>
+          <View style={styles.sectionHeading}>
+            <View style={[styles.sectionIcon, { backgroundColor: theme.backgroundSelected }]}>
+              <Ionicons name="person-circle-outline" size={19} color={theme.primary} />
+            </View>
+            <View style={styles.sectionCopy}>
+              <AppText size="body" weight="semibold">
+                Contact details
+              </AppText>
+              <AppText size="small" tone="secondary">
+                Name is required; the rest can be added later.
+              </AppText>
+            </View>
+          </View>
           <TextField
             label="Full name"
+            leadingIcon="person-outline"
             placeholder="e.g. Amina Otieno"
             value={name}
             onChangeText={setName}
@@ -118,6 +151,7 @@ export function ContactForm({
           />
           <TextField
             label="Phone (optional)"
+            leadingIcon="call-outline"
             placeholder="Phone number"
             keyboardType="phone-pad"
             value={phone}
@@ -126,6 +160,7 @@ export function ContactForm({
           />
           <TextField
             label="Email (optional)"
+            leadingIcon="mail-outline"
             placeholder="name@example.com"
             keyboardType="email-address"
             autoCapitalize="none"
@@ -135,6 +170,7 @@ export function ContactForm({
           />
           <TextField
             label="Address (optional)"
+            leadingIcon="location-outline"
             placeholder="Street, town, or delivery location"
             value={address}
             onChangeText={setAddress}
@@ -142,25 +178,28 @@ export function ContactForm({
           />
           <TextField
             label="Notes (optional)"
+            leadingIcon="document-text-outline"
             placeholder="Additional details"
             value={notes}
             onChangeText={setNotes}
             multiline
             style={styles.multiline}
           />
-        </View>
+        </Card>
 
-        <View style={styles.section}>
-          <View style={styles.roleHeading}>
-            <View style={styles.roleCopy}>
-              <AppText size="heading" weight="semibold">
+        <Card style={styles.sectionCard}>
+          <View style={styles.sectionHeading}>
+            <View style={[styles.sectionIcon, { backgroundColor: theme.backgroundSelected }]}>
+              <Ionicons name="people-outline" size={18} color={theme.primary} />
+            </View>
+            <View style={styles.sectionCopy}>
+              <AppText size="body" weight="semibold">
                 Relationship
               </AppText>
               <AppText size="small" tone="secondary">
-                Select one or both. A contact can be a customer and a supplier.
+                Select one or both roles for this contact.
               </AppText>
             </View>
-            <Ionicons name="people-outline" size={22} color={theme.primary} />
           </View>
           {roleOptions.map((option) => {
             const selected = roles.includes(option.value);
@@ -180,34 +219,56 @@ export function ContactForm({
                   },
                 ]}
               >
+                <View
+                  style={[
+                    styles.roleIcon,
+                    { backgroundColor: selected ? theme.primary : theme.backgroundSelected },
+                  ]}
+                >
+                  <Ionicons
+                    name={option.icon}
+                    size={18}
+                    color={selected ? theme.onPrimary : theme.primary}
+                  />
+                </View>
                 <View style={styles.roleOptionCopy}>
                   <AppText weight="semibold">{option.label}</AppText>
-                  <AppText size="small" tone="secondary">
+                  <AppText size="small" tone="secondary" style={styles.roleDescription}>
                     {option.description}
                   </AppText>
                 </View>
                 <Ionicons
-                  name={selected ? "checkbox" : "square-outline"}
-                  size={21}
+                  name={selected ? "checkmark-circle" : "ellipse-outline"}
+                  size={20}
                   color={selected ? theme.primary : theme.textSecondary}
                 />
               </Pressable>
             );
           })}
-        </View>
+        </Card>
 
         {error ? (
-          <AppText size="small" style={{ color: theme.danger }}>
-            {error}
-          </AppText>
+          <View
+            accessibilityRole="alert"
+            style={[
+              styles.error,
+              { backgroundColor: `${theme.danger}12`, borderColor: `${theme.danger}55` },
+            ]}
+          >
+            <Ionicons name="alert-circle-outline" size={18} color={theme.danger} />
+            <AppText size="small" style={{ color: theme.danger, flex: 1 }}>
+              {error}
+            </AppText>
+          </View>
         ) : null}
         <Button
           label={submitLabel}
           loading={isSubmitting}
+          style={styles.submitButton}
           disabled={!name.trim() || roles.length === 0}
           onPress={() => void submit()}
         />
-      </Card>
+      </View>
     </ScrollView>
   );
 }
@@ -220,23 +281,64 @@ const styles = StyleSheet.create({
     maxWidth: 680,
     alignSelf: "center",
     paddingHorizontal: 18,
-    paddingTop: 12,
-    paddingBottom: 32,
+    paddingTop: 14,
+    paddingBottom: 36,
   },
-  form: { gap: 24 },
-  section: { gap: 14 },
-  multiline: { minHeight: 84, textAlignVertical: "top" },
-  roleHeading: { flexDirection: "row", alignItems: "center", gap: 12 },
-  roleCopy: { flex: 1, gap: 2 },
-  roleOption: {
-    minHeight: 64,
+  form: { gap: 15 },
+  formIntro: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 13,
+    borderRadius: 12,
+    padding: 14,
+  },
+  formIcon: {
+    width: 46,
+    height: 46,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+  },
+  formIntroCopy: { flex: 1, minWidth: 0, gap: 2 },
+  formTitle: { fontSize: 25, lineHeight: 32 },
+  sectionCard: { gap: 15, borderRadius: 11, padding: 15 },
+  sectionHeading: { flexDirection: "row", alignItems: "center", gap: 10 },
+  sectionIcon: {
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 9,
+  },
+  sectionCopy: { flex: 1, minWidth: 0, gap: 1 },
+  multiline: { minHeight: 76, textAlignVertical: "top" },
+  roleOption: {
+    minHeight: 68,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
     borderWidth: 1,
-    borderRadius: 6,
-    paddingHorizontal: 13,
+    borderRadius: 9,
+    paddingHorizontal: 10,
     paddingVertical: 9,
   },
-  roleOptionCopy: { flex: 1, gap: 2 },
+  roleIcon: {
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 9,
+  },
+  roleOptionCopy: { flex: 1, minWidth: 0, gap: 2 },
+  roleDescription: { flexShrink: 1, lineHeight: 17 },
+  error: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+  },
+  submitButton: { minHeight: 52, borderRadius: 9 },
 });

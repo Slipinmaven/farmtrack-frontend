@@ -397,12 +397,57 @@ function ChickenMovementContent() {
           ref={scrollRef}
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
+          automaticallyAdjustKeyboardInsets
         >
           <FarmPageHeader
             title={stage === "select" ? "Move chickens" : "Review movement"}
             showBack
             backHref="/(tabs)/flock"
           />
+          {!options.isError && hasStock ? (
+            <View
+              style={[
+                styles.introCard,
+                {
+                  backgroundColor: theme.backgroundElement,
+                  borderColor: theme.border,
+                },
+              ]}
+            >
+              <View
+                style={[
+                  styles.introIcon,
+                  { backgroundColor: theme.backgroundSelected },
+                ]}
+              >
+                <Ionicons
+                  name={stage === "select" ? "git-compare-outline" : "checkmark-done-outline"}
+                  size={21}
+                  color={theme.primary}
+                />
+              </View>
+              <View style={styles.introCopy}>
+                <AppText weight="semibold">
+                  {stage === "select" ? "Move flock between blocks" : "Review your movement"}
+                </AppText>
+                <AppText size="small" tone="secondary">
+                  {stage === "select"
+                    ? "Choose a source, select batches, then choose where they’re going."
+                    : "Check the source, destination, and quantity before confirming."}
+                </AppText>
+              </View>
+              <View
+                style={[
+                  styles.stepPill,
+                  { backgroundColor: theme.backgroundSelected },
+                ]}
+              >
+                <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+                  {stage === "select" ? "STEP 1 OF 2" : "STEP 2 OF 2"}
+                </AppText>
+              </View>
+            </View>
+          ) : null}
           {options.isError ? (
             <Card style={styles.section}>
               <AppText weight="semibold">Could not load flock inventory</AppText>
@@ -433,10 +478,6 @@ function ChickenMovementContent() {
 
           {inventory && hasStock && stage === "select" ? (
             <>
-              <AppText size="small" tone="secondary">
-                Move batches between blocks while keeping each batch’s age and
-                quantity records intact.
-              </AppText>
               <Card style={styles.section}>
                 <View
                   ref={(view) => {
@@ -677,11 +718,22 @@ function ChickenMovementContent() {
                       <InlineError message={error.message} />
                     ) : null}
                     {selectedBatches.length > 0 ? (
-                      <AppText size="small" tone="secondary">
-                        {selectedBatches.length}{" "}
-                        {selectedBatches.length === 1 ? "batch" : "batches"}{" "}
-                        selected · {totalQuantity} of {totalAvailable} birds
-                      </AppText>
+                      <View
+                        style={[
+                          styles.selectionSummary,
+                          { backgroundColor: theme.backgroundSelected },
+                        ]}
+                      >
+                        <Ionicons name="checkmark-circle-outline" size={19} color={theme.primary} />
+                        <View style={styles.selectionSummaryCopy}>
+                          <AppText size="small" weight="semibold">
+                            {selectedBatches.length} {selectedBatches.length === 1 ? "batch" : "batches"} selected
+                          </AppText>
+                          <AppText size="small" tone="secondary">
+                            Moving {totalQuantity} of {totalAvailable} available birds
+                          </AppText>
+                        </View>
+                      </View>
                     ) : null}
                   </View>
                 ) : null}
@@ -877,7 +929,7 @@ function ChickenMovementContent() {
             ]}
           >
             <View style={styles.bottomCopy}>
-              <AppText size="small" weight="semibold">
+              <AppText size="small" weight="semibold" numberOfLines={1}>
                 {selectedBatches.length
                   ? `${selectedBatches.length} ${selectedBatches.length === 1 ? "batch" : "batches"} · ${totalQuantity} birds`
                   : "Select batches"}
@@ -892,6 +944,7 @@ function ChickenMovementContent() {
               <Button
                 label="Review movement"
                 onPress={continueToReview}
+                style={styles.primaryAction}
                 disabled={
                   selectedBatches.length === 0 ||
                   !destinationBlockId ||
@@ -905,12 +958,14 @@ function ChickenMovementContent() {
                   variant="secondary"
                   onPress={() => setStage("select")}
                   disabled={createMovement.isPending || options.isFetching}
+                  style={styles.secondaryAction}
                 />
                 <Button
                   label="Confirm move"
                   onPress={() => void confirmAndMove()}
                   loading={createMovement.isPending || options.isFetching}
                   disabled={createMovement.isPending || options.isFetching}
+                  style={styles.reviewPrimaryAction}
                 />
               </View>
             )}
@@ -1108,85 +1163,118 @@ const styles = StyleSheet.create({
     width: "100%",
     maxWidth: 760,
     alignSelf: "center",
-    paddingHorizontal: 15,
-    paddingTop: 12,
-    paddingBottom: 20,
-    gap: 10,
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    paddingBottom: 28,
+    gap: 14,
   },
-  section: { gap: 11, padding: 13 },
-  sectionHeading: { flexDirection: "row", alignItems: "center", gap: 10 },
+  introCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+    padding: 14,
+    borderWidth: 1,
+    borderRadius: 16,
+  },
+  introIcon: {
+    width: 42,
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 13,
+  },
+  introCopy: { flex: 1, minWidth: 0, gap: 3 },
+  stepPill: {
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+  },
+  section: { gap: 17, padding: 17, borderRadius: 16 },
+  sectionHeading: { flexDirection: "row", alignItems: "center", gap: 12 },
   headingCopy: { flex: 1, minWidth: 0, gap: 2 },
   stepNumber: {
-    width: 27,
-    height: 27,
+    width: 32,
+    height: 32,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 15,
+    borderRadius: 11,
   },
   blockChoices: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 7,
+    gap: 9,
   },
   blockChoice: {
-    width: "47%",
-    minHeight: 54,
+    width: "100%",
+    minHeight: 68,
     flexDirection: "row",
     alignItems: "center",
-    gap: 7,
+    gap: 12,
     borderWidth: 1,
-    borderRadius: 11,
-    paddingHorizontal: 8,
-    paddingVertical: 7,
+    borderRadius: 14,
+    paddingHorizontal: 13,
+    paddingVertical: 11,
   },
   blockIcon: {
-    width: 30,
-    height: 30,
+    width: 40,
+    height: 40,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 8,
+    borderRadius: 12,
   },
   blockCopy: { flex: 1, minWidth: 0, gap: 2 },
-  batchList: { gap: 6 },
-  batchCard: { borderWidth: 1, borderRadius: 11, overflow: "hidden" },
+  batchList: { gap: 9 },
+  batchCard: { borderWidth: 1, borderRadius: 14, overflow: "hidden" },
   batchSelect: {
-    minHeight: 58,
+    minHeight: 70,
     flexDirection: "row",
     alignItems: "center",
-    gap: 9,
-    paddingHorizontal: 9,
-    paddingVertical: 7,
+    gap: 12,
+    paddingHorizontal: 13,
+    paddingVertical: 11,
   },
   checkbox: {
-    width: 21,
-    height: 21,
+    width: 24,
+    height: 24,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1.5,
-    borderRadius: 5,
+    borderRadius: 7,
   },
   batchCopy: { flex: 1, minWidth: 0, gap: 2 },
-  stockCount: { alignItems: "flex-end" },
-  quantityRow: {
-    gap: 6,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 10,
-    paddingVertical: 9,
+  stockCount: {
+    minWidth: 54,
+    alignItems: "flex-end",
+    gap: 1,
+    paddingLeft: 7,
   },
-  destinationList: { gap: 8, marginTop: 10 },
-  destinationChoice: {
-    minHeight: 64,
+  quantityRow: {
+    gap: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+  },
+  selectionSummary: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
+    padding: 13,
+    borderRadius: 13,
+  },
+  selectionSummaryCopy: { flex: 1, gap: 2 },
+  destinationList: { gap: 9, marginTop: 4 },
+  destinationChoice: {
+    minHeight: 76,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
     borderWidth: 1,
-    borderRadius: 9,
-    padding: 10,
+    borderRadius: 14,
+    padding: 14,
   },
   destinationCopy: { flex: 1, minWidth: 0, gap: 2 },
-  dateField: { marginTop: 5 },
-  notesInput: { minHeight: 78 },
-  emptyState: { alignItems: "center", gap: 10, paddingVertical: 24 },
+  dateField: { marginTop: 0 },
+  notesInput: { minHeight: 96 },
+  emptyState: { alignItems: "center", gap: 10, paddingVertical: 28, borderRadius: 16 },
   inlineError: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -1201,8 +1289,8 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     gap: 10,
     borderWidth: 1,
-    borderRadius: 8,
-    padding: 10,
+    borderRadius: 13,
+    padding: 14,
   },
   movementSummaryCopy: { flex: 1, minWidth: 0, gap: 4 },
   arrow: { alignItems: "center" },
@@ -1217,13 +1305,16 @@ const styles = StyleSheet.create({
   },
   summaryValue: { flexShrink: 1, textAlign: "right" },
   bottomBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
+    alignItems: "stretch",
+    gap: 10,
     borderTopWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingHorizontal: 18,
+    paddingTop: 12,
+    paddingBottom: 10,
   },
-  bottomCopy: { flex: 1, minWidth: 0, gap: 2 },
-  reviewActions: { flexDirection: "row", gap: 8 },
+  bottomCopy: { gap: 3 },
+  primaryAction: { width: "100%", minHeight: 50, borderRadius: 13 },
+  reviewActions: { flexDirection: "row", gap: 9 },
+  secondaryAction: { flex: 1, minHeight: 50, borderRadius: 13 },
+  reviewPrimaryAction: { flex: 1, minHeight: 50, borderRadius: 13 },
 });

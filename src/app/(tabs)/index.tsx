@@ -1,8 +1,14 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, type Href } from "expo-router";
 import * as React from "react";
 import { useMemo } from "react";
-import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import {
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { LoadingState } from "@/components/feedback/loading-state";
@@ -27,7 +33,7 @@ import { useAuth } from "@/providers/auth-provider";
 import { useFarm } from "@/providers/farm-provider";
 import { useTheme } from "@/providers/theme-provider";
 
-type SalesRangePreset = "7days" | "30days" | "custom";
+type DashboardRangePreset = "today" | "week" | "month" | "custom";
 
 export default function DashboardScreen() {
   const { user } = useAuth();
@@ -40,28 +46,20 @@ export default function DashboardScreen() {
   const currency = farm.selectedFarm?.settings?.currency ?? "KES";
   const now = new Date();
   const today = dateInTimezone(now, timezone);
-  const [salesRangePreset, setSalesRangePreset] =
-    React.useState<SalesRangePreset>("7days");
-  const [salesFromDate, setSalesFromDate] = React.useState(() => addDays(today, -6));
+  const [dashboardRangePreset, setDashboardRangePreset] =
+    React.useState<DashboardRangePreset>("today");
+  const [salesFromDate, setSalesFromDate] = React.useState(today);
   const [salesToDate, setSalesToDate] = React.useState(today);
-  const [showSalesDates, setShowSalesDates] = React.useState(false);
   const [showActivity, setShowActivity] = React.useState(false);
-  const yesterday = addDays(today, -1);
-  const salesRangeValid = salesFromDate <= salesToDate;
+  const salesRangeValid =
+    salesFromDate <= salesToDate && salesToDate <= today;
   const flockQuery = useChickenSaleOptions(user?.id, farmId);
   const eggsQuery = useEggCollectionOptions(user?.id, farmId);
   const eggCollectionsQuery = useEggCollections(user?.id, farmId, {
-    from_datetime: zonedDateTimeToUtc(yesterday, "00:00:00", timezone),
-    to_datetime: zonedDateTimeToUtc(today, "23:59:59", timezone),
+    from_datetime: zonedDateTimeToUtc(salesFromDate, "00:00:00", timezone),
+    to_datetime: zonedDateTimeToUtc(salesToDate, "23:59:59", timezone),
   });
-  const salesTodayQuery = useSalesReport(user?.id, farmId, {
-    from_date: today,
-    to_date: today,
-    status: "completed",
-    offset: 0,
-    limit: 1,
-  });
-  const weeklySalesQuery = useSalesReport(user?.id, farmId, {
+  const salesRangeQuery = useSalesReport(user?.id, farmId, {
     from_date: salesFromDate,
     to_date: salesToDate,
     status: "completed",
@@ -70,8 +68,8 @@ export default function DashboardScreen() {
     limit: 1,
   }, salesRangeValid);
   const expensesQuery = useExpenseSummary(user?.id, farmId, {
-    from_date: today,
-    to_date: today,
+    from_date: salesFromDate,
+    to_date: salesToDate,
   });
   const monthlyProfitQuery = useProfitabilityReport(user?.id, farmId, {
     from_date: monthStart(today),
@@ -87,6 +85,16 @@ export default function DashboardScreen() {
     undefined,
     undefined,
   );
+  const isRefreshing =
+    salesRangeQuery.isRefetching ||
+    expensesQuery.isRefetching ||
+    monthlyProfitQuery.isRefetching ||
+    eggCollectionsQuery.isRefetching ||
+    flockQuery.isRefetching ||
+    eggsQuery.isRefetching ||
+    notificationsQuery.isRefetching ||
+    remindersQuery.isRefetching ||
+    activityQuery.isRefetching;
 
   const flock = flockQuery.data;
   const liveBirds = (flock?.batches ?? []).reduce(
@@ -99,11 +107,12 @@ export default function DashboardScreen() {
       block.maximum_chickens > 0 &&
       block.current_chickens >= block.maximum_chickens,
   );
-  const collectedToday = (eggCollectionsQuery.data ?? [])
+  const collectedInRange = (eggCollectionsQuery.data ?? [])
     .filter(
       (collection) =>
         collection.entry_type === "collection" &&
-        dateInTimezone(new Date(collection.collected_at), timezone) === today,
+        dateInTimezone(new Date(collection.collected_at), timezone) >= salesFromDate &&
+        dateInTimezone(new Date(collection.collected_at), timezone) <= salesToDate,
     )
     .reduce(
       (total, collection) => total + Number(collection.quantity_in_base_unit),
@@ -126,11 +135,33 @@ export default function DashboardScreen() {
   const salesTrend = buildSalesTrend(
     salesFromDate,
     salesToDate,
-    weeklySalesQuery.data?.daily ?? [],
+    salesRangeQuery.data?.daily ?? [],
     today,
   );
   const salesTrendMax = Math.max(1, ...salesTrend.map((item) => item.value));
   const salesTrendTotal = salesTrend.reduce((sum, item) => sum + item.value, 0);
+
+  function selectDashboardRange(preset: DashboardRangePreset) {
+    setDashboardRangePreset(preset);
+    if (preset === "custom") return;
+    const range = getDashboardRange(preset, today);
+    setSalesFromDate(range.from);
+    setSalesToDate(range.to);
+  }
+
+  async function refreshDashboard() {
+    await Promise.all([
+      salesRangeQuery.refetch(),
+      expensesQuery.refetch(),
+      monthlyProfitQuery.refetch(),
+      eggCollectionsQuery.refetch(),
+      flockQuery.refetch(),
+      eggsQuery.refetch(),
+      notificationsQuery.refetch(),
+      remindersQuery.refetch(),
+      activityQuery.refetch(),
+    ]);
+  }
 
   if (farm.status === "inactive") {
     return (
@@ -213,14 +244,14 @@ export default function DashboardScreen() {
     month: "long",
     timeZone: timezone,
   }).format(now);
-  const todaySales = salesTodayQuery.data?.summary;
-  const todayExpenses = expensesQuery.data;
+  const periodSales = salesRangeQuery.data?.summary;
+  const periodExpenses = expensesQuery.data;
+  const periodTitle = getDashboardRangeTitle(dashboardRangePreset);
   const queryErrors = [
-    salesTodayQuery.isError && "Sales",
+    salesRangeQuery.isError && "Sales",
     expensesQuery.isError && "Expenses",
     eggCollectionsQuery.isError && "Egg collection",
     flockQuery.isError && "Flock",
-    weeklySalesQuery.isError && "Sales trend",
     eggsQuery.isError && "Egg stock",
   ].filter(Boolean);
   const pendingReminders = reminders.filter(
@@ -247,7 +278,17 @@ export default function DashboardScreen() {
       style={{ flex: 1, backgroundColor: theme.background }}
       edges={["top"]}
     >
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefreshing}
+            onRefresh={() => void refreshDashboard()}
+            tintColor={theme.primary}
+            colors={[theme.primary]}
+          />
+        }
+      >
         <FarmPageHeader title="Farm overview" />
 
         {farm.farms.length > 1 ? (
@@ -278,12 +319,89 @@ export default function DashboardScreen() {
               {dateLabel}
             </AppText>
           </View>
-          <View style={[styles.dateBadge, { backgroundColor: theme.backgroundElement }]}>
-            <Ionicons name="calendar-clear-outline" size={15} color={theme.primary} />
-            <AppText size="small" weight="semibold">
-              Today
-            </AppText>
+        </View>
+
+        <View
+          style={[
+            styles.periodSelector,
+            {
+              backgroundColor: theme.backgroundElement,
+              borderColor: theme.border,
+            },
+          ]}
+        >
+          <View style={styles.periodHeading}>
+            <View style={styles.periodTitleGroup}>
+              <View
+                style={[
+                  styles.periodIcon,
+                  { backgroundColor: theme.backgroundSelected },
+                ]}
+              >
+                <Ionicons name="calendar-clear-outline" size={17} color={theme.primary} />
+              </View>
+              <View style={styles.periodHeadingCopy}>
+                <AppText size="small" weight="semibold">
+                  Reporting period
+                </AppText>
+                <AppText size="small" tone="secondary">
+                  {formatRangeLabel(salesFromDate, salesToDate)}
+                </AppText>
+              </View>
+            </View>
+            <Ionicons name="options-outline" size={18} color={theme.textSecondary} />
           </View>
+          <View style={styles.periodOptions}>
+            <RangeOption
+              label="Today"
+              selected={dashboardRangePreset === "today"}
+              onPress={() => selectDashboardRange("today")}
+            />
+            <RangeOption
+              label="Week to date"
+              selected={dashboardRangePreset === "week"}
+              onPress={() => selectDashboardRange("week")}
+            />
+            <RangeOption
+              label="This month"
+              selected={dashboardRangePreset === "month"}
+              onPress={() => selectDashboardRange("month")}
+            />
+            <RangeOption
+              label="Custom"
+              selected={dashboardRangePreset === "custom"}
+              onPress={() => selectDashboardRange("custom")}
+            />
+          </View>
+          {dashboardRangePreset === "custom" ? (
+            <View style={styles.periodDateFilters}>
+              <DatePickerField
+                label="From"
+                value={salesFromDate}
+                maximumDate={new Date(`${salesToDate}T12:00:00`)}
+                onChange={setSalesFromDate}
+                style={styles.dateField}
+              />
+              <DatePickerField
+                label="To"
+                value={salesToDate}
+                minimumDate={new Date(`${salesFromDate}T12:00:00`)}
+                maximumDate={new Date(`${today}T12:00:00`)}
+                onChange={setSalesToDate}
+                style={styles.dateField}
+              />
+            </View>
+          ) : null}
+          {dashboardRangePreset === "week" ? (
+            <AppText size="small" tone="secondary">
+              Monday through today · the current week so far
+            </AppText>
+          ) : null}
+          {!salesRangeValid ? (
+            <AppText size="small" style={{ color: theme.danger }}>
+              Choose a valid date range ending today or earlier.
+            </AppText>
+          ) : null}
         </View>
 
         {queryErrors.length > 0 ? (
@@ -298,8 +416,7 @@ export default function DashboardScreen() {
               label="Retry"
               variant="quiet"
               onPress={() => {
-                void salesTodayQuery.refetch();
-                void weeklySalesQuery.refetch();
+                void salesRangeQuery.refetch();
                 void expensesQuery.refetch();
                 void monthlyProfitQuery.refetch();
                 void eggCollectionsQuery.refetch();
@@ -313,7 +430,10 @@ export default function DashboardScreen() {
         <View
           style={[
             styles.todayPanel,
-            { backgroundColor: theme.backgroundElement, borderColor: theme.border },
+            {
+              backgroundColor: theme.backgroundElement,
+              borderLeftColor: theme.primary,
+            },
           ]}
         >
           <Pressable
@@ -321,7 +441,7 @@ export default function DashboardScreen() {
             onPress={() =>
               router.push({
                 pathname: "/(tabs)/sales",
-                params: { from_date: today, to_date: today },
+                params: { from_date: salesFromDate, to_date: salesToDate },
               })
             }
             style={styles.todaySales}
@@ -330,7 +450,7 @@ export default function DashboardScreen() {
               <View style={styles.todaySalesLabel}>
                 <View style={[styles.accentDot, { backgroundColor: theme.primary }]} />
                 <AppText size="small" weight="semibold" tone="secondary">
-                  SALES TODAY
+                  SALES {periodTitle.toUpperCase()}
                 </AppText>
               </View>
               <Ionicons name="arrow-forward" size={18} color={theme.primary} />
@@ -342,28 +462,28 @@ export default function DashboardScreen() {
               adjustsFontSizeToFit
               style={styles.salesTotal}
             >
-              {salesTodayQuery.isLoading
+              {salesRangeQuery.isLoading
                 ? "…"
-                : salesTodayQuery.isError
+                : salesRangeQuery.isError
                   ? "Unavailable"
-                  : formattedMoney(todaySales?.sales_total ?? 0)}
+                  : formattedMoney(periodSales?.sales_total ?? 0)}
             </AppText>
             <View style={styles.salesBreakdown}>
               <View style={styles.salesBreakdownItem}>
                 <AppText size="small" tone="secondary">Received</AppText>
                 <AppText size="small" weight="semibold">
-                  {salesTodayQuery.isLoading || salesTodayQuery.isError
+                  {salesRangeQuery.isLoading || salesRangeQuery.isError
                     ? "—"
-                    : formattedMoney(todaySales?.amount_received ?? 0)}
+                    : formattedMoney(periodSales?.amount_received ?? 0)}
                 </AppText>
               </View>
               <View style={[styles.salesDivider, { backgroundColor: theme.border }]} />
               <View style={styles.salesBreakdownItem}>
                 <AppText size="small" tone="secondary">Still owed</AppText>
                 <AppText size="small" weight="semibold">
-                  {salesTodayQuery.isLoading || salesTodayQuery.isError
+                  {salesRangeQuery.isLoading || salesRangeQuery.isError
                     ? "—"
-                    : formattedMoney(todaySales?.balance_due ?? 0)}
+                    : formattedMoney(periodSales?.balance_due ?? 0)}
                 </AppText>
               </View>
               <AppText size="small" tone="secondary" style={styles.salesDefinition}>
@@ -373,17 +493,12 @@ export default function DashboardScreen() {
           </Pressable>
         </View>
 
-        <SectionHeading title="Today's operations" />
-        <View
-          style={[
-            styles.operationsStrip,
-            { backgroundColor: theme.backgroundElement, borderColor: theme.border },
-          ]}
-        >
+        <SectionHeading title={`Activity · ${periodTitle}`} />
+        <View style={styles.operationsStrip}>
           <MiniMetric
             icon="receipt-outline"
             label="Expenses"
-            value={expensesQuery.isError ? null : todayExpenses?.total_amount}
+            value={expensesQuery.isError ? null : periodExpenses?.total_amount}
             currency={currency}
             loading={expensesQuery.isLoading}
             accent={theme.secondary}
@@ -392,19 +507,10 @@ export default function DashboardScreen() {
           <MiniMetric
             icon="egg-outline"
             label="Eggs collected"
-            value={eggCollectionsQuery.isError ? null : collectedToday}
+            value={eggCollectionsQuery.isError ? null : collectedInRange}
             unit="eggs"
             loading={eggCollectionsQuery.isLoading}
             accent={theme.success}
-          />
-          <View style={[styles.operationDivider, { backgroundColor: theme.border }]} />
-          <MiniMetric
-            icon="leaf-outline"
-            label="Live flock"
-            value={flockQuery.isError ? null : liveBirds}
-            unit="birds"
-            loading={flockQuery.isLoading}
-            accent={theme.primary}
           />
         </View>
 
@@ -412,7 +518,10 @@ export default function DashboardScreen() {
         <View
           style={[
             styles.monthlyProfitCard,
-            { backgroundColor: theme.backgroundSelected, borderColor: theme.border },
+            {
+              backgroundColor: theme.backgroundElement,
+              borderLeftColor: theme.secondary,
+            },
           ]}
         >
           <View style={[styles.profitIcon, { backgroundColor: theme.backgroundElement }]}>
@@ -487,12 +596,7 @@ export default function DashboardScreen() {
         </View>
 
         <SectionHeading title="Quick actions" />
-        <View
-          style={[
-            styles.actionGrid,
-            { backgroundColor: theme.backgroundElement, borderColor: theme.border },
-          ]}
-        >
+        <View style={styles.actionGrid}>
           <QuickAction
             icon="cart-outline"
             label="Egg sale"
@@ -520,7 +624,7 @@ export default function DashboardScreen() {
         </View>
 
         <SectionHeading title="Needs attention" />
-        <View style={styles.attentionList}>
+        <View style={[styles.attentionList, { borderTopColor: theme.border }]}>
           {notificationsQuery.isError ? (
             <AppText size="small" style={{ color: theme.danger }}>
               Notifications couldn’t be checked.
@@ -530,6 +634,7 @@ export default function DashboardScreen() {
               icon="notifications-outline"
               title="Unread farm updates"
               detail={`${notificationsQuery.data} ${Number(notificationsQuery.data) === 1 ? "update" : "updates"} to review`}
+              status="Review"
               onPress={() => router.push("/notifications")}
             />
           ) : null}
@@ -538,8 +643,9 @@ export default function DashboardScreen() {
               icon="warning-outline"
               title="Blocks at capacity"
               detail={nearCapacityBlocks.map((block) => block.name).join(", ")}
+              status="At limit"
               onPress={() => router.push("/(tabs)/blocks")}
-              warning
+              critical
             />
           ) : null}
           {remindersQuery.isError ? (
@@ -551,6 +657,7 @@ export default function DashboardScreen() {
               icon="time-outline"
               title="Overdue reminders"
               detail={`${overdueReminders} ${overdueReminders === 1 ? "task is" : "tasks are"} overdue`}
+              status="Overdue"
               onPress={() =>
                 firstOverdueReminder
                   ? router.push({
@@ -559,13 +666,14 @@ export default function DashboardScreen() {
                     })
                   : router.push("/notifications")
               }
-              warning
+              critical
             />
           ) : pendingReminders.length > 0 ? (
             <DashboardLink
               icon="calendar-outline"
               title="Upcoming reminder"
               detail={`${pendingReminders[0].title} · ${formatReminderDate(pendingReminders[0].due_at, timezone)}`}
+              status="Upcoming"
               onPress={() =>
                 router.push({
                   pathname: "/reminders/[reminderId]",
@@ -610,90 +718,22 @@ export default function DashboardScreen() {
               Sales trend
             </AppText>
             <AppText size="small" tone="secondary">
-              Completed sales
+              Completed sales · {periodTitle.toLowerCase()}
             </AppText>
           </View>
-          {weeklySalesQuery.data ? (
+          {salesRangeQuery.data ? (
             <AppText size="small" weight="semibold">
               {formatCompactMoney(salesTrendTotal, currency)}
             </AppText>
           ) : null}
         </View>
-        <View style={styles.rangeControls}>
-          <RangeOption
-            label="7 days"
-            selected={salesRangePreset === "7days"}
-            onPress={() => {
-              setSalesRangePreset("7days");
-              setSalesFromDate(addDays(today, -6));
-              setSalesToDate(today);
-              setShowSalesDates(false);
-            }}
-          />
-          <RangeOption
-            label="30 days"
-            selected={salesRangePreset === "30days"}
-            onPress={() => {
-              setSalesRangePreset("30days");
-              setSalesFromDate(addDays(today, -29));
-              setSalesToDate(today);
-              setShowSalesDates(false);
-            }}
-          />
-          <RangeOption
-            label="Custom"
-            selected={salesRangePreset === "custom"}
-            onPress={() => {
-              setSalesRangePreset("custom");
-              setShowSalesDates(true);
-            }}
-          />
-        </View>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityState={{ expanded: showSalesDates }}
-          onPress={() => {
-            setSalesRangePreset("custom");
-            setShowSalesDates((visible) => !visible);
-          }}
-          style={styles.rangeDateToggle}
-        >
-          <Ionicons name="calendar-outline" size={15} color={theme.primary} />
-          <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
-            {formatRangeLabel(salesFromDate, salesToDate)}
-          </AppText>
-          <Ionicons
-            name={showSalesDates ? "chevron-up" : "chevron-down"}
-            size={15}
-            color={theme.primary}
-          />
-        </Pressable>
-        {showSalesDates ? (
-          <View style={styles.dateFilters}>
-            <DatePickerField
-              label="From"
-              value={salesFromDate}
-              maximumDate={salesToDate ? new Date(`${salesToDate}T12:00:00`) : new Date(`${today}T12:00:00`)}
-              onChange={setSalesFromDate}
-              style={styles.dateField}
-            />
-            <DatePickerField
-              label="To"
-              value={salesToDate}
-              minimumDate={salesFromDate ? new Date(`${salesFromDate}T12:00:00`) : undefined}
-              maximumDate={new Date(`${today}T12:00:00`)}
-              onChange={setSalesToDate}
-              style={styles.dateField}
-            />
-          </View>
-        ) : null}
         {!salesRangeValid ? (
           <AppText size="small" style={{ color: theme.danger }}>
-            Choose a start date on or before the end date.
+            Choose a valid date range ending today or earlier.
           </AppText>
-        ) : weeklySalesQuery.isLoading ? (
+        ) : salesRangeQuery.isLoading ? (
           <LoadingState label="Loading sales trend" />
-        ) : weeklySalesQuery.isError ? (
+        ) : salesRangeQuery.isError ? (
           <View style={styles.chartState}>
             <AppText size="small" tone="secondary">
               The sales trend couldn’t be loaded.
@@ -701,7 +741,7 @@ export default function DashboardScreen() {
             <Button
               label="Retry"
               variant="quiet"
-              onPress={() => void weeklySalesQuery.refetch()}
+              onPress={() => void salesRangeQuery.refetch()}
             />
           </View>
         ) : salesTrend.length === 0 ? (
@@ -788,7 +828,7 @@ export default function DashboardScreen() {
         <View
           style={[
             styles.poultrySummary,
-            { backgroundColor: theme.backgroundSelected },
+            { borderColor: theme.border },
           ]}
         >
           <Pressable
@@ -901,15 +941,17 @@ export default function DashboardScreen() {
         ) : null}
 
         <View style={styles.footerLinks}>
-          <Button
+          <DashboardShortcut
+            icon="bar-chart-outline"
             label="Financial reports"
-            variant="secondary"
+            detail="Sales, expenses and profitability"
             onPress={() => router.push("/reports")}
           />
-          <Button
+          <DashboardShortcut
+            icon="alarm-outline"
             label="View reminders"
-            variant="quiet"
-            onPress={() => router.push("/notifications")}
+            detail="Review upcoming and overdue tasks"
+            onPress={() => router.push("/reminders" as Href)}
           />
         </View>
       </ScrollView>
@@ -949,8 +991,10 @@ function MiniMetric({
   return (
     <View style={styles.operationMetric}>
       <View style={styles.operationMetricHeading}>
-        <Ionicons name={icon} size={16} color={accent} />
-        <AppText size="small" tone="secondary" numberOfLines={1}>
+        <View style={[styles.operationMetricIcon, { backgroundColor: `${accent}14` }]}>
+          <Ionicons name={icon} size={17} color={accent} />
+        </View>
+        <AppText size="body" weight="semibold" numberOfLines={1}>
           {label}
         </AppText>
       </View>
@@ -959,6 +1003,7 @@ function MiniMetric({
         weight="semibold"
         numberOfLines={1}
         adjustsFontSizeToFit
+        style={styles.operationValue}
       >
         {loading ? "…" : displayValue}
       </AppText>
@@ -1026,21 +1071,28 @@ function QuickAction({
   accent: string;
   onPress: () => void;
 }) {
+  const { theme } = useTheme();
   return (
     <Pressable
       accessibilityRole="button"
       onPress={onPress}
-      style={[
+      style={({ pressed }) => [
         styles.quickAction,
-        { backgroundColor: "transparent" },
+        { borderBottomColor: theme.border, opacity: pressed ? 0.65 : 1 },
       ]}
     >
       <View style={[styles.quickActionIcon, { backgroundColor: `${accent}1A` }]}>
-        <Ionicons name={icon} size={19} color={accent} />
+        <Ionicons name={icon} size={17} color={accent} />
       </View>
-      <AppText size="small" weight="semibold" numberOfLines={1}>
+      <AppText
+        size="small"
+        weight="semibold"
+        numberOfLines={1}
+        style={styles.quickActionLabel}
+      >
         {label}
       </AppText>
+      <Ionicons name="chevron-forward" size={15} color={theme.textSecondary} />
     </Pressable>
   );
 }
@@ -1049,27 +1101,40 @@ function DashboardLink({
   icon,
   title,
   detail,
+  status,
   onPress,
-  warning = false,
+  critical = false,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   title: string;
   detail: string;
+  status?: string;
   onPress: () => void;
-  warning?: boolean;
+  critical?: boolean;
 }) {
   const { theme } = useTheme();
+  const accent = critical ? theme.danger : theme.primary;
   return (
     <Pressable
       accessibilityRole="button"
       onPress={onPress}
-      style={[styles.dashboardLink, { borderBottomColor: theme.border }]}
+      style={({ pressed }) => [
+        styles.dashboardLink,
+        {
+          borderColor: `${accent}55`,
+          backgroundColor: `${accent}0D`,
+          opacity: pressed ? 0.72 : 1,
+        },
+      ]}
     >
-      <Ionicons
-        name={icon}
-        size={19}
-        color={warning ? theme.secondary : theme.primary}
-      />
+      <View
+        style={[
+          styles.attentionIcon,
+          { backgroundColor: `${accent}1A` },
+        ]}
+      >
+        <Ionicons name={icon} size={19} color={accent} />
+      </View>
       <View style={styles.linkCopy}>
         <AppText size="small" weight="semibold">
           {title}
@@ -1078,7 +1143,65 @@ function DashboardLink({
           {detail}
         </AppText>
       </View>
-      <Ionicons name="chevron-forward" size={16} color={theme.textSecondary} />
+      {status ? (
+        <View
+          style={[
+            styles.attentionStatus,
+            { backgroundColor: `${accent}1A` },
+          ]}
+        >
+          <AppText size="small" weight="semibold" style={{ color: accent }}>
+            {status}
+          </AppText>
+        </View>
+      ) : null}
+      <Ionicons name="chevron-forward" size={16} color={accent} />
+    </Pressable>
+  );
+}
+
+function DashboardShortcut({
+  icon,
+  label,
+  detail,
+  onPress,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  detail: string;
+  onPress: () => void;
+}) {
+  const { theme } = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.dashboardShortcut,
+        {
+          backgroundColor: theme.backgroundElement,
+          borderColor: theme.border,
+          opacity: pressed ? 0.75 : 1,
+        },
+      ]}
+    >
+      <View
+        style={[
+          styles.shortcutIcon,
+          { backgroundColor: theme.backgroundSelected },
+        ]}
+      >
+        <Ionicons name={icon} size={20} color={theme.primary} />
+      </View>
+      <View style={styles.shortcutCopy}>
+        <AppText size="body" weight="semibold">
+          {label}
+        </AppText>
+        <AppText size="small" tone="secondary">
+          {detail}
+        </AppText>
+      </View>
+      <Ionicons name="chevron-forward" size={19} color={theme.textSecondary} />
     </Pressable>
   );
 }
@@ -1099,6 +1222,30 @@ function addDays(date: string, amount: number): string {
   const value = new Date(`${date}T12:00:00Z`);
   value.setUTCDate(value.getUTCDate() + amount);
   return `${value.getUTCFullYear()}-${String(value.getUTCMonth() + 1).padStart(2, "0")}-${String(value.getUTCDate()).padStart(2, "0")}`;
+}
+
+function getDashboardRange(
+  preset: Exclude<DashboardRangePreset, "custom">,
+  today: string,
+): { from: string; to: string } {
+  if (preset === "today") return { from: today, to: today };
+  if (preset === "month") return { from: monthStart(today), to: today };
+  const weekday = new Date(`${today}T12:00:00Z`).getUTCDay();
+  const daysSinceMonday = (weekday + 6) % 7;
+  return { from: addDays(today, -daysSinceMonday), to: today };
+}
+
+function getDashboardRangeTitle(preset: DashboardRangePreset): string {
+  switch (preset) {
+    case "today":
+      return "Today";
+    case "week":
+      return "Week to date";
+    case "month":
+      return "This month";
+    case "custom":
+      return "Selected period";
+  }
 }
 
 function daysBetween(fromDate: string, toDate: string): number {
@@ -1261,14 +1408,14 @@ const styles = StyleSheet.create({
     width: "100%",
     maxWidth: 760,
     alignSelf: "center",
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    gap: 13,
+    paddingHorizontal: 20,
+    paddingTop: 14,
+    gap: 16,
     paddingBottom: 32,
   },
   farmPicker: { gap: 8 },
   greeting: {
-    minHeight: 54,
+    minHeight: 62,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -1276,38 +1423,65 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
   },
   greetingCopy: { gap: 0 },
-  dateBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 18,
-  },
-  sectionHeading: {
-    gap: 2,
-    paddingHorizontal: 2,
-    marginTop: 7,
-    marginBottom: -4,
-  },
-  sectionTitle: { fontSize: 17, lineHeight: 23 },
-  sectionCard: { gap: 4, borderRadius: 14 },
-  monthlyProfitCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 11,
-    minHeight: 84,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    borderRadius: 16,
+  periodSelector: {
+    gap: 14,
+    padding: 14,
     borderWidth: 1,
+    borderRadius: 16,
   },
-  profitIcon: {
+  periodHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  periodTitleGroup: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  periodIcon: {
     width: 36,
     height: 36,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 12,
+    borderRadius: 11,
+  },
+  periodHeadingCopy: { flex: 1, gap: 2 },
+  periodOptions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 7,
+  },
+  periodDateFilters: {
+    flexDirection: "row",
+    gap: 10,
+    paddingTop: 2,
+  },
+  sectionHeading: {
+    gap: 2,
+    paddingHorizontal: 0,
+    marginTop: 7,
+    marginBottom: -3,
+  },
+  sectionTitle: { fontSize: 16, lineHeight: 22 },
+  sectionCard: { gap: 8, borderRadius: 6 },
+  monthlyProfitCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    minHeight: 80,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: 4,
+    borderLeftWidth: 3,
+  },
+  profitIcon: {
+    width: 28,
+    height: 32,
+    alignItems: "center",
+    justifyContent: "center",
   },
   monthlyProfitCopy: { flex: 1, gap: 2, minWidth: 0 },
   profitAction: {
@@ -1316,17 +1490,17 @@ const styles = StyleSheet.create({
     gap: 1,
     paddingLeft: 2,
   },
-  errorCard: { gap: 7, borderRadius: 14 },
+  errorCard: { gap: 7, borderRadius: 6 },
   todayPanel: {
-    borderWidth: 1,
-    borderRadius: 18,
+    borderLeftWidth: 3,
+    borderRadius: 4,
     overflow: "hidden",
   },
   todaySales: {
-    gap: 7,
-    paddingHorizontal: 15,
-    paddingTop: 12,
-    paddingBottom: 13,
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 15,
   },
   todaySalesHeading: {
     flexDirection: "row",
@@ -1339,8 +1513,8 @@ const styles = StyleSheet.create({
   salesBreakdown: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    paddingTop: 7,
+    gap: 14,
+    paddingTop: 9,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "#80808040",
   },
@@ -1348,50 +1522,89 @@ const styles = StyleSheet.create({
   salesDivider: { width: StyleSheet.hairlineWidth, height: 28 },
   salesDefinition: { flex: 1, fontSize: 11, lineHeight: 15, textAlign: "right" },
   operationsStrip: {
-    flexDirection: "row",
-    alignItems: "stretch",
-    borderWidth: 1,
-    borderRadius: 15,
-    paddingVertical: 11,
-    paddingHorizontal: 8,
+    flexDirection: "column",
+    paddingVertical: 1,
   },
-  operationMetric: { flex: 1, minWidth: 0, justifyContent: "center", gap: 4, paddingHorizontal: 5 },
-  operationMetricHeading: { flexDirection: "row", alignItems: "center", gap: 5 },
-  operationDivider: { width: StyleSheet.hairlineWidth, marginVertical: 2 },
-  actionGrid: {
+  operationMetric: {
+    minHeight: 54,
     flexDirection: "row",
-    gap: 7,
-    borderWidth: 1,
-    borderRadius: 15,
-    paddingHorizontal: 5,
-    paddingVertical: 5,
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
   },
-  quickAction: {
+  operationMetricHeading: {
     flex: 1,
-    minHeight: 70,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    paddingHorizontal: 2,
-    borderRadius: 13,
-  },
-  quickActionIcon: {
-    width: 34,
-    height: 34,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 18,
-  },
-  dashboardLink: {
-    minHeight: 52,
+    minWidth: 0,
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
+  },
+  operationMetricIcon: {
+    width: 30,
+    height: 30,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 7,
+  },
+  operationValue: {
+    maxWidth: "52%",
+    textAlign: "right",
+  },
+  operationDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginLeft: 40,
+  },
+  actionGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  quickAction: {
+    width: "50%",
+    minHeight: 58,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    paddingHorizontal: 2,
     paddingVertical: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#80808040",
   },
-  linkCopy: { flex: 1, gap: 2 },
-  attentionList: { paddingHorizontal: 4 },
+  quickActionIcon: {
+    width: 30,
+    height: 30,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 7,
+  },
+  quickActionLabel: { flex: 1, minWidth: 0 },
+  dashboardLink: {
+    minHeight: 68,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderWidth: 1,
+    borderRadius: 14,
+  },
+  attentionIcon: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+  },
+  linkCopy: { flex: 1, minWidth: 0, gap: 3 },
+  attentionStatus: {
+    maxWidth: 90,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  attentionList: { gap: 9 },
   clearState: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 4 },
   chartHeading: {
     flexDirection: "row",
@@ -1401,29 +1614,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
   },
   chartTitle: { flex: 1, gap: 1 },
-  rangeControls: { flexDirection: "row", gap: 7, marginTop: -5 },
   rangeOption: {
-    minHeight: 31,
+    minHeight: 36,
     justifyContent: "center",
     borderWidth: 1,
-    borderRadius: 16,
-    paddingHorizontal: 11,
+    borderRadius: 12,
+    paddingHorizontal: 12,
   },
-  rangeDateToggle: {
-    minHeight: 32,
-    alignSelf: "flex-start",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    marginTop: -8,
-  },
-  dateFilters: { flexDirection: "row", gap: 10, marginTop: -3 },
   dateField: { flex: 1 },
   chartCard: {
     gap: 10,
     borderWidth: 1,
-    borderRadius: 14,
-    padding: 13,
+    borderRadius: 6,
+    padding: 14,
     overflow: "hidden",
   },
   chartMeta: { flexDirection: "row", justifyContent: "space-between", gap: 8 },
@@ -1453,9 +1656,13 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingTop: 4,
   },
-  poultrySummary: { borderRadius: 14, paddingHorizontal: 12 },
+  poultrySummary: {
+    paddingHorizontal: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
   poultryMetric: {
-    minHeight: 82,
+    minHeight: 72,
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
@@ -1463,7 +1670,7 @@ const styles = StyleSheet.create({
   poultryCopy: { flex: 1, gap: 1 },
   poultryDivider: { height: StyleSheet.hairlineWidth, marginLeft: 28 },
   inventoryLink: {
-    minHeight: 38,
+    minHeight: 42,
     flexDirection: "row",
     alignItems: "center",
     gap: 9,
@@ -1476,5 +1683,23 @@ const styles = StyleSheet.create({
   },
   activityList: { gap: 3, paddingHorizontal: 4 },
   emptyState: { gap: 4, paddingVertical: 10 },
-  footerLinks: { gap: 8, paddingTop: 4 },
+  footerLinks: { gap: 10, paddingTop: 4 },
+  dashboardShortcut: {
+    minHeight: 76,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderRadius: 15,
+  },
+  shortcutIcon: {
+    width: 42,
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 13,
+  },
+  shortcutCopy: { flex: 1, gap: 3 },
 });

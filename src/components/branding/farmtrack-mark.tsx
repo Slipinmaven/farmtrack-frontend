@@ -1,4 +1,5 @@
 import Svg, { Circle, Path } from "react-native-svg";
+import { Platform } from "react-native";
 
 type FarmTrackMarkProps = {
   size?: number;
@@ -10,7 +11,7 @@ export function FarmTrackMark({ size = 44 }: FarmTrackMarkProps) {
       width={size}
       height={size}
       viewBox="0 0 128 128"
-      accessible
+      accessible={Platform.OS === "web" ? undefined : true}
       accessibilityLabel="FarmTrack"
     >
       <Path

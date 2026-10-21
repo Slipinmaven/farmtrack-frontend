@@ -56,12 +56,16 @@ export function normalizeApiError(error: unknown): ApiError {
       ? responseData.error
       : undefined;
   const details = parseDetails(payload?.details);
+  const isTimeout =
+    error.code === "ECONNABORTED" || error.code === "ETIMEDOUT";
   const responseMessage =
     typeof payload?.message === "string"
       ? payload.message
       : error.response
         ? error.message || "The request could not be completed."
-        : "Unable to reach FarmTrack. Check your connection and try again.";
+        : isTimeout
+          ? "The FarmTrack server is taking longer than expected to wake. Please try again."
+          : "Unable to reach FarmTrack. Check your connection and try again.";
   return new ApiError(
     details.length
       ? details.map(({ field, message }) =>
@@ -69,7 +73,11 @@ export function normalizeApiError(error: unknown): ApiError {
         ).join(" ")
       : responseMessage,
     error.response?.status,
-    typeof payload?.code === "string" ? payload.code : "NETWORK_ERROR",
+    typeof payload?.code === "string"
+      ? payload.code
+      : isTimeout
+        ? "SERVER_WAKE_TIMEOUT"
+        : "NETWORK_ERROR",
     typeof payload?.request_id === "string" ? payload.request_id : undefined,
     details,
   );

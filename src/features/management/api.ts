@@ -154,6 +154,16 @@ export type ExpenseRecord = {
   updated_at: string;
 };
 
+export function getExpenseDisplayName(expense: ExpenseRecord): string {
+  if (expense.notes) {
+    const purchasedProducts = expense.notes.match(
+      /(?:^|\n)\s*Purchased products:\s*(.+?)(?:\r?\n|$)/i,
+    )?.[1]?.trim();
+    if (purchasedProducts) return purchasedProducts;
+  }
+  return expense.name;
+}
+
 export type ExpensePage = {
   items: ExpenseRecord[];
   total_count: number;
@@ -492,6 +502,8 @@ export type RecordedReturn = {
   reason: string;
   notes: string | null;
   credit_total: string;
+  credit_balance?: string;
+  balance_due?: string;
   items: RecordedReturnItem[];
 };
 

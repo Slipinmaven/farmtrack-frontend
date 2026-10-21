@@ -5,7 +5,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { FarmPageHeader } from "@/components/layout/farm-page-header";
 import { SessionGate } from "@/components/layout/session-gate";
 import { useAppDialog } from "@/components/ui/app-dialog";
-import { AppText } from "@/components/ui/app-text";
 import { ProductForm } from "@/features/management/components/product-form";
 import { useCreateProduct } from "@/features/management/hooks";
 import type { ProductType } from "@/features/management/api";
@@ -53,9 +52,6 @@ function CreateProductContent() {
               : "/products"
           }
         />
-        <AppText size="small" tone="secondary" style={styles.intro}>
-          Add a product and define the measurement units your farm uses.
-        </AppText>
         <ProductForm
           initialProductType={params.setupType}
           allowedProductTypes={
@@ -88,5 +84,4 @@ function CreateProductContent() {
 
 const styles = {
   screen: { flex: 1 },
-  intro: { paddingHorizontal: 18, paddingTop: 4 },
 };

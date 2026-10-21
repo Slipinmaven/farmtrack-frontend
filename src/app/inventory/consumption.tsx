@@ -3,8 +3,10 @@ import { router, type Href } from "expo-router";
 import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Modal,
   Pressable,
+  Platform,
   ScrollView,
   StyleSheet,
   View,
@@ -271,7 +273,16 @@ function ProductConsumptionContent() {
       style={[styles.screen, { backgroundColor: theme.background }]}
       edges={["top", "bottom"]}
     >
-      <ScrollView contentContainerStyle={styles.content}>
+      <KeyboardAvoidingView
+        style={styles.keyboardContainer}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        automaticallyAdjustKeyboardInsets
+      >
         <FarmPageHeader
           title="Product consumption"
           showBack
@@ -637,6 +648,7 @@ function ProductConsumptionContent() {
           )}
         </Card>
       </ScrollView>
+      </KeyboardAvoidingView>
 
       <Modal
         visible={productPickerOpen}
@@ -681,7 +693,12 @@ function ProductConsumptionContent() {
               placeholder="Type a product name"
               autoCapitalize="none"
             />
-            <ScrollView contentContainerStyle={styles.productList}>
+            <ScrollView
+              contentContainerStyle={styles.productList}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+              automaticallyAdjustKeyboardInsets
+            >
               {matchingProducts.length ? (
                 matchingProducts.map((product) => {
                   const balance = balances.get(product.id);
@@ -771,7 +788,12 @@ function ProductConsumptionContent() {
               placeholder="Type to find an option"
               autoCapitalize="none"
             />
-            <ScrollView contentContainerStyle={styles.productList}>
+            <ScrollView
+              contentContainerStyle={styles.productList}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+              automaticallyAdjustKeyboardInsets
+            >
               <Pressable
                 accessibilityRole="button"
                 onPress={() => selectLocation("")}
@@ -937,6 +959,7 @@ function today(): string {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
+  keyboardContainer: { flex: 1 },
   content: { padding: 16, gap: 16, paddingBottom: 28 },
   section: { gap: 16 },
   grow: { flex: 1, gap: 3 },

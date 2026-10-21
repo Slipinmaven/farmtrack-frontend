@@ -70,6 +70,7 @@ export function BlockForm({
       style={styles.scroll}
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
+      automaticallyAdjustKeyboardInsets
     >
       <Card style={styles.form}>
         <AppText size="small" tone="secondary">

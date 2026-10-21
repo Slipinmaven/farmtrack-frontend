@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   View,
@@ -70,6 +71,7 @@ function SalesContent() {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [offset, setOffset] = useState(0);
+  const [showFilters, setShowFilters] = useState(false);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search.trim()), 250);
@@ -102,6 +104,11 @@ function SalesContent() {
       value,
     })),
   ];
+  const activeFilterCount =
+    Number(Boolean(fromDate)) +
+    Number(Boolean(toDate)) +
+    Number(Boolean(category)) +
+    Number(status !== "completed");
 
   function clearFilters() {
     router.setParams({ from_date: "", to_date: "" });
@@ -116,7 +123,21 @@ function SalesContent() {
       style={[styles.screen, { backgroundColor: theme.background }]}
       edges={["top"]}
     >
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
+        automaticallyAdjustKeyboardInsets
+        refreshControl={
+          <RefreshControl
+            refreshing={report.isRefetching}
+            onRefresh={() => {
+              if (isDateRangeValid) void report.refetch();
+            }}
+            tintColor={theme.primary}
+            colors={[theme.primary]}
+          />
+        }
+      >
         <FarmPageHeader title="Sales" />
 
         <View style={styles.pageHeading}>
@@ -138,6 +159,161 @@ function SalesContent() {
             <Ionicons name="refresh-outline" size={19} color={theme.primary} />
           </Pressable>
         </View>
+
+        <Card style={styles.filters}>
+          <View style={styles.sectionHeading}>
+            <AppText weight="semibold">Find sales</AppText>
+            <Pressable accessibilityRole="button" onPress={clearFilters}>
+              <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+                Clear
+              </AppText>
+            </Pressable>
+          </View>
+          <TextField
+            label="Search sales"
+            value={search}
+            onChangeText={(value) => {
+              setOffset(0);
+              setSearch(value);
+            }}
+            placeholder="Reference, customer or product"
+            autoCapitalize="none"
+            returnKeyType="search"
+          />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ expanded: showFilters }}
+            onPress={() => setShowFilters((visible) => !visible)}
+            style={[styles.filterToggle, { borderTopColor: theme.border }]}
+          >
+            <View style={styles.filterToggleCopy}>
+              <Ionicons name="options-outline" size={17} color={theme.primary} />
+              <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+                Filters{activeFilterCount ? ` · ${activeFilterCount} active` : ""}
+              </AppText>
+            </View>
+            <Ionicons
+              name={showFilters ? "chevron-up" : "chevron-down"}
+              size={17}
+              color={theme.primary}
+            />
+          </Pressable>
+          {showFilters ? (
+            <View style={styles.filterOptions}>
+              <View style={styles.dateFilters}>
+                <DatePickerField
+                  label="From"
+                  value={fromDate}
+                  onChange={(value) => {
+                    setOffset(0);
+                    router.setParams({ from_date: value });
+                  }}
+                />
+                <DatePickerField
+                  label="To"
+                  value={toDate}
+                  onChange={(value) => {
+                    setOffset(0);
+                    router.setParams({ to_date: value });
+                  }}
+                />
+              </View>
+              {!isDateRangeValid ? (
+                <AppText size="small" style={{ color: theme.danger }}>
+                  Start date must be on or before end date.
+                </AppText>
+              ) : null}
+              <AppText size="small" weight="semibold">
+                Product category
+              </AppText>
+              {categories.length > 1 ? (
+                <View style={styles.chips}>
+                  {categories.map((item) => {
+                    const selected = category === item.value;
+                    return (
+                      <Pressable
+                        key={item.value || "all"}
+                        accessibilityRole="radio"
+                        accessibilityState={{ checked: selected }}
+                        onPress={() => {
+                          setOffset(0);
+                          setCategory(item.value);
+                        }}
+                        style={[
+                          styles.chip,
+                          {
+                            borderColor: selected ? theme.primary : theme.border,
+                            backgroundColor: selected
+                              ? theme.backgroundSelected
+                              : theme.backgroundElement,
+                          },
+                        ]}
+                      >
+                        <AppText
+                          size="small"
+                          weight={selected ? "semibold" : "regular"}
+                          style={selected ? { color: theme.primary } : undefined}
+                        >
+                          {item.label}
+                        </AppText>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              ) : (
+                <AppText size="small" tone="secondary">
+                  No active sellable products are set up for this farm.
+                </AppText>
+              )}
+              <AppText size="small" weight="semibold">
+                Sale status
+              </AppText>
+              <View style={styles.chips}>
+                {(
+                  [
+                    ["completed", "Completed"],
+                    ["cancelled", "Cancelled"],
+                    ["all", "All statuses"],
+                  ] as const
+                ).map(([value, label]) => {
+                  const selected = status === value;
+                  return (
+                    <Pressable
+                      key={value}
+                      accessibilityRole="radio"
+                      accessibilityState={{ checked: selected }}
+                      onPress={() => {
+                        setOffset(0);
+                        setStatus(value);
+                      }}
+                      style={[
+                        styles.chip,
+                        {
+                          borderColor: selected ? theme.primary : theme.border,
+                          backgroundColor: selected
+                            ? theme.backgroundSelected
+                            : theme.backgroundElement,
+                        },
+                      ]}
+                    >
+                      <AppText
+                        size="small"
+                        weight={selected ? "semibold" : "regular"}
+                        style={selected ? { color: theme.primary } : undefined}
+                      >
+                        {label}
+                      </AppText>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          ) : !isDateRangeValid ? (
+            <AppText size="small" style={{ color: theme.danger }}>
+              Start date must be on or before end date.
+            </AppText>
+          ) : null}
+        </Card>
 
         {data ? (
           <>
@@ -302,134 +478,6 @@ function SalesContent() {
             </Card>
           </>
         ) : null}
-
-        <Card style={styles.filters}>
-          <View style={styles.sectionHeading}>
-            <AppText weight="semibold">Find sales</AppText>
-            <Pressable accessibilityRole="button" onPress={clearFilters}>
-              <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
-                Clear
-              </AppText>
-            </Pressable>
-          </View>
-          <TextField
-            label="Search"
-            value={search}
-            onChangeText={(value) => {
-              setOffset(0);
-              setSearch(value);
-            }}
-            placeholder="Reference, customer or product"
-            autoCapitalize="none"
-          />
-          <View style={styles.dateFilters}>
-            <DatePickerField
-              label="From"
-              value={fromDate}
-              onChange={(value) => {
-                setOffset(0);
-                router.setParams({ from_date: value });
-              }}
-            />
-            <DatePickerField
-              label="To"
-              value={toDate}
-              onChange={(value) => {
-                setOffset(0);
-                router.setParams({ to_date: value });
-              }}
-            />
-          </View>
-          {!isDateRangeValid ? (
-            <AppText size="small" style={{ color: theme.danger }}>
-              Start date must be on or before end date.
-            </AppText>
-          ) : null}
-          <AppText size="small" weight="semibold">
-            Product category
-          </AppText>
-          {categories.length > 1 ? (
-            <View style={styles.chips}>
-              {categories.map((item) => {
-                const selected = category === item.value;
-                return (
-                  <Pressable
-                    key={item.value || "all"}
-                    accessibilityRole="radio"
-                    accessibilityState={{ checked: selected }}
-                    onPress={() => {
-                      setOffset(0);
-                      setCategory(item.value);
-                    }}
-                    style={[
-                      styles.chip,
-                      {
-                        borderColor: selected ? theme.primary : theme.border,
-                        backgroundColor: selected
-                          ? theme.backgroundSelected
-                          : theme.backgroundElement,
-                      },
-                    ]}
-                  >
-                    <AppText
-                      size="small"
-                      weight={selected ? "semibold" : "regular"}
-                      style={selected ? { color: theme.primary } : undefined}
-                    >
-                      {item.label}
-                    </AppText>
-                  </Pressable>
-                );
-              })}
-            </View>
-          ) : (
-            <AppText size="small" tone="secondary">
-              No active sellable products are set up for this farm.
-            </AppText>
-          )}
-          <AppText size="small" weight="semibold">
-            Sale status
-          </AppText>
-          <View style={styles.chips}>
-            {(
-              [
-                ["completed", "Completed"],
-                ["cancelled", "Cancelled"],
-                ["all", "All statuses"],
-              ] as const
-            ).map(([value, label]) => {
-              const selected = status === value;
-              return (
-                <Pressable
-                  key={value}
-                  accessibilityRole="radio"
-                  accessibilityState={{ checked: selected }}
-                  onPress={() => {
-                    setOffset(0);
-                    setStatus(value);
-                  }}
-                  style={[
-                    styles.chip,
-                    {
-                      borderColor: selected ? theme.primary : theme.border,
-                      backgroundColor: selected
-                        ? theme.backgroundSelected
-                        : theme.backgroundElement,
-                    },
-                  ]}
-                >
-                  <AppText
-                    size="small"
-                    weight={selected ? "semibold" : "regular"}
-                    style={selected ? { color: theme.primary } : undefined}
-                  >
-                    {label}
-                  </AppText>
-                </Pressable>
-              );
-            })}
-          </View>
-        </Card>
 
         <View style={styles.listHeading}>
           <View style={styles.headingCopy}>
@@ -866,7 +914,21 @@ const styles = StyleSheet.create({
     height: "100%",
     borderRadius: 3,
   },
-  filters: { gap: 13 },
+  filters: { gap: 11, borderRadius: 8 },
+  filterToggle: {
+    minHeight: 38,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 8,
+  },
+  filterToggleCopy: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+  },
+  filterOptions: { gap: 11, paddingTop: 2 },
   dateFilters: {
     flexDirection: "row",
     gap: 10,

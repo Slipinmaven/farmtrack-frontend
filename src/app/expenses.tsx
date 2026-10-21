@@ -3,8 +3,11 @@ import { router, useLocalSearchParams, type Href } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Modal,
   Pressable,
+  Platform,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   View,
@@ -21,11 +24,16 @@ import { Card } from "@/components/ui/card";
 import { DatePickerField } from "@/components/ui/date-picker-field";
 import { TextField } from "@/components/ui/text-field";
 import { useBlockSearch } from "@/features/blocks/hooks";
-import type { ExpenseRecord, SettlementPaymentMethod } from "@/features/management/api";
+import {
+  getExpenseDisplayName,
+  type ExpenseRecord,
+  type SettlementPaymentMethod,
+} from "@/features/management/api";
 import {
   useContacts,
   useCreateExpense,
   useExpenseCategories,
+  useExpenseSummary,
   useInfiniteExpenses,
 } from "@/features/management/hooks";
 import { normalizeApiError } from "@/lib/api/errors";
@@ -116,6 +124,10 @@ function ExpensesContent() {
   const [debouncedPickerSearch, setDebouncedPickerSearch] = useState("");
   const [error, setError] = useState("");
   const showExpenseForm = formOpen || params.new === "1";
+  const summaryQuery = useExpenseSummary(user?.id, farmId, {
+    from_date: fromDate || undefined,
+    to_date: toDate || undefined,
+  });
   const expensesQuery = useInfiniteExpenses(user?.id, farmId, {
     search: debouncedSearch || undefined,
     category: categoryFilter === "all" ? undefined : categoryFilter,
@@ -286,10 +298,6 @@ function ExpensesContent() {
       setError("Enter the amount paid with no more than two decimal places.");
       return;
     }
-    if (paidNowValue > 0 && paymentMethod !== "cash" && !referenceNumber.trim()) {
-      setError("Enter the payment reference for this payment method.");
-      return;
-    }
     setError("");
     try {
       const expense = await createExpense.mutateAsync({
@@ -373,7 +381,38 @@ function ExpensesContent() {
       style={[styles.screen, { backgroundColor: theme.background }]}
       edges={["top", "bottom"]}
     >
-      <ScrollView contentContainerStyle={styles.content}>
+      <KeyboardAvoidingView
+        style={styles.keyboardContainer}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
+      <ScrollView
+        contentContainerStyle={styles.content}
+        keyboardDismissMode="on-drag"
+        keyboardShouldPersistTaps="handled"
+        automaticallyAdjustKeyboardInsets
+        refreshControl={
+          <RefreshControl
+            refreshing={
+              !showExpenseForm &&
+              (expensesQuery.isRefetching ||
+                summaryQuery.isRefetching ||
+              categoriesQuery.isRefetching ||
+              allCategoriesQuery.isRefetching)
+            }
+            onRefresh={() => {
+              if (showExpenseForm) return;
+              void Promise.all([
+                expensesQuery.refetch(),
+                summaryQuery.refetch(),
+                categoriesQuery.refetch(),
+                allCategoriesQuery.refetch(),
+              ]);
+            }}
+            tintColor={theme.primary}
+            colors={[theme.primary]}
+          />
+        }
+      >
         <FarmPageHeader title="Expenses" showBack fallbackHref={"/(tabs)" as Href} />
 
         {expensesQuery.isError ? (
@@ -409,16 +448,7 @@ function ExpensesContent() {
           </Card>
         ) : null}
 
-        <View style={styles.pageIntro}>
-          <View style={styles.grow}>
-            <AppText size="heading" weight="semibold">Farm expenses</AppText>
-            <AppText size="small" tone="secondary">
-              Record and review costs across the farm.
-            </AppText>
-          </View>
-        </View>
-
-        <Card style={styles.section}>
+        <View style={styles.pageActions}>
           <Pressable
             accessibilityRole="button"
             accessibilityState={{ expanded: showExpenseForm }}
@@ -430,31 +460,124 @@ function ExpensesContent() {
                 setFormOpen((value) => !value);
               }
             }}
-            style={styles.sectionHeading}
+            style={[
+              styles.newExpenseButton,
+              { backgroundColor: theme.primary },
+            ]}
           >
-            <View
-              style={[
-                styles.sectionIcon,
-                { backgroundColor: theme.backgroundSelected },
-              ]}
-            >
-              <Ionicons name="add-circle-outline" size={20} color={theme.primary} />
-            </View>
-            <View style={styles.grow}>
-              <AppText size="heading" weight="semibold">Record an expense</AppText>
-              <AppText size="small" tone="secondary">
-                Capture farm costs that are not already recorded as a purchase.
-              </AppText>
-            </View>
             <Ionicons
-              name={showExpenseForm ? "chevron-up" : "chevron-down"}
-              size={20}
+              name={showExpenseForm ? "close" : "add"}
+              size={18}
+              color={theme.onPrimary}
+            />
+            <AppText
+              size="small"
+              weight="semibold"
+              style={{ color: theme.onPrimary }}
+            >
+              {showExpenseForm ? "Close form" : "New expense"}
+            </AppText>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Manage expense categories"
+            onPress={() => router.push("/settings/expense-categories" as Href)}
+            style={[
+              styles.manageCategoriesButton,
+              {
+                borderColor: theme.border,
+                backgroundColor: theme.backgroundElement,
+              },
+            ]}
+          >
+            <Ionicons
+              name="pricetags-outline"
+              size={16}
               color={theme.textSecondary}
             />
+            <AppText size="small" weight="semibold">
+              Categories
+            </AppText>
           </Pressable>
+        </View>
 
-          {showExpenseForm ? (
-            <>
+        {summaryQuery.isError ? (
+          <Card style={[styles.summaryCard, styles.summaryError]}>
+            <View style={styles.errorHeading}>
+              <Ionicons name="alert-circle-outline" size={18} color={theme.danger} />
+              <AppText size="small" weight="semibold">
+                Couldn’t load expense totals
+              </AppText>
+            </View>
+            <AppText size="small" tone="secondary">
+              {normalizeApiError(summaryQuery.error).message}
+            </AppText>
+            <Button
+              label="Retry totals"
+              variant="quiet"
+              onPress={() => void summaryQuery.refetch()}
+            />
+          </Card>
+        ) : summaryQuery.data ? (
+          <View
+            style={[
+              styles.summaryCard,
+              {
+                backgroundColor: theme.backgroundElement,
+                borderColor: theme.border,
+              },
+            ]}
+          >
+            <View style={styles.summaryHeading}>
+              <AppText size="small" weight="semibold">
+                Spending overview
+              </AppText>
+              <AppText size="small" tone="secondary">
+                {fromDate || toDate ? "Selected dates" : "All time"}
+              </AppText>
+            </View>
+            <View style={styles.summaryMetrics}>
+              <ExpenseMetric
+                label="Total"
+                value={formatMoney(Number(summaryQuery.data.total_amount), theme.currency)}
+                detail={`${summaryQuery.data.expense_count} records`}
+                color={theme.text}
+              />
+              <View
+                style={[styles.metricDivider, { borderLeftColor: theme.border }]}
+              >
+                <ExpenseMetric
+                  label="Paid"
+                  value={formatMoney(Number(summaryQuery.data.amount_paid), theme.currency)}
+                  color={theme.success}
+                />
+              </View>
+              <View
+                style={[styles.metricDivider, { borderLeftColor: theme.border }]}
+              >
+                <ExpenseMetric
+                  label="Outstanding"
+                  value={formatMoney(Number(summaryQuery.data.balance_due), theme.currency)}
+                  color={
+                    Number(summaryQuery.data.balance_due) > 0
+                      ? theme.danger
+                      : theme.textSecondary
+                  }
+                />
+              </View>
+            </View>
+          </View>
+        ) : (
+          <View style={styles.summaryLoading}>
+            <ActivityIndicator size="small" color={theme.primary} />
+            <AppText size="small" tone="secondary">
+              Loading spending overview
+            </AppText>
+          </View>
+        )}
+
+        {showExpenseForm ? (
+          <Card style={[styles.section, styles.expenseForm]}>
           <TextField
             label="Expense name"
             value={expenseName}
@@ -541,13 +664,13 @@ function ExpensesContent() {
           ) : null}
           {paidNowValue > 0 && paymentMethod !== "cash" ? (
             <TextField
-              label="Payment reference (required)"
+              label="Payment reference (optional)"
               value={referenceNumber}
               onChangeText={(value) => {
                 setReferenceNumber(value);
                 setError("");
               }}
-              placeholder="Enter transaction or receipt reference"
+              placeholder="Enter transaction or receipt reference if available"
               autoCapitalize="characters"
             />
           ) : null}
@@ -634,23 +757,10 @@ function ExpensesContent() {
             loading={createExpense.isPending}
             disabled={createExpense.isPending}
           />
-            </>
-          ) : (
-            <Button
-              label="Open expense form"
-              variant="secondary"
-              onPress={() => setFormOpen(true)}
-            />
-          )}
-        </Card>
+          </Card>
+        ) : null}
 
-        <Button
-          label="Manage expense categories"
-          variant="quiet"
-          onPress={() => router.push("/settings/expense-categories" as Href)}
-        />
-
-        <Card style={styles.section}>
+        <Card style={[styles.section, styles.historyCard]}>
           <View style={styles.historyHeading}>
             <View style={styles.grow}>
               <AppText size="heading" weight="semibold">Expense history</AppText>
@@ -767,6 +877,7 @@ function ExpensesContent() {
           ) : null}
         </Card>
       </ScrollView>
+      </KeyboardAvoidingView>
 
       <Modal
         visible={filtersOpen}
@@ -774,7 +885,10 @@ function ExpensesContent() {
         animationType="slide"
         onRequestClose={() => setFiltersOpen(false)}
       >
-        <View style={styles.modalRoot}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={styles.modalRoot}
+        >
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Close expense filters"
@@ -805,7 +919,11 @@ function ExpensesContent() {
                 <Ionicons name="close" size={23} color={theme.textSecondary} />
               </Pressable>
             </View>
-            <ScrollView contentContainerStyle={styles.filterForm}>
+            <ScrollView
+              contentContainerStyle={styles.filterForm}
+              keyboardShouldPersistTaps="handled"
+              automaticallyAdjustKeyboardInsets
+            >
               <SelectorButton
                 title="Category"
                 label={
@@ -876,7 +994,7 @@ function ExpensesContent() {
               />
             </View>
           </SafeAreaView>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <Modal
@@ -885,7 +1003,10 @@ function ExpensesContent() {
         animationType="slide"
         onRequestClose={() => setPickerMode(null)}
       >
-        <View style={styles.modalRoot}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={styles.modalRoot}
+        >
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Close selection list"
@@ -924,7 +1045,11 @@ function ExpensesContent() {
               placeholder={pickerMode?.includes("category") ? "Type a category name" : "Type a block name"}
               autoCapitalize="none"
             />
-            <ScrollView contentContainerStyle={styles.pickerResults}>
+            <ScrollView
+              contentContainerStyle={styles.pickerResults}
+              keyboardShouldPersistTaps="handled"
+              automaticallyAdjustKeyboardInsets
+            >
               {(pickerMode === "category" && categoriesQuery.isLoading) ||
               (pickerMode === "filter_category" && allCategoriesQuery.isLoading) ||
               (pickerMode?.includes("block") &&
@@ -1012,7 +1137,7 @@ function ExpensesContent() {
               ) : null}
             </ScrollView>
           </SafeAreaView>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <Modal
@@ -1021,7 +1146,10 @@ function ExpensesContent() {
         animationType="slide"
         onRequestClose={() => setContactPickerOpen(false)}
       >
-        <View style={styles.modalRoot}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={styles.modalRoot}
+        >
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Close contact picker"
@@ -1056,7 +1184,11 @@ function ExpensesContent() {
               placeholder="Type a name"
               autoCapitalize="none"
             />
-            <ScrollView contentContainerStyle={styles.contactResults}>
+            <ScrollView
+              contentContainerStyle={styles.contactResults}
+              keyboardShouldPersistTaps="handled"
+              automaticallyAdjustKeyboardInsets
+            >
               <Pressable
                 accessibilityRole="button"
                 onPress={() => {
@@ -1114,7 +1246,7 @@ function ExpensesContent() {
               ) : null}
             </ScrollView>
           </SafeAreaView>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
@@ -1128,23 +1260,33 @@ function ExpenseRow({
   currency: string;
 }) {
   const { theme } = useTheme();
-  const statusLabel = {
-    paid: "Paid",
-    partial: "Partially paid",
-    unpaid: "Unpaid",
-    cancelled: "Cancelled",
-  }[expense.payment_status];
+  const statusByPayment: Record<
+    ExpenseRecord["payment_status"],
+    { label: string; color: string; icon: keyof typeof Ionicons.glyphMap }
+  > = {
+    paid: { label: "Paid", color: theme.success, icon: "checkmark-circle-outline" },
+    partial: { label: "Partial", color: theme.secondary, icon: "time-outline" },
+    unpaid: { label: "Unpaid", color: theme.danger, icon: "alert-circle-outline" },
+    cancelled: { label: "Cancelled", color: theme.textSecondary, icon: "close-circle-outline" },
+  };
+  const status = statusByPayment[expense.payment_status];
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Open expense ${expense.name}`}
+      accessibilityLabel={`Open expense ${getExpenseDisplayName(expense)}`}
       onPress={() => router.push(`/expenses/${expense.id}` as Href)}
-      style={[styles.expenseRow, { borderTopColor: theme.border }]}
+      style={({ pressed }) => [
+        styles.expenseRow,
+        {
+          borderTopColor: theme.border,
+          opacity: pressed ? 0.74 : 1,
+        },
+      ]}
     >
       <View
         style={[
           styles.expenseIcon,
-          { backgroundColor: theme.backgroundSelected },
+          { backgroundColor: theme.background },
         ]}
       >
         <Ionicons
@@ -1153,41 +1295,87 @@ function ExpenseRow({
           color={theme.primary}
         />
       </View>
-      <View style={styles.grow}>
-        <AppText size="small" weight="semibold">
-          {expense.name}
-        </AppText>
-        <AppText size="small" tone="secondary">
-          {expense.category_name} · {expense.expense_date}
-        </AppText>
-        <AppText size="small" tone="secondary">
-          Paid {formatMoney(Number(expense.amount_paid), currency)}
-          {Number(expense.balance_due) > 0
-            ? ` · Due ${formatMoney(Number(expense.balance_due), currency)}`
-            : ""}
-          {expense.block_name ? ` · ${expense.block_name}` : ""}
-        </AppText>
-        <AppText
-          size="small"
-          style={{
-            color: expense.payment_status === "cancelled"
-              ? theme.danger
-              : expense.payment_status === "paid"
-                ? theme.success
-                : theme.textSecondary,
-          }}
-        >
-          {statusLabel}
-          {expense.contact_name ? ` · ${expense.contact_name}` : ""}
-        </AppText>
+      <View style={styles.expenseCopy}>
+        <View style={styles.expenseTopLine}>
+          <View style={styles.expenseTitleBlock}>
+            <AppText weight="semibold" numberOfLines={1}>
+              {getExpenseDisplayName(expense)}
+            </AppText>
+            <AppText size="small" tone="secondary" numberOfLines={1}>
+              {expense.category_name} · {formatExpenseDate(expense.expense_date)}
+            </AppText>
+          </View>
+          <View style={styles.expenseAmountBlock}>
+            <AppText size="small" weight="semibold" numberOfLines={1}>
+              {formatMoney(Number(expense.amount), currency)}
+            </AppText>
+            <View
+              style={[
+                styles.statusBadge,
+                { backgroundColor: `${status.color}18` },
+              ]}
+            >
+              <Ionicons
+                name={status.icon}
+                size={12}
+                color={status.color}
+              />
+              <AppText
+                size="small"
+                weight="semibold"
+                style={{ color: status.color }}
+              >
+                {status.label}
+              </AppText>
+            </View>
+          </View>
+        </View>
+        <View style={styles.expenseMetaLine}>
+          <AppText size="small" tone="secondary" numberOfLines={1}>
+            Paid {formatMoney(Number(expense.amount_paid), currency)}
+          </AppText>
+          {Number(expense.balance_due) > 0 ? (
+            <AppText size="small" style={{ color: theme.danger }} numberOfLines={1}>
+              Due {formatMoney(Number(expense.balance_due), currency)}
+            </AppText>
+          ) : null}
+          {expense.contact_name || expense.block_name ? (
+            <AppText size="small" tone="secondary" numberOfLines={1} style={styles.expenseContext}>
+              {[expense.contact_name, expense.block_name].filter(Boolean).join(" · ")}
+            </AppText>
+          ) : null}
+        </View>
       </View>
-      <View style={styles.rowAmount}>
-        <AppText size="small" weight="semibold">
-          {formatMoney(Number(expense.amount), currency)}
-        </AppText>
-        <Ionicons name="chevron-forward" size={16} color={theme.textSecondary} />
-      </View>
+      <Ionicons name="chevron-forward" size={15} color={theme.textSecondary} />
     </Pressable>
+  );
+}
+
+function ExpenseMetric({
+  label,
+  value,
+  detail,
+  color,
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+  color: string;
+}) {
+  return (
+    <View style={styles.metric}>
+      <AppText size="small" tone="secondary" numberOfLines={1}>
+        {label}
+      </AppText>
+      <AppText size="small" weight="semibold" style={{ color }} numberOfLines={1}>
+        {value}
+      </AppText>
+      {detail ? (
+        <AppText size="small" tone="secondary" numberOfLines={1}>
+          {detail}
+        </AppText>
+      ) : null}
+    </View>
   );
 }
 
@@ -1315,6 +1503,17 @@ function formatMoney(value: number, currency: string): string {
   }).format(value)}`;
 }
 
+function formatExpenseDate(value: string): string {
+  const date = new Date(`${value.slice(0, 10)}T00:00:00`);
+  return Number.isNaN(date.valueOf())
+    ? value
+    : new Intl.DateTimeFormat(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      }).format(date);
+}
+
 function today(): string {
   const date = new Date();
   const year = date.getFullYear();
@@ -1325,11 +1524,59 @@ function today(): string {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
+  keyboardContainer: { flex: 1 },
   loadingContent: { flex: 1, padding: 16, gap: 16 },
-  content: { padding: 16, gap: 16, paddingBottom: 28 },
-  section: { gap: 16 },
+  content: { padding: 14, gap: 12, paddingBottom: 24 },
+  section: { gap: 13, borderRadius: 12, padding: 13 },
   grow: { flex: 1, gap: 3 },
-  pageIntro: { flexDirection: "row", alignItems: "center", gap: 12 },
+  pageActions: { flexDirection: "row", alignItems: "center", gap: 8 },
+  newExpenseButton: {
+    minHeight: 40,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    borderRadius: 9,
+    paddingHorizontal: 12,
+  },
+  manageCategoriesButton: {
+    minHeight: 40,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: 9,
+    paddingHorizontal: 10,
+  },
+  summaryCard: {
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  summaryError: { backgroundColor: "transparent" },
+  summaryHeading: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  summaryMetrics: { flexDirection: "row" },
+  metric: { flex: 1, minWidth: 0, gap: 2, paddingRight: 5 },
+  metricDivider: {
+    flex: 1,
+    borderLeftWidth: 1,
+    paddingLeft: 9,
+  },
+  summaryLoading: {
+    minHeight: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    paddingHorizontal: 4,
+  },
+  expenseForm: { gap: 12 },
   dateFilters: { flexDirection: "row", gap: 10 },
   dateFilter: { flex: 1 },
   sectionHeading: { flexDirection: "row", alignItems: "center", gap: 12 },
@@ -1356,7 +1603,13 @@ const styles = StyleSheet.create({
   },
   inlineError: { flexDirection: "row", alignItems: "flex-start", gap: 8 },
   errorHeading: { flexDirection: "row", alignItems: "center", gap: 8 },
-  historyHeading: { flexDirection: "row", alignItems: "center", gap: 12 },
+  historyHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingBottom: 2,
+  },
+  historyCard: { gap: 11 },
   filterRow: { flexDirection: "row", gap: 8 },
   filterChip: { borderWidth: 1, borderRadius: 16, paddingHorizontal: 11, paddingVertical: 7 },
   filterButton: {
@@ -1370,15 +1623,44 @@ const styles = StyleSheet.create({
   },
   filterSummary: { flex: 1 },
   expenseRow: {
-    minHeight: 82,
+    minHeight: 68,
     borderTopWidth: StyleSheet.hairlineWidth,
-    paddingVertical: 10,
+    paddingVertical: 9,
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 8,
   },
-  rowAmount: { flexDirection: "row", alignItems: "center", gap: 4 },
-  expenseIcon: { width: 34, height: 34, borderRadius: 7, alignItems: "center", justifyContent: "center" },
+  expenseCopy: { flex: 1, minWidth: 0, gap: 5 },
+  expenseTopLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  expenseTitleBlock: { flex: 1, minWidth: 0, gap: 1 },
+  expenseAmountBlock: { alignItems: "flex-end", gap: 3 },
+  expenseMetaLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    minWidth: 0,
+  },
+  expenseContext: { flex: 1 },
+  statusBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  expenseIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   emptyState: { alignItems: "center", gap: 9, paddingVertical: 18 },
   centerText: { textAlign: "center" },
   modalRoot: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.35)" },

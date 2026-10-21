@@ -149,6 +149,7 @@ function ChickenLossReviewContent() {
         <ScrollView
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
+          automaticallyAdjustKeyboardInsets
         >
           <FarmPageHeader title="Review chicken losses" showBack />
           {draft ? (

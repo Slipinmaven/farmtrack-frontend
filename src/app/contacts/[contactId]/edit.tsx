@@ -39,7 +39,7 @@ function EditContactContent() {
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: theme.background }}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
       <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
         <FarmPageHeader title="Edit contact" showBack backHref={detailHref} />

@@ -10,6 +10,12 @@ export const queryClient = new QueryClient({
       retry: (failureCount, error) => {
         if (
           error instanceof ApiError &&
+          error.code === "SERVER_WAKE_TIMEOUT"
+        ) {
+          return false;
+        }
+        if (
+          error instanceof ApiError &&
           error.status !== undefined &&
           error.status < 500
         ) {
