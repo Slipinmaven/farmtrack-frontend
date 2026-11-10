@@ -1,6 +1,13 @@
 import * as LocalAuthentication from "expo-local-authentication";
 import { AppState, Modal, Platform, StyleSheet, View } from "react-native";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import { AppText } from "@/components/ui/app-text";
 import { Button } from "@/components/ui/button";
@@ -8,6 +15,12 @@ import { FarmTrackMark } from "@/components/branding/farmtrack-mark";
 import { useSecuritySettings } from "@/features/management/hooks";
 import { useAuth } from "@/providers/auth-provider";
 import { useTheme } from "@/providers/theme-provider";
+
+const AppLockContext = createContext(false);
+
+export function useAppLockBlocksUpdates(): boolean {
+  return useContext(AppLockContext);
+}
 
 export function AppLockGuard({ children }: { children: ReactNode }) {
   const auth = useAuth();
@@ -27,6 +40,8 @@ export function AppLockGuard({ children }: { children: ReactNode }) {
     security.data?.auto_lock_enabled === true &&
     security.data.biometric_unlock_enable === true;
   const lockDelayMs = (security.data?.auto_lock_minutes ?? 5) * 60 * 1000;
+  const lockVisible =
+    lockState.locked && appLockEnabled && auth.status === "authenticated";
 
   if (lockState.authStatus !== auth.status) {
     const shouldLockRestoredSession =
@@ -109,7 +124,9 @@ export function AppLockGuard({ children }: { children: ReactNode }) {
   }
 
   return (
-    <>
+    <AppLockContext.Provider
+      value={lockVisible || lockState.shouldLockRestoredSession}
+    >
       {children}
       <Modal
         visible={
@@ -154,7 +171,7 @@ export function AppLockGuard({ children }: { children: ReactNode }) {
           />
         </View>
       </Modal>
-    </>
+    </AppLockContext.Provider>
   );
 }
 

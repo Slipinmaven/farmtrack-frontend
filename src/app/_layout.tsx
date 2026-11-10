@@ -11,6 +11,7 @@ import { AuthProvider } from "@/providers/auth-provider";
 import { FarmProvider } from "@/providers/farm-provider";
 import { AppLockGuard } from "@/providers/app-lock-guard";
 import { ThemeProvider, useTheme } from "@/providers/theme-provider";
+import { AndroidAppUpdateChecker } from "@/features/app-updates/android-app-update-checker";
 
 let Notifications: typeof import("expo-notifications") | null = null;
 
@@ -41,6 +42,7 @@ function AppRoutes() {
     <>
       <StatusBar style={theme.mode === "dark" ? "light" : "dark"} />
       <ApiWakeupNotice />
+      <AndroidAppUpdateChecker />
       <Stack
         screenOptions={{
           headerShown: false,

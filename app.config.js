@@ -6,6 +6,10 @@ module.exports = () => {
     plugins: [...(expo.plugins ?? []), "expo-sharing"],
     android: {
       ...expo.android,
+      permissions: [
+        ...(expo.android?.permissions ?? []),
+        "REQUEST_INSTALL_PACKAGES",
+      ],
       googleServicesFile: "./google-services.json",
     },
   };

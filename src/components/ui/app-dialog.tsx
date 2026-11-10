@@ -2,6 +2,8 @@ import { Ionicons } from "@expo/vector-icons";
 import {
   createContext,
   useContext,
+  useCallback,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -11,7 +13,7 @@ import { Modal, Pressable, StyleSheet, View } from "react-native";
 import { AppText } from "@/components/ui/app-text";
 import { useTheme } from "@/providers/theme-provider";
 
-type DialogTone = "info" | "success" | "error";
+type DialogTone = "info" | "success" | "error" | "warning";
 type DialogOptions = {
   title: string;
   message: string;
@@ -46,37 +48,47 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
     resolveRef.current = null;
   }
 
-  function showDialog(options: DialogOptions): Promise<void> {
+  const showDialog = useCallback((options: DialogOptions): Promise<void> => {
     return new Promise((resolve) => {
       resolveRef.current = () => resolve();
       setDialog({ ...options, kind: "message" });
     });
-  }
+  }, []);
 
-  function confirmDialog(options: ConfirmDialogOptions): Promise<boolean> {
-    return new Promise((resolve) => {
-      resolveRef.current = resolve;
-      setDialog({ ...options, kind: "confirmation" });
-    });
-  }
+  const confirmDialog = useCallback(
+    (options: ConfirmDialogOptions): Promise<boolean> =>
+      new Promise((resolve) => {
+        resolveRef.current = resolve;
+        setDialog({ ...options, kind: "confirmation" });
+      }),
+    [],
+  );
+  const contextValue = useMemo(
+    () => ({ showDialog, confirmDialog }),
+    [confirmDialog, showDialog],
+  );
 
   const toneColor =
     dialog?.tone === "success"
       ? theme.success
       : dialog?.tone === "error"
         ? theme.danger
-        : theme.primary;
+        : dialog?.tone === "warning"
+          ? theme.secondary
+          : theme.primary;
   const iconName =
     dialog?.tone === "success"
       ? "checkmark-circle"
       : dialog?.tone === "error"
         ? "alert-circle"
-        : dialog?.kind === "confirmation"
+        : dialog?.tone === "warning"
+          ? "alert-circle"
+          : dialog?.kind === "confirmation"
           ? "help-circle"
           : "information-circle";
 
   return (
-    <AppDialogContext.Provider value={{ showDialog, confirmDialog }}>
+    <AppDialogContext.Provider value={contextValue}>
       {children}
       <Modal
         transparent

@@ -51,6 +51,17 @@ npm start
 
 Use the Expo CLI prompts to open the app on a connected emulator/device or in a browser. Native features such as secure storage, local authentication and push notifications may require a development build; see the Expo documentation and the project's `eas.json` profiles.
 
+## Android APK updates
+
+On startup, signed-in Android users are offered any active release whose
+version code is newer than the installed build. Accepting downloads the APK
+through the authenticated FarmTrack API and opens Android's package installer.
+Users can defer the prompt and continue using the app. Android requires the
+user to approve each installation and may ask them to allow installs from
+FarmTrack in Android settings. The APK must use the same application ID and
+signing key and have a higher version code. Adding or changing this installer
+flow requires a new APK before it can update existing installations.
+
 ## Checks
 
 ```sh
