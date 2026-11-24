@@ -51,3 +51,45 @@ export async function getReminder(
   );
   return data;
 }
+
+export async function rescheduleReminder(
+  farmId: string,
+  reminderId: string,
+  dueAt: string,
+): Promise<Reminder> {
+  const { data } = await apiClient.patch<Reminder>(
+    `/farms/${farmId}/reminders/${reminderId}/reschedule`,
+    { due_at: dueAt },
+  );
+  return data;
+}
+
+export async function cancelReminder(
+  farmId: string,
+  reminderId: string,
+): Promise<Reminder> {
+  const { data } = await apiClient.patch<Reminder>(
+    `/farms/${farmId}/reminders/${reminderId}/cancel`,
+  );
+  return data;
+}
+
+export async function completeReminder(
+  farmId: string,
+  reminderId: string,
+): Promise<Reminder> {
+  const { data } = await apiClient.patch<Reminder>(
+    `/farms/${farmId}/reminders/${reminderId}/complete`,
+  );
+  return data;
+}
+
+export async function reopenReminder(
+  farmId: string,
+  reminderId: string,
+): Promise<Reminder> {
+  const { data } = await apiClient.patch<Reminder>(
+    `/farms/${farmId}/reminders/${reminderId}/reopen`,
+  );
+  return data;
+}

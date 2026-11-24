@@ -27,6 +27,21 @@ test("calculates an undiscounted purchase and effective per-chicken cost", () =>
   assert.equal(pricing.effectiveCostPerChickenCents, 30000n);
 });
 
+test("combines quantities entered in multiple units of the same product", () => {
+  const pricing = calculateChickenPurchasePricing(
+    [
+      { quantity: "3", unitPrice: "1200.00", conversionFactor: 12 },
+      { quantity: "1", unitPrice: "100.00", conversionFactor: 1 },
+    ],
+    null,
+    "",
+  );
+
+  assert.equal(pricing.chickenCount, 37n);
+  assert.equal(pricing.subtotalCents, 370000n);
+  assert.equal(pricing.effectiveCostPerChickenCents, 10000n);
+});
+
 test("applies a fixed discount and calculates the effective cost", () => {
   const pricing = calculateChickenPurchasePricing(
     oneChickenPerUnit,

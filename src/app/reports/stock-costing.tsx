@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useMemo, useState } from "react";
 import { ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -28,7 +28,10 @@ type CostingItem = {
   quantity: string;
   unit_name: string;
   unit_abbreviation: string;
+  movement_types?: ("sale" | "consumption" | "loss")[];
 };
+
+type CostEntryMode = "current" | "historical";
 
 export default function StockCostingRoute() {
   return (
@@ -42,13 +45,22 @@ function StockCostingContent() {
   const { user } = useAuth();
   const farm = useFarm();
   const { theme } = useTheme();
+  const params = useLocalSearchParams<{
+    productId?: string | string[];
+    from_date?: string | string[];
+    to_date?: string | string[];
+  }>();
+  const productId = firstParam(params.productId);
+  const fromDate = firstParam(params.from_date);
+  const toDate = firstParam(params.to_date);
+  const isHistoricalRequest = Boolean(productId && fromDate && toDate);
+  const reportFilters = {
+    from_date: fromDate ?? localDateString(),
+    to_date: toDate ?? localDateString(),
+  };
   const farmId = farm.selectedFarm?.id;
   const userId = user?.id;
-  const today = localDateString();
-  const report = useProfitabilityReport(userId, farmId, {
-    from_date: today,
-    to_date: today,
-  });
+  const report = useProfitabilityReport(userId, farmId, reportFilters);
   const products = useProducts(userId, farmId);
   const mutation = useRecordProfitabilityStockValuation(
     userId ?? "",
@@ -86,6 +98,29 @@ function StockCostingContent() {
     }
     return existing;
   }, [chickenProducts, report.data]);
+  const historicalIssues = (report.data?.product_performance ?? [])
+    .filter(
+      (item) =>
+        Number(item.uncosted_movement_quantity) > 0 &&
+        (!productId || item.product_id === productId),
+    )
+    .map((item) => ({
+      product_id: item.product_id,
+      product_name: item.product_name,
+      product_type: item.product_type,
+      quantity: item.uncosted_movement_quantity,
+      unit_name: item.unit_name,
+      unit_abbreviation: item.unit_abbreviation,
+      movement_types: item.uncosted_movement_types,
+    }));
+  const currentStockItems = isHistoricalRequest
+    ? []
+    : productId
+      ? items.filter((item) => item.product_id === productId)
+      : items;
+  const requestedProduct = productId
+    ? (products.data ?? []).find((product) => product.id === productId)
+    : undefined;
 
   if (!farm.selectedFarm) {
     return (
@@ -125,30 +160,42 @@ function StockCostingContent() {
           </View>
           <View style={styles.grow}>
             <AppText size="heading" weight="semibold">
-              Value current uncosted stock
+              {isHistoricalRequest
+                ? "Estimate missing stock cost"
+                : "Value current uncosted stock"}
             </AppText>
             <AppText size="small" tone="secondary">
-              Set the verified cost per base unit for stock currently on hand.
-              This creates a dated costing baseline without changing physical
-              stock. Untracked flock counts are synchronized into the cost ledger.
+              {isHistoricalRequest
+                ? "Enter the estimated unit cost for this product."
+                : "Enter the verified cost per base unit for stock on hand."}
             </AppText>
           </View>
         </View>
-        <Card style={styles.notice}>
-          <Ionicons name="information-circle-outline" size={19} color={theme.primary} />
-          <AppText size="small" tone="secondary" style={styles.grow}>
-            Enter a source-backed acquisition or production cost, not the selling
-            price. The baseline begins today; periods before today may remain
-            incomplete where earlier sales, consumption, or losses lacked cost
-            records. Future stock movements use the weighted-average cost.
-          </AppText>
-        </Card>
+        {productId && fromDate && toDate ? (
+          <Card style={styles.notice}>
+            <Ionicons name="information-circle-outline" size={18} color={theme.primary} />
+            <AppText size="small" tone="secondary" style={styles.grow}>
+              This estimate will be applied to uncosted stock movements in the
+              selected report period.
+            </AppText>
+          </Card>
+        ) : null}
 
         {report.isLoading || products.isLoading ? (
-          <LoadingState label="Loading current stock valuation" />
+          <LoadingState
+            label={
+              isHistoricalRequest
+                ? "Loading report cost details"
+                : "Loading current stock valuation"
+            }
+          />
         ) : report.isError || products.isError ? (
           <Card style={styles.errorCard}>
-            <AppText weight="semibold">Current stock valuation could not load</AppText>
+            <AppText weight="semibold">
+              {isHistoricalRequest
+                ? "Report cost details could not load"
+                : "Current stock valuation could not load"}
+            </AppText>
             {report.isError ? (
               <AppText size="small" tone="secondary">
                 {normalizeApiError(report.error).message}
@@ -173,21 +220,45 @@ function StockCostingContent() {
             {Number(report.data?.untracked_chicken_quantity ?? 0) > 0 &&
             chickenProducts.length !== 1 ? (
               <Card style={styles.errorCard}>
-                <AppText weight="semibold">Chicken stock needs reconciliation</AppText>
+                <AppText weight="semibold">Chicken product link missing</AppText>
                 <AppText size="small" tone="secondary">
-                  There are untracked chickens, but this farm does not have
-                  exactly one active chicken product to link them to. Other stock
-                  can still be valued; the flock will remain unvalued until its
-                  product links are reconciled.
+                  Add or activate one chicken product before valuing this flock.
                 </AppText>
               </Card>
             ) : null}
-            {items.length ? (
-              items.map((item) => (
+            {historicalIssues.map((item) => (
+              <StockCostCard
+                key={`historical-${item.product_id}`}
+                item={item}
+                currency={farm.selectedFarm?.settings?.currency ?? "KES"}
+                mode="historical"
+                value={unitCosts[item.product_id] ?? ""}
+                saving={
+                  mutation.isPending &&
+                  mutation.variables?.product_id === item.product_id
+                }
+                error={
+                  mutation.isError &&
+                  mutation.variables?.product_id === item.product_id
+                    ? normalizeApiError(mutation.error).message
+                    : null
+                }
+                onChange={(value) =>
+                  setUnitCosts((current) => ({
+                    ...current,
+                    [item.product_id]: value,
+                  }))
+                }
+                onSave={() => saveCost(item, "historical")}
+              />
+            ))}
+            {currentStockItems.length ? (
+              currentStockItems.map((item) => (
                 <StockCostCard
                   key={item.product_id}
                   item={item}
                   currency={farm.selectedFarm?.settings?.currency ?? "KES"}
+                  mode="current"
                   value={unitCosts[item.product_id] ?? ""}
                   saving={
                     mutation.isPending &&
@@ -205,64 +276,24 @@ function StockCostingContent() {
                       [item.product_id]: value,
                     }))
                   }
-                  onSave={() => {
-                    const value = unitCosts[item.product_id]?.trim() ?? "";
-                    if (!value || !Number.isFinite(Number(value)) || Number(value) < 0) {
-                      setFormError("Enter a valid non-negative cost per unit.");
-                      return;
-                    }
-                    setFormError(null);
-                    setSuccessMessage(null);
-                    mutation.mutate(
-                      { product_id: item.product_id, unit_cost: value },
-                      {
-                        onSuccess: (result) => {
-                          setSuccessMessage(
-                            `${result.product_name}: cost recorded for ${result.quantity_valued} ${result.unit_abbreviation || result.unit_name} as of ${result.valuation_date}.`,
-                          );
-                        },
-                      },
-                    );
-                  }}
+                  onSave={() => saveCost(item, "current")}
                 />
               ))
-            ) : (
-              <Card
-                style={
-                  report.data?.complete
-                    ? undefined
-                    : [
-                        styles.incompleteCard,
-                        {
-                          backgroundColor: theme.backgroundSelected,
-                          borderColor: theme.border,
-                        },
-                      ]
-                }
-              >
-                <View style={styles.emptyHeading}>
-                  <Ionicons
-                    name={
-                      report.data?.complete
-                        ? "checkmark-circle-outline"
-                        : "information-circle-outline"
-                    }
-                    size={22}
-                    color={report.data?.complete ? theme.success : theme.secondary}
-                  />
-                  <AppText weight="semibold">
-                    {report.data?.complete
-                      ? "Current stock is costed"
-                      : "No current stock needs a cost"}
-                  </AppText>
-                </View>
-                <AppText size="small" tone="secondary">
-                  {report.data?.complete
-                    ? "Keep recording actual purchase prices and production costs for new stock."
-                    : "This page values only stock still on hand. It cannot fill in missing costs for sales, stock use, losses or egg production. Missing amounts are never guessed."}
+            ) : null}
+            {historicalIssues.length === 0 && currentStockItems.length === 0 ? (
+              <Card style={styles.emptyCard}>
+                <Ionicons
+                  name={productId ? "checkmark-circle-outline" : "cube-outline"}
+                  size={20}
+                  color={productId ? theme.success : theme.textSecondary}
+                />
+                <AppText size="small" weight="semibold">
+                  {productId
+                    ? `No missing cost for ${requestedProduct?.name ?? "this product"} in this report.`
+                    : "No current stock needs a cost."}
                 </AppText>
               </Card>
-            )}
+            ) : null}
             {successMessage ? (
               <Card style={styles.successCard}>
                 <AppText size="small" weight="semibold">
@@ -288,12 +319,44 @@ function StockCostingContent() {
       </ScrollView>
     </SafeAreaView>
   );
+
+  function saveCost(item: CostingItem, mode: CostEntryMode) {
+    const value = unitCosts[item.product_id]?.trim() ?? "";
+    if (!value || !Number.isFinite(Number(value)) || Number(value) < 0) {
+      setFormError("Enter a valid non-negative cost per unit.");
+      return;
+    }
+    setFormError(null);
+    setSuccessMessage(null);
+    mutation.mutate(
+      {
+        product_id: item.product_id,
+        unit_cost: value,
+        ...(mode === "historical"
+          ? {
+              from_date: reportFilters.from_date,
+              to_date: reportFilters.to_date,
+            }
+          : {}),
+      },
+      {
+        onSuccess: (result) => {
+          setSuccessMessage(
+            mode === "historical"
+              ? `Estimated cost applied to ${result.product_name}. Report updated.`
+              : `Cost recorded for ${result.product_name}.`,
+          );
+        },
+      },
+    );
+  }
 }
 
 function StockCostCard({
   item,
   currency,
   value,
+  mode,
   saving,
   error,
   onChange,
@@ -302,6 +365,7 @@ function StockCostCard({
   item: CostingItem;
   currency: string;
   value: string;
+  mode: CostEntryMode;
   saving: boolean;
   error: string | null;
   onChange: (value: string) => void;
@@ -314,13 +378,16 @@ function StockCostCard({
         <View style={styles.grow}>
           <AppText weight="semibold">{item.product_name}</AppText>
           <AppText size="small" tone="secondary">
-            {formatQuantity(item.quantity)} {item.unit_abbreviation || item.unit_name} uncosted
+            {mode === "historical"
+              ? `${formatQuantity(item.quantity)} ${item.unit_abbreviation || item.unit_name} ${formatMovementTypes(item.movement_types ?? [])} without cost`
+              : `${formatQuantity(item.quantity)} ${item.unit_abbreviation || item.unit_name} on hand`}
           </AppText>
         </View>
         <AppText size="small" tone="secondary">{item.product_type}</AppText>
       </View>
       <AppText size="small" tone="secondary">
-        Verified cost per {item.unit_abbreviation || item.unit_name} ({currency})
+        {mode === "historical" ? "Estimated" : "Verified"} cost per{" "}
+        {item.unit_abbreviation || item.unit_name} ({currency})
       </AppText>
       <TextInput
         value={value}
@@ -341,7 +408,7 @@ function StockCostCard({
         <AppText size="small" style={{ color: theme.danger }}>{error}</AppText>
       ) : null}
       <Button
-        label="Record cost baseline"
+        label={mode === "historical" ? "Apply estimate to report" : "Record stock cost"}
         loading={saving}
         disabled={saving}
         onPress={onSave}
@@ -380,10 +447,21 @@ const styles = StyleSheet.create({
   grow: { flex: 1, gap: 3 },
   notice: { flexDirection: "row", alignItems: "flex-start", gap: 9 },
   errorCard: { gap: 9 },
-  incompleteCard: { gap: 9, borderWidth: 1 },
+  emptyCard: { flexDirection: "row", alignItems: "center", gap: 9 },
   successCard: { borderColor: "#548D73" },
-  emptyHeading: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 },
   stockCard: { gap: 10 },
   stockHeading: { flexDirection: "row", alignItems: "center", gap: 10 },
   input: { minHeight: 46, borderWidth: 1, borderRadius: 9, paddingHorizontal: 12, fontSize: 16 },
 });
+
+function firstParam(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function formatMovementTypes(types: ("sale" | "consumption" | "loss")[]): string {
+  const labels = types.map((type) =>
+    type === "sale" ? "sold" : type === "consumption" ? "used" : "lost",
+  );
+  if (labels.length < 2) return labels[0] ?? "moved";
+  return `${labels.slice(0, -1).join(", ")} or ${labels[labels.length - 1]}`;
+}

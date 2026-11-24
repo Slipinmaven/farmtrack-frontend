@@ -85,6 +85,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setStatus("blocked");
           return false;
         }
+        if (apiError.code === "ACCOUNT_DELETION_PENDING") {
+          await clearSession();
+          queryClient.clear();
+          setUser(null);
+          setErrorMessage(apiError.message);
+          setErrorCode(apiError.code);
+          setStatus("anonymous");
+          return false;
+        }
         if (apiError.status === undefined || apiError.status >= 500) {
           setErrorMessage(apiError.message);
           setErrorCode(apiError.code);
@@ -118,6 +127,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setErrorMessage(apiError.message);
             setErrorCode(apiError.code);
             setStatus("blocked");
+          } else if (apiError?.code === "ACCOUNT_DELETION_PENDING") {
+            setErrorMessage(apiError.message);
+            setErrorCode(apiError.code);
+            setStatus("anonymous");
           } else {
             setErrorMessage(null);
             setErrorCode(null);

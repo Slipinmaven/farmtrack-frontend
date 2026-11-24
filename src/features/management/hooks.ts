@@ -7,6 +7,7 @@ import {
 
 import {
   createContact,
+  createContactRole,
   cancelExpense,
   createExpense,
   createExpenseCategory,
@@ -27,12 +28,14 @@ import {
   getExpenseSummary,
   getProfitabilityReport,
   recordProfitabilityStockValuation,
+  confirmZeroEggProductionCost,
   getExpense,
   getExpenseCategories,
   getContact,
   getPurchaseReturns,
   getSaleReturns,
   getContactTransactionHistory,
+  getAccountLedger,
   getFarmActivities,
   getFarmActivity,
   getFarmActivitySummary,
@@ -45,11 +48,13 @@ import {
   getSecuritySettings,
   getUnits,
   getTransactionSettlements,
+  getPurchaseReplacements,
   getSupplierRefunds,
   getTransactionRefunds,
   getUnreadNotificationCount,
   markAllNotificationsRead,
   markNotificationRead,
+  archiveNotification,
   updateSecuritySettings,
   updateContact,
   recordExpensePayment,
@@ -85,6 +90,7 @@ import {
   type TransactionSettlementCreatePayload,
   type ProfitabilityReport,
   type ProfitabilityStockValuationInput,
+  type EggProductionCostConfirmationInput,
 } from "@/features/management/api";
 
 export function useProducts(
@@ -167,7 +173,7 @@ export function useExpenses(
   farmId: string | undefined,
   filters?: {
     search?: string;
-    category?: string;
+    category?: string | string[];
     block_id?: string;
     payment_status?: string;
     from_date?: string;
@@ -188,7 +194,7 @@ export function useInfiniteExpenses(
   farmId: string | undefined,
   filters: {
     search?: string;
-    category?: string;
+    category?: string | string[];
     block_id?: string;
     payment_status?: string;
     from_date?: string;
@@ -251,6 +257,21 @@ export function useRecordProfitabilityStockValuation(
           queryKey: ["farm-activities", userId, farmId],
         }),
       ]),
+  });
+}
+
+export function useConfirmZeroEggProductionCost(
+  userId: string,
+  farmId: string,
+) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: EggProductionCostConfirmationInput) =>
+      confirmZeroEggProductionCost(farmId, payload),
+    onSuccess: async () =>
+      client.invalidateQueries({
+        queryKey: ["profitability-report", userId, farmId],
+      }),
   });
 }
 
@@ -433,6 +454,15 @@ export function useCreateInventoryPurchase(userId: string, farmId: string) {
         client.invalidateQueries({
           queryKey: ["farm-activities", userId, farmId],
         }),
+        client.invalidateQueries({
+          queryKey: ["receipt-history", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["outstanding-balances", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["egg-collection-options", userId, farmId],
+        }),
       ]),
   });
 }
@@ -445,6 +475,18 @@ export function useTransactionSettlements(
   return useQuery({
     queryKey: ["transaction-settlements", userId, farmId, transactionId],
     queryFn: () => getTransactionSettlements(farmId!, transactionId!),
+    enabled: Boolean(userId && farmId && transactionId),
+  });
+}
+
+export function usePurchaseReplacements(
+  userId: string | undefined,
+  farmId: string | undefined,
+  transactionId: string | undefined,
+) {
+  return useQuery({
+    queryKey: ["purchase-replacements", userId, farmId, transactionId],
+    queryFn: () => getPurchaseReplacements(farmId!, transactionId!),
     enabled: Boolean(userId && farmId && transactionId),
   });
 }
@@ -479,6 +521,9 @@ export function useCreateTransactionSettlement(
           queryKey: ["blocks", userId, farmId],
         }),
         client.invalidateQueries({ queryKey: ["sales-report", userId, farmId] }),
+        client.invalidateQueries({
+          queryKey: ["outstanding-balances", userId, farmId],
+        }),
         client.invalidateQueries({
           queryKey: ["farm-activities", userId, farmId],
         }),
@@ -523,6 +568,12 @@ export function useCreateSaleReturn(
         client.invalidateQueries({ queryKey: ["inventory", userId, farmId] }),
         client.invalidateQueries({ queryKey: ["sales-report", userId, farmId] }),
         client.invalidateQueries({
+          queryKey: ["pending-sale-deliveries", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["outstanding-balances", userId, farmId],
+        }),
+        client.invalidateQueries({
           queryKey: ["farm-activities", userId, farmId],
         }),
       ]),
@@ -559,6 +610,9 @@ export function useCreatePurchaseReturn(
           queryKey: ["chicken-purchase-details", userId, farmId, transactionId],
         }),
         client.invalidateQueries({ queryKey: ["inventory", userId, farmId] }),
+        client.invalidateQueries({
+          queryKey: ["outstanding-balances", userId, farmId],
+        }),
         client.invalidateQueries({
           queryKey: ["farm-activities", userId, farmId],
         }),
@@ -597,6 +651,9 @@ export function useCreateTransactionRefund(
         }),
         client.invalidateQueries({
           queryKey: ["sales-report", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["outstanding-balances", userId, farmId],
         }),
         client.invalidateQueries({
           queryKey: ["farm-activities", userId, farmId],
@@ -638,6 +695,9 @@ export function useCreateSupplierRefund(
           queryKey: ["purchase-returns", userId, farmId, transactionId],
         }),
         client.invalidateQueries({
+          queryKey: ["outstanding-balances", userId, farmId],
+        }),
+        client.invalidateQueries({
           queryKey: ["farm-activities", userId, farmId],
         }),
       ]),
@@ -677,6 +737,12 @@ export function useCreateProduct(userId: string, farmId: string) {
         client.invalidateQueries({
           queryKey: ["product", userId, farmId, product.id],
         }),
+        client.invalidateQueries({
+          queryKey: ["chicken-sale-options", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["egg-collection-options", userId, farmId],
+        }),
       ]);
     },
   });
@@ -695,6 +761,15 @@ export function useUpdateProduct(userId: string, farmId: string) {
     onSuccess: async (_data, productId) => {
       await Promise.all([
         client.invalidateQueries({ queryKey: ["products", userId, farmId] }),
+        client.invalidateQueries({
+          queryKey: ["chicken-sale-options", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["chicken-purchase-options", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["egg-collection-options", userId, farmId],
+        }),
         client.removeQueries({
           queryKey: ["product", userId, farmId, productId],
         }),
@@ -707,8 +782,19 @@ export function useDeleteProduct(userId: string, farmId: string) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (productId: string) => deleteProduct(farmId, productId),
-    onSuccess: () =>
-      client.invalidateQueries({ queryKey: ["products", userId, farmId] }),
+    onSuccess: async () =>
+      Promise.all([
+        client.invalidateQueries({ queryKey: ["products", userId, farmId] }),
+        client.invalidateQueries({
+          queryKey: ["chicken-sale-options", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["chicken-purchase-options", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["egg-collection-options", userId, farmId],
+        }),
+      ]),
   });
 }
 
@@ -769,20 +855,42 @@ export function useContactTransactionHistory(
   userId: string | undefined,
   farmId: string | undefined,
   contactId: string | undefined,
+  offset: number,
 ) {
-  return useInfiniteQuery({
-    queryKey: ["contact-transactions", userId, farmId, contactId],
-    queryFn: ({ pageParam }) =>
+  return useQuery({
+    queryKey: ["contact-transactions", userId, farmId, contactId, offset],
+    queryFn: () =>
       getContactTransactionHistory(farmId!, contactId!, {
         limit: 25,
-        offset: pageParam,
+        offset,
       }),
-    initialPageParam: 0,
-    getNextPageParam: (lastPage) =>
-      lastPage.offset + lastPage.items.length < lastPage.total_count
-        ? lastPage.offset + lastPage.limit
-        : undefined,
     enabled: Boolean(userId && farmId && contactId),
+  });
+}
+
+export function useAccountLedger(
+  userId: string | undefined,
+  farmId: string | undefined,
+  contactId: string | undefined,
+  fromDate: string,
+  toDate: string,
+) {
+  return useQuery({
+    queryKey: [
+      "account-ledger",
+      userId,
+      farmId,
+      contactId,
+      fromDate,
+      toDate,
+    ],
+    queryFn: () =>
+      getAccountLedger(farmId!, {
+        contactId,
+        fromDate,
+        toDate,
+      }),
+    enabled: Boolean(userId && farmId),
   });
 }
 
@@ -819,6 +927,27 @@ export function useCreateContact(userId: string, farmId: string) {
       createContact(farmId, payload),
     onSuccess: () =>
       client.invalidateQueries({ queryKey: ["contacts", userId, farmId] }),
+  });
+}
+
+export function useCreateContactRole(userId: string, farmId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      contactId,
+      role,
+    }: {
+      contactId: string;
+      role: ContactRole;
+    }) => createContactRole(farmId, contactId, role),
+    onSuccess: async (_role, { contactId }) => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["contacts", userId, farmId] }),
+        client.invalidateQueries({
+          queryKey: ["contact", userId, farmId, contactId],
+        }),
+      ]);
+    },
   });
 }
 
@@ -907,11 +1036,12 @@ export function useFarmActivity(
 export function useFarmActivitySummary(
   userId: string | undefined,
   farmId: string | undefined,
+  enabled = true,
 ) {
   return useQuery({
     queryKey: ["farm-activity-summary", userId, farmId],
     queryFn: () => getFarmActivitySummary(farmId!),
-    enabled: Boolean(userId && farmId),
+    enabled: Boolean(userId && farmId && enabled),
     refetchInterval: 60_000,
   });
 }
@@ -987,6 +1117,24 @@ export function useMarkNotificationRead(userId: string, farmId: string) {
   return useMutation({
     mutationFn: (notificationId: string) =>
       markNotificationRead(farmId, notificationId),
+    onSuccess: async () => {
+      await Promise.all([
+        client.invalidateQueries({
+          queryKey: ["notifications", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["notification-unread-count", userId, farmId],
+        }),
+      ]);
+    },
+  });
+}
+
+export function useArchiveNotification(userId: string, farmId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (notificationId: string) =>
+      archiveNotification(farmId, notificationId),
     onSuccess: async () => {
       await Promise.all([
         client.invalidateQueries({

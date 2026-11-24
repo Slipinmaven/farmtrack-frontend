@@ -1,6 +1,9 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useState } from "react";
 import {
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -26,7 +29,7 @@ import type { ExpenseCategory } from "@/features/management/api";
 import { normalizeApiError } from "@/lib/api/errors";
 import { useAuth } from "@/providers/auth-provider";
 import { useFarm } from "@/providers/farm-provider";
-import { useTheme, type ThemeTokens } from "@/providers/theme-provider";
+import { useTheme } from "@/providers/theme-provider";
 
 export default function ExpenseCategoriesRoute() {
   return (
@@ -51,6 +54,7 @@ function ExpenseCategoriesContent() {
   const [editingName, setEditingName] = useState("");
   const [error, setError] = useState("");
   const [showInactive, setShowInactive] = useState(false);
+  const [actionCategory, setActionCategory] = useState<ExpenseCategory | null>(null);
   const categories = categoriesQuery.data ?? [];
   const activeCategories = categories.filter((category) => category.is_active);
   const inactiveCategories = categories.filter((category) => !category.is_active);
@@ -128,30 +132,34 @@ function ExpenseCategoriesContent() {
 
   return (
     <SafeAreaView style={[styles.screen, { backgroundColor: theme.background }]} edges={["top", "bottom"]}>
+      <KeyboardAvoidingView
+        style={styles.keyboardContainer}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
       <ScrollView
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
         automaticallyAdjustKeyboardInsets
       >
-        <FarmPageHeader title="Expense categories" showBack />
-        <View style={styles.headingRow}>
-          <View style={styles.headingCopy}>
+        <FarmPageHeader title="Expense categories" showBack compact />
+        <View style={styles.intro}>
+          <View style={styles.introCopy}>
             <AppText size="small" tone="secondary">
-              Categories organize spending across your farm.
-            </AppText>
-            <AppText size="small" tone="secondary">
-              {activeCategories.length} active · {categories.length} total
+              Choose a category when recording expenses. Renaming or deactivating one won’t change past records.
             </AppText>
           </View>
-          <Button
-            label={formOpen ? "Close" : "Add category"}
-            variant={formOpen ? "secondary" : "primary"}
-            onPress={() => {
-              setFormOpen((open) => !open);
-              setError("");
-              setNewName("");
-            }}
-          />
+          <View style={styles.introAction}>
+            <Button
+              label={formOpen ? "Close form" : "Add expense category"}
+              variant={formOpen ? "secondary" : "primary"}
+              onPress={() => {
+                setFormOpen((open) => !open);
+                setError("");
+                setNewName("");
+              }}
+            />
+          </View>
         </View>
         {categoriesQuery.isLoading ? (
           <LoadingState label="Loading expense categories" />
@@ -166,9 +174,24 @@ function ExpenseCategoriesContent() {
           <>
             {formOpen ? (
               <Card style={styles.form}>
-                <AppText size="body" weight="semibold">
-                  New expense category
-                </AppText>
+                <View style={styles.formHeading}>
+                  <View
+                    style={[
+                      styles.formIcon,
+                      { backgroundColor: theme.backgroundSelected },
+                    ]}
+                  >
+                    <Ionicons name="pricetag-outline" size={18} color={theme.primary} />
+                  </View>
+                  <View style={styles.formHeadingCopy}>
+                    <AppText size="body" weight="semibold">
+                      Add an expense category
+                    </AppText>
+                    <AppText size="small" tone="secondary">
+                      Use a name your team will recognize when recording spending.
+                    </AppText>
+                  </View>
+                </View>
                 <TextField
                   label="Category name"
                   value={newName}
@@ -214,15 +237,19 @@ function ExpenseCategoriesContent() {
                 <AppText size="small" style={{ color: theme.danger, flex: 1 }}>{error}</AppText>
               </View>
             ) : null}
-            <View style={styles.categoriesSection}>
+            <Card style={styles.categoriesSection}>
               <View style={styles.sectionHeading}>
-              <View style={styles.sectionHeadingCopy}>
-                <AppText size="body" weight="semibold">Active categories</AppText>
-                <AppText size="small" tone="secondary">
-                  Used to classify new expenses.
-                </AppText>
-              </View>
-              <AppText size="small" tone="secondary">{activeCategories.length}</AppText>
+                <View style={styles.sectionHeadingCopy}>
+                  <AppText size="body" weight="semibold">Active categories</AppText>
+                  <AppText size="small" tone="secondary">
+                    Available when recording a new expense.
+                  </AppText>
+                </View>
+                <View style={[styles.countBadge, { backgroundColor: theme.backgroundSelected }]}>
+                  <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+                    {activeCategories.length}
+                  </AppText>
+                </View>
               </View>
               {activeCategories.length ? (
               <View style={[styles.categoryList, { borderTopColor: theme.border }]}>
@@ -234,14 +261,9 @@ function ExpenseCategoriesContent() {
                     editingName={editingName}
                     updating={updateCategory.isPending}
                     onChangeName={(value) => { setEditingName(value); setError(""); }}
-                    onRename={() => {
-                      setEditingId(category.id);
-                      setEditingName(category.name);
-                      setError("");
-                    }}
                     onSave={() => void saveCategory(category.id)}
                     onCancel={() => { setEditingId(""); setError(""); }}
-                    onToggle={() => void toggleCategory(category.id, category.is_active, category.name)}
+                    onActions={() => setActionCategory(category)}
                   />
                 ))}
               </View>
@@ -251,14 +273,23 @@ function ExpenseCategoriesContent() {
                 <AppText size="small" tone="secondary">No active categories yet. Add one above.</AppText>
               </View>
               )}
-            </View>
+            </Card>
             {inactiveCategories.length ? (
-              <View style={styles.categoriesSection}>
+              <Card style={styles.categoriesSection}>
               <Pressable
                 accessibilityRole="button"
+                accessibilityLabel={`${showInactive ? "Hide" : "Show"} ${inactiveCategories.length} inactive categories`}
                 accessibilityState={{ expanded: showInactive }}
                 onPress={() => setShowInactive((visible) => !visible)}
-                style={[styles.inactiveToggle, { borderTopColor: theme.border }]}
+                style={({ pressed }) => [
+                  styles.inactiveToggle,
+                  {
+                    borderTopColor: theme.border,
+                    backgroundColor: pressed
+                      ? theme.backgroundSelected
+                      : "transparent",
+                  },
+                ]}
               >
                 <View style={styles.inactiveToggleCopy}>
                   <Ionicons name="archive-outline" size={17} color={theme.textSecondary} />
@@ -281,23 +312,36 @@ function ExpenseCategoriesContent() {
                       editingName={editingName}
                       updating={updateCategory.isPending}
                       onChangeName={(value) => { setEditingName(value); setError(""); }}
-                      onRename={() => {
-                        setEditingId(category.id);
-                        setEditingName(category.name);
-                        setError("");
-                      }}
                       onSave={() => void saveCategory(category.id)}
                       onCancel={() => { setEditingId(""); setError(""); }}
-                      onToggle={() => void toggleCategory(category.id, category.is_active, category.name)}
+                      onActions={() => setActionCategory(category)}
                     />
                   ))}
                 </View>
               ) : null}
-              </View>
+              </Card>
             ) : null}
           </>
         )}
-      </ScrollView>
+       </ScrollView>
+       <CategoryActionsSheet
+         category={actionCategory}
+         onClose={() => setActionCategory(null)}
+         onRename={() => {
+           if (!actionCategory) return;
+           setEditingId(actionCategory.id);
+           setEditingName(actionCategory.name);
+           setError("");
+           setActionCategory(null);
+         }}
+         onToggle={() => {
+           if (!actionCategory) return;
+           const category = actionCategory;
+           setActionCategory(null);
+           void toggleCategory(category.id, category.is_active, category.name);
+         }}
+       />
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -308,172 +352,262 @@ function CategoryRow({
   editingName,
   updating,
   onChangeName,
-  onRename,
   onSave,
   onCancel,
-  onToggle,
+  onActions,
 }: {
   category: ExpenseCategory;
   editing: boolean;
   editingName: string;
   updating: boolean;
   onChangeName: (value: string) => void;
-  onRename: () => void;
   onSave: () => void;
   onCancel: () => void;
-  onToggle: () => void;
+  onActions: () => void;
 }) {
   const { theme } = useTheme();
-  const presentation = categoryPresentation(category.key, theme);
+  const icon = categoryIcon(category.key);
 
   return (
     <View style={[styles.categoryRow, { borderBottomColor: theme.border }]}>
       <View
         style={[
           styles.categoryIcon,
-          { backgroundColor: `${presentation.color}18` },
+          { backgroundColor: theme.backgroundSelected },
         ]}
       >
         <Ionicons
-          name={presentation.icon}
+          name={icon}
           size={17}
-          color={presentation.color}
+          color={theme.primary}
         />
       </View>
       {editing ? (
-        <TextInput
-          accessibilityLabel="Edit category name"
-          value={editingName}
-          onChangeText={onChangeName}
-          maxLength={80}
-          returnKeyType="done"
-          onSubmitEditing={onSave}
-          style={[
-            styles.editInput,
-            {
-              backgroundColor: theme.background,
-              borderColor: theme.border,
-              color: theme.text,
-              fontFamily: theme.fontFamily,
-            },
-          ]}
-        />
+        <View style={styles.editArea}>
+          <TextInput
+            accessibilityLabel="Edit category name"
+            value={editingName}
+            onChangeText={onChangeName}
+            maxLength={80}
+            returnKeyType="done"
+            onSubmitEditing={onSave}
+            autoFocus
+            style={[
+              styles.editInput,
+              {
+                backgroundColor: theme.background,
+                borderColor: theme.border,
+                color: theme.text,
+                fontFamily: theme.fontFamily,
+              },
+            ]}
+          />
+          <View style={styles.editActions}>
+            <Button
+              label="Cancel"
+              variant="secondary"
+              disabled={updating}
+              onPress={onCancel}
+            />
+            <Button
+              label="Save name"
+              loading={updating}
+              disabled={!editingName.trim()}
+              onPress={onSave}
+            />
+          </View>
+        </View>
       ) : (
         <View style={styles.categoryCopy}>
           <View style={styles.categoryNameRow}>
-            <AppText size="small" weight="semibold" numberOfLines={1}>
+            <AppText size="body" weight="semibold" style={styles.categoryName}>
               {category.name}
             </AppText>
             {category.is_default ? (
               <View style={[styles.defaultBadge, { backgroundColor: theme.backgroundSelected }]}>
-                <AppText size="small" style={styles.defaultBadgeText}>
-                  Default
+                <AppText size="small" weight="semibold" style={{ color: theme.textSecondary }}>
+                  Built-in
                 </AppText>
               </View>
             ) : null}
           </View>
-          <AppText size="small" tone="secondary" numberOfLines={1}>
-            {category.is_default ? "FarmTrack category" : "Custom category"}
-          </AppText>
+          {!category.is_active ? (
+            <AppText size="small" tone="secondary">
+              Not used for new expenses
+            </AppText>
+          ) : null}
         </View>
       )}
-      {editing ? (
-        <View style={styles.rowActions}>
-          <CategoryIconButton
-            label="Save category name"
-            icon={updating ? "ellipsis-horizontal" : "checkmark"}
-            color={theme.success}
-            disabled={updating}
-            onPress={onSave}
-          />
-          <CategoryIconButton
-            label="Cancel editing"
-            icon="close"
-            color={theme.textSecondary}
-            disabled={updating}
-            onPress={onCancel}
-          />
-        </View>
-      ) : (
-        <View style={styles.rowActions}>
-          <CategoryIconButton
-            label={`Rename ${category.name}`}
-            icon="create-outline"
-            color={theme.primary}
-            onPress={onRename}
-          />
-          <CategoryIconButton
-            label={category.is_active ? `Deactivate ${category.name}` : `Reactivate ${category.name}`}
-            icon={category.is_active ? "archive-outline" : "refresh-outline"}
-            color={category.is_active ? theme.danger : theme.success}
-            disabled={updating}
-            onPress={onToggle}
-          />
-        </View>
-      )}
+      {!editing ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Actions for ${category.name}`}
+          disabled={updating}
+          onPress={onActions}
+          style={({ pressed }) => [
+            styles.actionsButton,
+            {
+              backgroundColor: pressed
+                ? theme.backgroundSelected
+                : theme.background,
+              borderColor: theme.border,
+              opacity: updating ? 0.5 : 1,
+            },
+          ]}
+        >
+          <Ionicons name="ellipsis-horizontal" size={17} color={theme.text} />
+          <AppText size="small" weight="semibold">Actions</AppText>
+        </Pressable>
+      ) : null}
     </View>
   );
 }
 
-function CategoryIconButton({
-  label,
-  icon,
-  color,
-  disabled = false,
-  onPress,
+function CategoryActionsSheet({
+  category,
+  onClose,
+  onRename,
+  onToggle,
 }: {
-  label: string;
-  icon: keyof typeof Ionicons.glyphMap;
-  color: string;
-  disabled?: boolean;
-  onPress: () => void;
+  category: ExpenseCategory | null;
+  onClose: () => void;
+  onRename: () => void;
+  onToggle: () => void;
 }) {
+  const { theme } = useTheme();
+  const isActive = category?.is_active ?? false;
+
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      disabled={disabled}
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.iconAction,
-        { opacity: disabled ? 0.45 : pressed ? 0.6 : 1 },
-      ]}
+    <Modal
+      visible={category !== null}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
     >
-      <Ionicons name={icon} size={18} color={color} />
-    </Pressable>
+      <View style={styles.sheetRoot}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Close category actions"
+          onPress={onClose}
+          style={styles.sheetScrim}
+        />
+        <View
+          style={[
+            styles.actionSheet,
+            { backgroundColor: theme.background, borderColor: theme.border },
+          ]}
+        >
+          <View style={styles.sheetHeading}>
+            <View style={styles.sheetHeadingCopy}>
+              <AppText size="heading" weight="semibold">
+                Category actions
+              </AppText>
+              {category ? (
+                <AppText size="small" tone="secondary">
+                  {category.name}
+                </AppText>
+              ) : null}
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close category actions"
+              onPress={onClose}
+              style={styles.sheetClose}
+            >
+              <Ionicons name="close" size={20} color={theme.textSecondary} />
+            </Pressable>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            onPress={onRename}
+            style={({ pressed }) => [
+              styles.sheetAction,
+              {
+                borderTopColor: theme.border,
+                backgroundColor: pressed
+                  ? theme.backgroundSelected
+                  : "transparent",
+              },
+            ]}
+          >
+            <View style={[styles.sheetActionIcon, { backgroundColor: theme.backgroundSelected }]}>
+              <Ionicons name="create-outline" size={19} color={theme.primary} />
+            </View>
+            <View style={styles.sheetActionCopy}>
+              <AppText weight="semibold">Rename category</AppText>
+              <AppText size="small" tone="secondary">
+                Update the label shown on expense records.
+              </AppText>
+            </View>
+            <Ionicons name="chevron-forward" size={17} color={theme.textSecondary} />
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            onPress={onToggle}
+            style={({ pressed }) => [
+              styles.sheetAction,
+              {
+                borderTopColor: theme.border,
+                backgroundColor: pressed
+                  ? theme.backgroundSelected
+                  : "transparent",
+              },
+            ]}
+          >
+            <View
+              style={[
+                styles.sheetActionIcon,
+                {
+                  backgroundColor: isActive
+                    ? `${theme.danger}18`
+                    : `${theme.success}18`,
+                },
+              ]}
+            >
+              <Ionicons
+                name={isActive ? "archive-outline" : "refresh-outline"}
+                size={19}
+                color={isActive ? theme.danger : theme.success}
+              />
+            </View>
+            <View style={styles.sheetActionCopy}>
+              <AppText weight="semibold">
+                {isActive ? "Deactivate category" : "Reactivate category"}
+              </AppText>
+              <AppText size="small" tone="secondary">
+                {isActive
+                  ? "Hide it from new expenses; keep past records."
+                  : "Make it available for new expenses again."}
+              </AppText>
+            </View>
+            <Ionicons name="chevron-forward" size={17} color={theme.textSecondary} />
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
-function categoryPresentation(
-  key: string,
-  theme: ThemeTokens,
-): { icon: keyof typeof Ionicons.glyphMap; color: string } {
-  const known: Record<
-    string,
-    { icon: keyof typeof Ionicons.glyphMap; color: string }
-  > = {
-    feed: { icon: "leaf-outline", color: theme.success },
-    medication: { icon: "medkit-outline", color: "#8057B7" },
-    veterinary: { icon: "fitness-outline", color: theme.danger },
-    labor: { icon: "people-outline", color: "#B66A28" },
-    utilities: { icon: "flash-outline", color: "#B18400" },
-    transport: { icon: "car-outline", color: "#3479A8" },
-    repairs: { icon: "construct-outline", color: theme.secondary },
-    rent: { icon: "home-outline", color: "#458477" },
-    equipment: { icon: "build-outline", color: "#5968B0" },
-    packaging: { icon: "cube-outline", color: "#368B9B" },
-    other: { icon: "pricetag-outline", color: theme.textSecondary },
+function categoryIcon(key: string): keyof typeof Ionicons.glyphMap {
+  const known: Record<string, keyof typeof Ionicons.glyphMap> = {
+    administration: "document-text-outline",
+    feed_and_nutrition: "leaf-outline",
+    medication_veterinary: "medkit-outline",
+    labour: "people-outline",
+    utilities: "flash-outline",
+    transport: "car-outline",
+    repairs_maintenance: "construct-outline",
+    housing_facilities: "home-outline",
+    equipment: "build-outline",
+    packaging: "cube-outline",
+    other: "pricetag-outline",
   };
-  return (
-    known[key] ?? {
-      icon: "pricetag-outline",
-      color: theme.primary,
-    }
-  );
+  return known[key] ?? "pricetag-outline";
 }
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
+  keyboardContainer: { flex: 1 },
   content: {
     width: "100%",
     maxWidth: 720,
@@ -481,18 +615,34 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingTop: 12,
     paddingBottom: 30,
-    gap: 18,
+    gap: 14,
   },
-  card: { gap: 10, borderRadius: 8 },
-  headingRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
+  card: { gap: 10, borderRadius: 12 },
+  intro: {
     gap: 10,
   },
-  headingCopy: { flex: 1, gap: 2 },
+  introCopy: { minWidth: 0 },
+  introAction: { alignItems: "flex-end" },
+  countBadge: {
+    minWidth: 30,
+    height: 30,
+    paddingHorizontal: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 15,
+  },
   stateCard: { alignItems: "flex-start", gap: 9, borderRadius: 8 },
-  form: { gap: 12, borderRadius: 8 },
+  form: { gap: 14, borderRadius: 14, padding: 16 },
+  formHeading: { flexDirection: "row", alignItems: "center", gap: 10 },
+  formIcon: {
+    width: 38,
+    height: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+    backgroundColor: "rgba(34,107,104,0.12)",
+  },
+  formHeadingCopy: { flex: 1, minWidth: 0, gap: 2 },
   formActions: {
     flexDirection: "row",
     justifyContent: "flex-end",
@@ -505,54 +655,65 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   sectionHeadingCopy: { flex: 1, gap: 2 },
-  categoriesSection: { gap: 8 },
-  categoryList: { borderTopWidth: StyleSheet.hairlineWidth },
+  categoriesSection: { gap: 12, borderRadius: 15, padding: 15 },
+  categoryList: { borderTopWidth: StyleSheet.hairlineWidth, marginTop: 2 },
   categoryRow: {
-    minHeight: 62,
+    minHeight: 76,
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    paddingVertical: 8,
+    paddingVertical: 12,
   },
   categoryIcon: {
-    width: 34,
-    height: 34,
+    width: 38,
+    height: 38,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 8,
+    borderRadius: 11,
+    marginTop: 1,
   },
-  categoryCopy: { flex: 1, minWidth: 0, gap: 2 },
+  categoryCopy: { flex: 1, minWidth: 0, gap: 4 },
   categoryNameRow: {
     flexDirection: "row",
-    alignItems: "center",
+    flexWrap: "wrap",
+    alignItems: "flex-start",
     gap: 6,
   },
-  defaultBadge: { borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 },
-  defaultBadgeText: { fontSize: 10, lineHeight: 14 },
-  rowActions: { flexDirection: "row", alignItems: "center", gap: 2 },
-  iconAction: {
-    width: 34,
-    height: 36,
+  categoryName: { flexShrink: 1 },
+  defaultBadge: { borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2 },
+  actionsButton: {
+    minHeight: 38,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-  },
-  editInput: {
-    flex: 1,
-    minWidth: 0,
-    minHeight: 40,
+    gap: 5,
     borderWidth: 1,
-    borderRadius: 5,
+    borderRadius: 9,
     paddingHorizontal: 9,
-    fontSize: 14,
+  },
+  editArea: { flex: 1, minWidth: 0, gap: 8 },
+  editInput: {
+    minWidth: 0,
+    minHeight: 44,
+    borderWidth: 1,
+    borderRadius: 9,
+    paddingHorizontal: 11,
+    fontSize: 16,
+  },
+  editActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
+    gap: 7,
   },
   inactiveToggle: {
-    minHeight: 46,
+    minHeight: 54,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: 7,
+    paddingTop: 8,
   },
   inactiveToggleCopy: { flexDirection: "row", alignItems: "center", gap: 8 },
   emptyState: {
@@ -567,4 +728,48 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingVertical: 2,
   },
+  sheetRoot: {
+    flex: 1,
+    justifyContent: "flex-end",
+    backgroundColor: "rgba(0,0,0,0.48)",
+  },
+  sheetScrim: { ...StyleSheet.absoluteFill },
+  actionSheet: {
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    borderWidth: 1,
+    paddingHorizontal: 17,
+    paddingTop: 18,
+    paddingBottom: 28,
+  },
+  sheetHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingBottom: 12,
+  },
+  sheetHeadingCopy: { flex: 1, minWidth: 0, gap: 2 },
+  sheetClose: {
+    width: 38,
+    height: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 19,
+  },
+  sheetAction: {
+    minHeight: 72,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "rgba(120,140,140,0.25)",
+  },
+  sheetActionIcon: {
+    width: 38,
+    height: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+  },
+  sheetActionCopy: { flex: 1, minWidth: 0, gap: 2 },
 });

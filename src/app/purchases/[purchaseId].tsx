@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { router, useLocalSearchParams } from "expo-router";
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -18,8 +18,21 @@ import { useAppDialog } from "@/components/ui/app-dialog";
 import { AppText } from "@/components/ui/app-text";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { isChickenPurchaseItem } from "@/features/chickens/api";
+import { isChickenPurchaseItem, type ChickenPurchaseResult } from "@/features/chickens/api";
 import { useChickenPurchaseDetails } from "@/features/chickens/hooks";
+import {
+  usePurchaseReplacements,
+  usePurchaseReturns,
+  useSupplierRefunds,
+  useTransactionSettlements,
+} from "@/features/management/hooks";
+import type {
+  CashRefundRecord,
+  PurchaseReplacementHistory,
+  RecordedReturn,
+  TransactionSettlement,
+} from "@/features/management/api";
+import { GenerateReceiptButton } from "@/features/receipts/receipt-actions";
 import { normalizeApiError } from "@/lib/api/errors";
 import { useAuth } from "@/providers/auth-provider";
 import { useFarm } from "@/providers/farm-provider";
@@ -45,14 +58,41 @@ function PurchaseDetailsContent() {
     farm.selectedFarm?.id,
     purchaseId,
   );
+  const settlements = useTransactionSettlements(
+    user?.id,
+    farm.selectedFarm?.id,
+    purchaseId,
+  );
+  const returns = usePurchaseReturns(user?.id, farm.selectedFarm?.id, purchaseId);
+  const refunds = useSupplierRefunds(user?.id, farm.selectedFarm?.id, purchaseId);
+  const replacements = usePurchaseReplacements(
+    user?.id,
+    farm.selectedFarm?.id,
+    purchaseId,
+  );
   const purchase = detail.data;
   const transaction = purchase?.transaction;
+  const auditTrail = useMemo(
+    () =>
+      transaction
+        ? buildPurchaseAuditTrail(
+            transaction,
+            settlements.data ?? [],
+            returns.data ?? [],
+            refunds.data ?? [],
+            replacements.data ?? [],
+          )
+        : [],
+    [
+      transaction,
+      settlements.data,
+      returns.data,
+      refunds.data,
+      replacements.data,
+    ],
+  );
   const balanceTone =
-    Number(transaction?.balance_due) > 0
-      ? theme.danger
-      : Number(transaction?.credit_balance) > 0
-        ? theme.primary
-        : theme.success;
+    Number(transaction?.balance_due) > 0 ? theme.secondary : theme.success;
   const otherBalances =
     purchase?.outstanding_supplier_balances.filter(
       (balance) => balance.id !== transaction?.id,
@@ -64,6 +104,28 @@ function PurchaseDetailsContent() {
         (isChickenPurchaseItem(item) ? Number(item.quantity_remaining) : 0),
       0,
     ) ?? 0;
+  const totalChickenCount =
+    transaction?.items
+      .filter(isChickenPurchaseItem)
+      .reduce(
+        (total, item) =>
+          total + Number(item.ordered_base_quantity ?? item.quantity),
+        0,
+      ) ?? 0;
+  const receivedChickenCount =
+    transaction?.items
+      .filter(isChickenPurchaseItem)
+      .reduce((total, item) => total + Number(item.quantity_received), 0) ?? 0;
+  const deliveryProgress =
+    totalChickenCount > 0
+      ? Math.min(1, receivedChickenCount / totalChickenCount)
+      : 0;
+  const purchaseTotal = Number(transaction?.transaction_total ?? 0);
+  const amountPaid = Number(transaction?.amount_paid ?? 0);
+  const balanceDue = Number(transaction?.balance_due ?? 0);
+  const creditBalance = Number(transaction?.credit_balance ?? 0);
+  const paidProgress =
+    purchaseTotal > 0 ? Math.min(1, amountPaid / purchaseTotal) : 0;
   const batchSummaries = (purchase?.receipts ?? [])
     .flatMap((receipt) =>
       receipt.items.map((received) => ({
@@ -148,7 +210,15 @@ function PurchaseDetailsContent() {
         refreshControl={
           <RefreshControl
             refreshing={detail.isRefetching}
-            onRefresh={() => void detail.refetch()}
+            onRefresh={() => {
+              void Promise.all([
+                detail.refetch(),
+                settlements.refetch(),
+                returns.refetch(),
+                refunds.refetch(),
+                replacements.refetch(),
+              ]);
+            }}
             tintColor={theme.primary}
             colors={[theme.primary]}
           />
@@ -183,131 +253,160 @@ function PurchaseDetailsContent() {
         ) : null}
         {purchase && transaction ? (
           <>
-            <Card
-              style={[
-                styles.hero,
-                {
-                  borderLeftColor: balanceTone,
-                  backgroundColor: `${balanceTone}08`,
-                },
-              ]}
-            >
+            <Card style={styles.hero}>
               <View style={styles.heroTop}>
-                <View
-                  style={[
-                    styles.heroIcon,
-                    { backgroundColor: `${theme.primary}14` },
-                  ]}
-                >
-                  <Ionicons
-                    name="receipt-outline"
-                    size={25}
-                    color={theme.primary}
-                  />
-                </View>
                 <View style={styles.heroTitle}>
-                  <AppText size="small" tone="secondary" numberOfLines={2}>
+                  <AppText size="heading" weight="semibold">
                     {purchase.supplier_name ?? "Supplier not recorded"}
                   </AppText>
-                  <AppText
-                    size="heading"
-                    weight="semibold"
-                    numberOfLines={2}
-                    ellipsizeMode="middle"
-                  >
-                    {transaction.reference_number
-                      ? `Purchase ${transaction.reference_number}`
-                      : "Purchase"}
+                  <AppText size="small" tone="secondary">
+                    {transaction.status === "cancelled"
+                      ? "Cancelled purchase"
+                      : `Purchased ${formatDate(transaction.transaction_date)}`}
                   </AppText>
                 </View>
               </View>
               {transaction.reference_number ? (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Copy purchase reference"
-                  onPress={() => void copyReference()}
-                  style={[
-                    styles.copyButton,
-                    {
-                      backgroundColor: theme.backgroundElement,
-                      borderColor: theme.border,
-                    },
-                  ]}
-                >
-                  <Ionicons
-                    name={referenceCopied ? "checkmark" : "copy-outline"}
-                    size={17}
-                    color={referenceCopied ? theme.success : theme.primary}
-                  />
-                  <AppText
-                    size="small"
-                    weight="semibold"
-                    style={{
-                      color: referenceCopied ? theme.success : theme.primary,
-                    }}
-                  >
-                    {referenceCopied ? "Copied" : "Copy reference"}
+                <View style={styles.referenceRow}>
+                  <AppText size="small" tone="secondary" style={styles.referenceText}>
+                    Reference · {transaction.reference_number}
                   </AppText>
-                </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Copy purchase reference"
+                    onPress={() => void copyReference()}
+                    hitSlop={8}
+                    style={({ pressed }) => [
+                      styles.copyButton,
+                      { opacity: pressed ? 0.65 : 1 },
+                    ]}
+                  >
+                    <Ionicons
+                      name={referenceCopied ? "checkmark" : "copy-outline"}
+                      size={16}
+                      color={referenceCopied ? theme.success : theme.primary}
+                    />
+                    <AppText
+                      size="small"
+                      weight="semibold"
+                      style={{
+                        color: referenceCopied ? theme.success : theme.primary,
+                      }}
+                    >
+                      {referenceCopied ? "Copied" : "Copy"}
+                    </AppText>
+                  </Pressable>
+                </View>
               ) : null}
               <View style={styles.heroAmountRow}>
                 <View style={styles.heroTotal}>
                   <AppText size="small" tone="secondary">
-                    Purchase total
+                    {transaction.status === "cancelled"
+                      ? "Purchase cancelled"
+                      : balanceDue > 0
+                        ? "Still to pay"
+                        : creditBalance > 0
+                          ? "Supplier credit"
+                          : "Purchase total · settled"}
                   </AppText>
-                  <AppText size="title" weight="semibold">
-                    {formatMoney(transaction.transaction_total, theme.currency)}
-                  </AppText>
-                </View>
-                <View
-                  style={[
-                    styles.balanceBadge,
-                    {
-                      backgroundColor: `${balanceTone}18`,
-                    },
-                  ]}
-                >
                   <AppText
-                    size="small"
+                    size="heading"
                     weight="semibold"
-                    style={{
-                      color: balanceTone,
-                    }}
+                    style={{ color: balanceTone }}
                   >
-                    {Number(transaction.balance_due) > 0
-                      ? "Balance due"
-                      : Number(transaction.credit_balance) > 0
-                        ? "Supplier owes you"
-                        : "Paid in full"}
+                    {transaction.status === "cancelled"
+                      ? "No balance"
+                      : formatMoney(
+                          balanceDue > 0
+                            ? balanceDue
+                            : creditBalance > 0
+                              ? creditBalance
+                              : purchaseTotal,
+                          theme.currency,
+                        )}
                   </AppText>
                 </View>
               </View>
-              <View style={styles.heroDetails}>
-                <DetailLine
-                  label="Date"
-                  value={formatDate(transaction.transaction_date)}
+              {transaction.status !== "cancelled" ? (
+                <>
+                  <View
+                    style={[
+                      styles.progressTrack,
+                      { backgroundColor: theme.border },
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.progressFill,
+                        {
+                          width: `${paidProgress * 100}%`,
+                          backgroundColor:
+                            balanceDue > 0 ? theme.secondary : theme.success,
+                        },
+                      ]}
+                    />
+                  </View>
+                  <View style={styles.financialSummary}>
+                    <DetailLine
+                      label="Purchase total"
+                      value={formatMoney(purchaseTotal, theme.currency)}
+                    />
+                    <DetailLine
+                      label="Payments recorded"
+                      value={formatMoney(amountPaid, theme.currency)}
+                    />
+                  </View>
+                  {creditBalance > 0 ? (
+                    <AppText size="small" tone="secondary">
+                      {formatMoney(creditBalance, theme.currency)} credit is available with this supplier.
+                    </AppText>
+                  ) : null}
+                </>
+              ) : null}
+              {transaction.items.some(isChickenPurchaseItem) ? (
+                <View
+                  style={[
+                    styles.deliverySummary,
+                    { borderTopColor: theme.border },
+                  ]}
+                >
+                  <View style={styles.deliverySummaryHeading}>
+                    <View style={styles.deliverySummaryTitle}>
+                      <AppText weight="semibold">Chicken delivery</AppText>
+                      <AppText size="small" tone="secondary">
+                        {outstandingChickenCount > 0
+                          ? `${formatQuantity(outstandingChickenCount)} ${pluralizeUnit("bird", outstandingChickenCount)} still expected`
+                          : "All chickens received"}
+                      </AppText>
+                    </View>
+                    <AppText size="small" weight="semibold">
+                      {formatQuantity(receivedChickenCount)} of {formatQuantity(totalChickenCount)}
+                    </AppText>
+                  </View>
+                  <View
+                    style={[
+                      styles.progressTrack,
+                      { backgroundColor: theme.border },
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.progressFill,
+                        {
+                          width: `${deliveryProgress * 100}%`,
+                          backgroundColor: theme.success,
+                        },
+                      ]}
+                    />
+                  </View>
+                </View>
+              ) : null}
+              <View style={styles.heroFooter}>
+                <GenerateReceiptButton
+                  transactionId={purchaseId}
+                  transactionType="purchase"
+                  compact
                 />
-                <DetailLine
-                  label="Net paid"
-                  value={formatMoney(transaction.amount_paid, theme.currency)}
-                />
-                {Number(transaction.balance_due) > 0 ? (
-                  <DetailLine
-                    label="Still owed"
-                    value={formatMoney(transaction.balance_due, theme.currency)}
-                    valueColor={theme.danger}
-                  />
-                ) : null}
-                {Number(transaction.credit_balance) > 0 ? (
-                  <DetailLine
-                    label="Supplier holds"
-                    value={formatMoney(
-                      transaction.credit_balance,
-                      theme.currency,
-                    )}
-                    valueColor={theme.primary}
-                  />
-                ) : null}
               </View>
               {transaction.notes ? (
                 <AppText size="small" tone="secondary" style={styles.notes}>
@@ -319,27 +418,8 @@ function PurchaseDetailsContent() {
             <Card style={styles.actionsCard}>
               <View style={styles.actionsHeading}>
                 <View style={styles.actionsTitleCopy}>
-                  <AppText weight="semibold">Purchase actions</AppText>
-                  <AppText size="small" tone="secondary">
-                    Manage receipts, payment, or a return.
-                  </AppText>
+                  <AppText weight="semibold">Next steps</AppText>
                 </View>
-                {outstandingChickenCount > 0 ? (
-                  <View
-                    style={[
-                      styles.actionCountBadge,
-                      { backgroundColor: `${theme.secondary}18` },
-                    ]}
-                  >
-                    <AppText
-                      size="small"
-                      weight="semibold"
-                      style={{ color: theme.secondary }}
-                    >
-                      {formatQuantity(outstandingChickenCount)} left
-                    </AppText>
-                  </View>
-                ) : null}
               </View>
               {outstandingChickenCount > 0 ? (
                 <Pressable
@@ -454,7 +534,7 @@ function PurchaseDetailsContent() {
             </Card>
 
             <Section
-              title="Items purchased"
+              title="What you bought"
               icon="cart-outline"
               accent={theme.primary}
             >
@@ -471,7 +551,7 @@ function PurchaseDetailsContent() {
                 >
                   <View style={styles.itemHeading}>
                     <View style={styles.itemCopy}>
-                      <AppText weight="semibold" numberOfLines={2}>
+                      <AppText weight="semibold">
                         {item.product_name ?? "Unnamed product"}
                       </AppText>
                       <AppText size="small" tone="secondary">
@@ -490,39 +570,21 @@ function PurchaseDetailsContent() {
                       {formatMoney(item.total_amount, theme.currency)}
                     </AppText>
                   </View>
-                  <View style={styles.quantityGrid}>
-                    <QuantityCell
-                      label={
-                        isChickenPurchaseItem(item) ? "Ordered" : "Quantity"
-                      }
-                      value={formatQuantity(
-                        item.ordered_base_quantity ?? item.quantity,
-                      )}
-                      accent={theme.primary}
-                    />
-                    {isChickenPurchaseItem(item) ? (
-                      <>
-                        <QuantityCell
-                          label="Received"
-                          value={formatQuantity(item.quantity_received)}
-                          accent={theme.success}
-                        />
-                        <QuantityCell
-                          label="Outstanding"
-                          value={formatQuantity(item.quantity_remaining)}
-                          highlight={Number(item.quantity_remaining) > 0}
-                          accent={
-                            Number(item.quantity_remaining) > 0
-                              ? theme.secondary
-                              : theme.success
-                          }
-                        />
-                      </>
-                    ) : null}
-                  </View>
-                  {Number(item.unit_price) > 0 ? (
+                  <AppText size="small" tone="secondary">
+                    {formatQuantity(item.quantity)}{" "}
+                    {pluralizeUnit(
+                      item.unit_name ??
+                        (isChickenPurchaseItem(item) ? "bird" : "unit"),
+                      Number(item.quantity),
+                    )}
+                    {Number(item.unit_price) > 0
+                      ? ` × ${formatMoney(item.unit_price, theme.currency)} each`
+                      : ""}
+                  </AppText>
+                  {isChickenPurchaseItem(item) ? (
                     <AppText size="small" tone="secondary">
-                      Unit price: {formatMoney(item.unit_price, theme.currency)}
+                      Received {formatQuantity(item.quantity_received)} ·{" "}
+                      {formatQuantity(item.quantity_remaining)} still expected
                     </AppText>
                   ) : null}
                   {item.notes ? (
@@ -545,71 +607,65 @@ function PurchaseDetailsContent() {
                   </AppText>
                 </View>
               ) : null}
+              <View
+                style={[
+                  styles.purchaseTotalLine,
+                  { borderTopColor: theme.border },
+                ]}
+              >
+                <AppText size="small" tone="secondary">
+                  Subtotal before discount
+                </AppText>
+                <AppText size="small" weight="semibold">
+                  {formatMoney(
+                    purchaseTotal + Number(transaction.discount_amount),
+                    theme.currency,
+                  )}
+                </AppText>
+              </View>
+              {Number(transaction.discount_amount) > 0 ? (
+                <View style={styles.discountLine}>
+                  <AppText size="small" tone="secondary">
+                    Discount
+                    {transaction.discount_reason
+                      ? ` · ${transaction.discount_reason}`
+                      : ""}
+                  </AppText>
+                  <AppText size="small" weight="semibold" style={{ color: theme.success }}>
+                    −{formatMoney(transaction.discount_amount, theme.currency)}
+                  </AppText>
+                </View>
+              ) : null}
+              <View style={styles.purchaseTotalLine}>
+                <AppText weight="semibold">Purchase total</AppText>
+                <AppText weight="semibold">
+                  {formatMoney(purchaseTotal, theme.currency)}
+                </AppText>
+              </View>
             </Section>
 
             {transaction.items.some(isChickenPurchaseItem) ? (
               <Section
-                title="Chicken receipts & batches"
+                title="Delivery and batches"
                 icon="home-outline"
                 accent={theme.secondary}
               >
-                <View style={styles.receiptSummary}>
-                  <View style={[styles.receiptMetric, { backgroundColor: theme.backgroundSelected }]}>
-                    <AppText size="small" tone="secondary">Deliveries</AppText>
-                    <AppText size="heading" weight="semibold" numberOfLines={1} adjustsFontSizeToFit>
-                      {purchase.receipts.length}
-                    </AppText>
-                  </View>
-                  <View style={[styles.receiptMetric, { backgroundColor: `${theme.success}12` }]}>
-                    <AppText size="small" tone="secondary">Received</AppText>
-                    <AppText size="heading" weight="semibold" numberOfLines={1} adjustsFontSizeToFit style={{ color: theme.success }}>
-                      {formatQuantity(
-                        transaction.items
-                          .filter(isChickenPurchaseItem)
-                          .reduce((total, item) => total + Number(item.quantity_received), 0),
-                      )}
-                    </AppText>
-                  </View>
-                  <View style={[styles.receiptMetric, { backgroundColor: `${theme.secondary}12` }]}>
-                    <AppText size="small" tone="secondary">Still due</AppText>
-                    <AppText
-                      size="heading"
-                      weight="semibold"
-                      numberOfLines={1}
-                      adjustsFontSizeToFit
-                      style={{
-                        color: transaction.items.some(
-                          (item) => isChickenPurchaseItem(item) && Number(item.quantity_remaining) > 0,
-                        )
-                          ? theme.secondary
-                          : theme.text,
-                      }}
-                    >
-                      {formatQuantity(
-                        transaction.items
-                          .filter(isChickenPurchaseItem)
-                          .reduce((total, item) => total + Number(item.quantity_remaining), 0),
-                      )}
-                    </AppText>
-                  </View>
-                </View>
-
                 {purchase.receipts.length === 0 ? (
                   <View style={[styles.receiptEmpty, { backgroundColor: theme.background }]}>
                     <Ionicons name="cube-outline" size={20} color={theme.textSecondary} />
                     <View style={styles.itemCopy}>
-                      <AppText size="small" weight="semibold">No deliveries received yet</AppText>
+                      <AppText size="small" weight="semibold">No delivery recorded yet</AppText>
                       <AppText size="small" tone="secondary">
-                        Received chickens and their batches will appear here.
+                        Batch and housing details will appear after the first delivery.
                       </AppText>
                     </View>
                   </View>
                 ) : (
                   <>
                     <View style={styles.subsectionHeading}>
-                      <AppText weight="semibold">Batches in this purchase</AppText>
                       <AppText size="small" tone="secondary">
-                        {batchSummaries.length} {batchSummaries.length === 1 ? "batch" : "batches"} created or updated from deliveries
+                        {batchSummaries.length}{" "}
+                        {batchSummaries.length === 1 ? "batch" : "batches"} from these deliveries
                       </AppText>
                     </View>
                     {batchSummaries.map((batch) => (
@@ -625,8 +681,8 @@ function PurchaseDetailsContent() {
                             <Ionicons name="layers-outline" size={18} color={theme.primary} />
                           </View>
                           <View style={styles.itemCopy}>
-                            <AppText weight="semibold" numberOfLines={1}>{batch.name}</AppText>
-                            <AppText size="small" tone="secondary" numberOfLines={1}>
+                            <AppText weight="semibold">{batch.name}</AppText>
+                            <AppText size="small" tone="secondary">
                               {batch.chickenType ? labelize(batch.chickenType) : "Chicken batch"}
                               {batch.hatchDate ? ` · Hatched ${formatDate(batch.hatchDate)}` : ""}
                             </AppText>
@@ -646,7 +702,7 @@ function PurchaseDetailsContent() {
                               {batch.blocks.map((block) => (
                                 <View key={block.id} style={[styles.blockTag, { backgroundColor: theme.backgroundSelected }]}>
                                   <Ionicons name="home-outline" size={13} color={theme.primary} />
-                                  <AppText size="small" style={{ color: theme.primary }} numberOfLines={1}>
+                                  <AppText size="small" style={{ color: theme.primary }}>
                                     {block.name} · {formatQuantity(block.quantity)}
                                   </AppText>
                                 </View>
@@ -714,10 +770,10 @@ function PurchaseDetailsContent() {
                                 >
                                   <View style={styles.receiptLineTop}>
                                     <View style={styles.itemCopy}>
-                                      <AppText size="small" weight="semibold" numberOfLines={1}>
+                                      <AppText size="small" weight="semibold">
                                         {received.batch_name ?? "Batch not assigned"}
                                       </AppText>
-                                      <AppText size="small" tone="secondary" numberOfLines={1}>
+                                      <AppText size="small" tone="secondary">
                                         {purchaseItem?.product_name ?? "Chicken product"}
                                       </AppText>
                                     </View>
@@ -740,7 +796,7 @@ function PurchaseDetailsContent() {
                                         style={[styles.blockTag, { backgroundColor: theme.backgroundSelected }]}
                                       >
                                         <Ionicons name="home-outline" size={13} color={theme.primary} />
-                                        <AppText size="small" style={{ color: theme.primary }} numberOfLines={1}>
+                                        <AppText size="small" style={{ color: theme.primary }}>
                                           {allocation.block_name ?? "Housing"} · {formatQuantity(allocation.quantity)}
                                         </AppText>
                                       </View>
@@ -765,198 +821,494 @@ function PurchaseDetailsContent() {
               </Section>
             ) : null}
 
-            <Section
-              title="Purchase transaction"
-              icon="document-text-outline"
-              accent={theme.primary}
-            >
-              <DetailLine
-                label="Reference"
-                value={transaction.reference_number ?? "Not assigned"}
-              />
-              <DetailLine
-                label="Transaction date"
-                value={formatDate(transaction.transaction_date)}
-              />
-              <DetailLine
-                label="Status"
-                value={labelize(transaction.status)}
-              />
-              <DetailLine
-                label="Subtotal"
-                value={formatMoney(
-                  Number(transaction.transaction_total) +
-                    Number(transaction.discount_amount),
-                  theme.currency,
-                )}
-              />
-              <DetailLine
-                label="Total"
-                value={formatMoney(transaction.transaction_total, theme.currency)}
-              />
-            </Section>
-
-            <Section
-              title="Payment history"
-              icon="card-outline"
-              accent={theme.success}
-            >
-              {transaction.payments.length === 0 ? (
-                <AppText size="small" tone="secondary">
-                  No payments have been recorded for this purchase.
-                </AppText>
-              ) : (
-                transaction.payments.map((payment, index) => (
-                  <View
-                    key={payment.id ?? `${payment.payment_date}-${index}`}
-                    style={styles.paymentRow}
-                  >
-                    <View
-                      style={[
-                        styles.paymentIcon,
-                        { backgroundColor: `${theme.success}14` },
-                      ]}
-                    >
-                      <Ionicons
-                        name="card-outline"
-                        size={18}
-                        color={theme.success}
-                      />
-                    </View>
-                    <View style={styles.paymentCopy}>
-                      <AppText weight="semibold">
-                        {labelize(payment.payment_method)}
-                      </AppText>
-                      <AppText size="small" tone="secondary">
-                        {payment.payment_date
-                          ? formatDate(payment.payment_date)
-                          : "Date not available"}
-                        {payment.reference_number
-                          ? ` · ${payment.reference_number}`
-                          : ""}
-                      </AppText>
-                      {payment.notes ? (
-                        <AppText size="small" tone="secondary">
-                          {payment.notes}
-                        </AppText>
-                      ) : null}
-                    </View>
-                    <AppText
-                      weight="semibold"
-                      style={{ flexShrink: 1, textAlign: "right" }}
-                    >
-                      {formatMoney(payment.amount, theme.currency)}
-                    </AppText>
-                  </View>
-                ))
-              )}
-            </Section>
+            <PurchaseHistorySection
+              events={auditTrail}
+              transactionId={purchaseId}
+              currency={theme.currency}
+              currentBalance={creditBalance - balanceDue}
+              loading={
+                settlements.isLoading ||
+                returns.isLoading ||
+                refunds.isLoading ||
+                replacements.isLoading
+              }
+              complete={
+                !settlements.isLoading &&
+                !returns.isLoading &&
+                !refunds.isLoading &&
+                !replacements.isLoading &&
+                !settlements.isError &&
+                !returns.isError &&
+                !refunds.isError &&
+                !replacements.isError
+              }
+              errors={[
+                settlements.isError ? settlements.error : null,
+                returns.isError ? returns.error : null,
+                refunds.isError ? refunds.error : null,
+                replacements.isError ? replacements.error : null,
+              ].filter((error): error is Error => error instanceof Error)}
+              retry={() => {
+                void Promise.all([
+                  settlements.refetch(),
+                  returns.refetch(),
+                  refunds.refetch(),
+                  replacements.refetch(),
+                ]);
+              }}
+            />
 
             {transaction.contact_id ? (
-              <Section
-                title="Supplier account balance"
-                icon="swap-horizontal-outline"
-                accent={theme.secondary}
-              >
-                <View style={styles.supplierTotal}>
-                  <View
-                    style={[
-                      styles.balanceSummaryCard,
-                      { backgroundColor: `${theme.danger}12` },
-                    ]}
-                  >
-                    <Ionicons name="arrow-up-circle-outline" size={21} color={theme.danger} />
-                    <View style={styles.balanceSummaryCopy}>
-                      <AppText size="small" tone="secondary">
-                        You owe {purchase.supplier_name ?? "supplier"}
-                      </AppText>
-                      <AppText weight="semibold" style={{ color: theme.danger }}>
-                        {formatMoney(purchase.supplier_balance_total, theme.currency)}
-                      </AppText>
-                    </View>
-                  </View>
-                  <View
-                    style={[
-                      styles.balanceSummaryCard,
-                      { backgroundColor: `${theme.success}12` },
-                    ]}
-                  >
-                    <Ionicons name="arrow-down-circle-outline" size={21} color={theme.success} />
-                    <View style={styles.balanceSummaryCopy}>
-                      <AppText size="small" tone="secondary">
-                        Supplier owes you
-                      </AppText>
-                      <AppText weight="semibold" style={{ color: theme.success }}>
-                        {formatMoney(purchase.supplier_credit_total, theme.currency)}
-                      </AppText>
-                    </View>
-                  </View>
-                </View>
-                {otherBalances.map((balance) => (
-                  <Pressable
-                    key={balance.id}
-                    accessibilityRole="button"
-                    accessibilityLabel={`Open purchase ${balance.reference_number ?? ""}, ${Number(balance.balance_due) > 0 ? `balance due ${formatMoney(balance.balance_due, theme.currency)}` : `supplier credit ${formatMoney(balance.credit_balance, theme.currency)}`}`}
-                    onPress={() =>
-                      router.push({
-                        pathname: "/purchases/[purchaseId]",
-                        params: { purchaseId: balance.id },
-                      })
-                    }
-                    style={({ pressed }) => [
-                      styles.balanceRow,
-                      {
-                        borderBottomColor: theme.border,
-                        opacity: pressed ? 0.65 : 1,
-                      },
-                    ]}
-                  >
-                    <View style={styles.paymentCopy}>
-                      <AppText weight="semibold">
-                        {balance.reference_number
-                          ? `Purchase ${balance.reference_number}`
-                          : "Purchase"}
-                      </AppText>
-                      <AppText size="small" tone="secondary">
-                        {formatDate(balance.transaction_date)}
-                      </AppText>
-                    </View>
-                    <View style={styles.balanceAmount}>
-                      <AppText
-                        weight="semibold"
-                        style={{
-                          flexShrink: 1,
-                          textAlign: "right",
-                          color:
-                            Number(balance.balance_due) > 0
-                              ? theme.danger
-                              : theme.primary,
-                        }}
-                      >
-                        {Number(balance.balance_due) > 0
-                          ? `Owed ${formatMoney(balance.balance_due, theme.currency)}`
-                          : `Credit ${formatMoney(balance.credit_balance, theme.currency)}`}
-                      </AppText>
-                      <Ionicons
-                        name="chevron-forward"
-                        size={17}
-                        color={theme.textSecondary}
-                      />
-                    </View>
-                  </Pressable>
-                ))}
-                {otherBalances.length === 0 ? (
-                  <AppText size="small" tone="secondary">
-                    There are no other open balances with this supplier.
-                  </AppText>
-                ) : null}
-              </Section>
+              otherBalances.length ? (
+                <Section
+                  title={`Other purchases with ${purchase.supplier_name ?? "this supplier"}`}
+                  icon="swap-horizontal-outline"
+                  accent={theme.secondary}
+                >
+                  {otherBalances.map((balance) => (
+                    <Pressable
+                      key={balance.id}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Open purchase ${balance.reference_number ?? ""}, ${Number(balance.balance_due) > 0 ? `balance due ${formatMoney(balance.balance_due, theme.currency)}` : `supplier credit ${formatMoney(balance.credit_balance, theme.currency)}`}`}
+                      onPress={() =>
+                        router.push({
+                          pathname: "/purchases/[purchaseId]",
+                          params: { purchaseId: balance.id },
+                        })
+                      }
+                      style={({ pressed }) => [
+                        styles.balanceRow,
+                        {
+                          borderBottomColor: theme.border,
+                          opacity: pressed ? 0.65 : 1,
+                        },
+                      ]}
+                    >
+                      <View style={styles.paymentCopy}>
+                        <AppText weight="semibold">
+                          {balance.reference_number ?? "Purchase"}
+                        </AppText>
+                        <AppText size="small" tone="secondary">
+                          {formatDate(balance.transaction_date)}
+                        </AppText>
+                      </View>
+                      <View style={styles.balanceAmount}>
+                        <View style={styles.balanceValueCopy}>
+                          <AppText
+                            size="small"
+                            tone="secondary"
+                            style={{ textAlign: "right" }}
+                          >
+                            {Number(balance.balance_due) > 0
+                              ? "Still owed"
+                              : "Credit"}
+                          </AppText>
+                          <AppText
+                            weight="semibold"
+                            style={{
+                              flexShrink: 1,
+                              textAlign: "right",
+                              color:
+                                Number(balance.balance_due) > 0
+                                  ? theme.secondary
+                                  : theme.success,
+                            }}
+                          >
+                            {formatMoney(
+                              Number(balance.balance_due) > 0
+                                ? balance.balance_due
+                                : balance.credit_balance,
+                              theme.currency,
+                            )}
+                          </AppText>
+                        </View>
+                        <Ionicons
+                          name="chevron-forward"
+                          size={17}
+                          color={theme.textSecondary}
+                        />
+                      </View>
+                    </Pressable>
+                  ))}
+                </Section>
+              ) : null
             ) : null}
           </>
         ) : null}
       </ScrollView>
     </SafeAreaView>
   );
+}
+
+type PurchaseAuditEntry = {
+  id: string;
+  type: "purchase" | "payment" | "settlement" | "return" | "refund" | "replacement";
+  date: string;
+  time: string | null;
+  title: string;
+  detail: string | null;
+  amount: number;
+  balanceAfter: number;
+  method: string | null;
+  reference: string | null;
+  notes: string | null;
+  components: TransactionSettlement["lines"];
+  paymentIndex?: number;
+  paymentId?: string;
+};
+
+function buildPurchaseAuditTrail(
+  transaction: ChickenPurchaseResult,
+  settlements: TransactionSettlement[],
+  returns: RecordedReturn[],
+  refunds: CashRefundRecord[],
+  replacements: PurchaseReplacementHistory[],
+): PurchaseAuditEntry[] {
+  const entries: Omit<PurchaseAuditEntry, "balanceAfter">[] = [
+    {
+      id: `purchase:${transaction.id}`,
+      type: "purchase",
+      date: transaction.transaction_date,
+      time: null,
+      title: transaction.status === "cancelled" ? "Purchase cancelled" : "Purchase recorded",
+      detail: null,
+      amount: transaction.status === "cancelled" ? 0 : -Number(transaction.transaction_total),
+      method: null,
+      reference: null,
+      notes: null,
+      components: [],
+    },
+    ...transaction.payments.map((payment, index) => ({
+      id: `payment:${payment.id ?? `${payment.payment_date ?? transaction.transaction_date}-${index}`}`,
+      type: "payment" as const,
+      date: payment.payment_date ?? transaction.transaction_date,
+      time: payment.payment_time ?? null,
+      title: "You paid the supplier",
+      detail: null,
+      amount: Number(payment.amount),
+      method: payment.payment_method,
+      reference: payment.reference_number,
+      notes: payment.notes ?? null,
+      components: [],
+      paymentIndex: index + 1,
+      paymentId: payment.id,
+    })),
+    ...settlements.map((settlement) => ({
+      id: `settlement:${settlement.id}`,
+      type: "settlement" as const,
+      date: settlement.settlement_date,
+      time: null,
+      title: settlement.direction === "farm_to_contact"
+        ? "You settled with the supplier"
+        : "Supplier settled with you",
+      detail: null,
+      amount: settlement.direction === "farm_to_contact"
+        ? Number(settlement.total_value)
+        : -Number(settlement.total_value),
+      method: null,
+      reference: null,
+      notes: settlement.notes,
+      components: settlement.lines,
+    })),
+    ...returns.map((record) => ({
+      id: `return:${record.id}`,
+      type: "return" as const,
+      date: record.return_date,
+      time: null,
+      title: "Goods returned to supplier",
+      detail: [
+        record.reason,
+        ...record.items.map((item) => {
+          const quantity = item.quantity_returned ?? item.quantity;
+          return quantity
+            ? `${formatQuantity(quantity)} ${item.product_name ?? "items"}`
+            : item.product_name ?? "Returned item";
+        }),
+      ].filter(Boolean).join(" · "),
+      amount: Number(record.credit_total),
+      method: null,
+      reference: null,
+      notes: record.notes,
+      components: [],
+    })),
+    ...refunds.map((refund) => ({
+      id: `refund:${refund.id}`,
+      type: "refund" as const,
+      date: refund.refund_date,
+      time: null,
+      title: "Supplier refunded you",
+      detail: refund.reason,
+      amount: -Number(refund.amount),
+      method: refund.payment_method,
+      reference: refund.reference_number ?? null,
+      notes: refund.notes ?? null,
+      components: [],
+    })),
+    ...replacements.map((replacement) => ({
+      id: `replacement:${replacement.id}`,
+      type: "replacement" as const,
+      date: replacement.replacement_date,
+      time: replacement.replacement_time,
+      title: "Replacement received",
+      detail: replacement.items.map((item) => {
+        const quantity = formatQuantity(item.quantity_received);
+        const type = labelize(item.chicken_type);
+        const blocks = item.block_allocations
+          .map((allocation) => allocation.block_name)
+          .filter((name): name is string => Boolean(name));
+        return `${quantity} ${type}${blocks.length ? ` · ${blocks.join(", ")}` : ""}`;
+      }).join("; "),
+      amount: -Number(replacement.credit_applied_total),
+      method: null,
+      reference: null,
+      notes: replacement.notes,
+      components: [],
+    })),
+  ];
+
+  entries.sort((first, second) =>
+    first.date.localeCompare(second.date) ||
+    (first.time ?? "").localeCompare(second.time ?? "") ||
+    getPurchaseAuditOrder(first.type) - getPurchaseAuditOrder(second.type) ||
+    first.id.localeCompare(second.id),
+  );
+
+  let balance = 0;
+  return entries.map((entry) => {
+    balance += entry.amount;
+    return { ...entry, balanceAfter: balance };
+  });
+}
+
+function getPurchaseAuditOrder(type: PurchaseAuditEntry["type"]): number {
+  return {
+    purchase: 0,
+    payment: 1,
+    settlement: 2,
+    return: 3,
+    refund: 4,
+    replacement: 5,
+  }[type];
+}
+
+function PurchaseHistorySection({
+  events,
+  transactionId,
+  currency,
+  currentBalance,
+  loading,
+  complete,
+  errors,
+  retry,
+}: {
+  events: PurchaseAuditEntry[];
+  transactionId: string;
+  currency: string;
+  currentBalance: number;
+  loading: boolean;
+  complete: boolean;
+  errors: Error[];
+  retry: () => void;
+}) {
+  const { theme } = useTheme();
+  const historyMatchesBalance =
+    complete &&
+    events.length > 0 &&
+    Math.abs(events[events.length - 1].balanceAfter - currentBalance) < 0.01;
+  return (
+    <Section title="Financial history" icon="time-outline" accent={theme.primary}>
+      {loading ? (
+        <View style={styles.historyLoading}>
+          <ActivityIndicator size="small" color={theme.primary} />
+          <AppText size="small" tone="secondary">Loading purchase history</AppText>
+        </View>
+      ) : null}
+      {errors.map((error, index) => (
+        <View key={`history-error-${index}`} style={[styles.historyError, { borderColor: theme.border }]}>
+          <View style={styles.historyErrorCopy}>
+            <AppText size="small" weight="semibold">Some purchase history could not be loaded</AppText>
+            <AppText size="small" tone="secondary">{normalizeApiError(error).message}</AppText>
+          </View>
+          <Pressable accessibilityRole="button" onPress={retry} hitSlop={8}>
+            <AppText size="small" weight="semibold" style={{ color: theme.primary }}>Retry</AppText>
+          </Pressable>
+        </View>
+      ))}
+      {!loading && events.length === 0 ? (
+        <AppText size="small" tone="secondary">No purchase events are recorded yet.</AppText>
+      ) : null}
+      {complete && events.length > 0 && !historyMatchesBalance ? (
+        <View
+          style={[
+            styles.historyMismatch,
+            { borderColor: `${theme.secondary}55`, backgroundColor: `${theme.secondary}0D` },
+          ]}
+        >
+          <Ionicons name="information-circle-outline" size={18} color={theme.secondary} />
+          <AppText size="small" style={styles.historyMismatchText}>
+            These records do not add up to the current purchase balance. The current balance is{" "}
+            {getPurchaseBalanceLabel(currentBalance, currency)}. Running balances are hidden until the history reconciles.
+          </AppText>
+        </View>
+      ) : null}
+      {events.map((event, index) => {
+        const palette = getPurchaseAuditPalette(theme, event.type, event.amount);
+        const remaining = getPurchaseBalanceLabel(event.balanceAfter, currency);
+        return (
+          <View key={event.id} style={styles.historyEvent}>
+            <View style={styles.historyRail}>
+              <View style={[styles.historyDot, { backgroundColor: palette.accent, borderColor: theme.backgroundElement }]} />
+              {index < events.length - 1 ? (
+                <View style={[styles.historyConnector, { backgroundColor: theme.border }]} />
+              ) : null}
+            </View>
+            <View style={styles.historyEventBody}>
+              <View style={styles.historyEventHeading}>
+                <View style={styles.historyEventTitle}>
+                  <AppText size="small" weight="semibold">{event.title}</AppText>
+                  <AppText size="small" tone="secondary">
+                    {formatDate(event.date)}
+                    {event.time ? ` · ${formatAuditTime(event.time)}` : ""}
+                  </AppText>
+                </View>
+                {Math.abs(event.amount) > 0.005 ? (
+                  <AppText size="small" weight="semibold" style={{ color: palette.accent, textAlign: "right" }}>
+                    {formatMoney(Math.abs(event.amount), currency)}
+                  </AppText>
+                ) : null}
+              </View>
+              {event.detail ? (
+                <AppText size="small" tone="secondary">{event.detail}</AppText>
+              ) : null}
+              {event.method || event.reference ? (
+                <View style={styles.historyMetadata}>
+                  {event.method ? (
+                    <View style={styles.historyMetadataItem}>
+                      <Ionicons name="card-outline" size={13} color={theme.textSecondary} />
+                      <AppText size="small" tone="secondary">{labelize(event.method)}</AppText>
+                    </View>
+                  ) : null}
+                  {event.reference ? (
+                    <View style={styles.historyMetadataItem}>
+                      <Ionicons name="receipt-outline" size={13} color={theme.textSecondary} />
+                      <AppText size="small" tone="secondary">Reference · {event.reference}</AppText>
+                    </View>
+                  ) : null}
+                </View>
+              ) : null}
+              {event.components.length ? (
+                <View style={[styles.historyComponents, { backgroundColor: theme.background, borderColor: theme.border }]}>
+                  {event.components.map((component, componentIndex) => (
+                    <View
+                      key={`${event.id}-${componentIndex}`}
+                      style={[
+                        styles.historyComponent,
+                        componentIndex > 0 && { borderTopColor: theme.border },
+                      ]}
+                    >
+                      <View style={styles.historyComponentCopy}>
+                        <AppText size="small" weight="semibold">
+                          {getSettlementComponentTitle(component, event.amount)}
+                        </AppText>
+                        {component.kind !== "cash" ? (
+                          <AppText size="small" tone="secondary">
+                            {component.kind === "service"
+                              ? component.description ?? "Service"
+                              : `${component.quantity ?? ""} ${component.unit_name ?? ""} ${component.product_name ?? "Goods"}`.trim()}
+                          </AppText>
+                        ) : null}
+                        {component.reference_number ? (
+                          <AppText size="small" tone="secondary">
+                            Receipt · {component.reference_number}
+                          </AppText>
+                        ) : null}
+                      </View>
+                      <AppText size="small" weight="semibold">
+                        {formatMoney(component.value, currency)}
+                      </AppText>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+              {event.type === "settlement" && !event.components.length ? (
+                <AppText size="small" tone="secondary">
+                  Settlement details were not saved.
+                </AppText>
+              ) : null}
+              {event.notes ? (
+                <AppText size="small" tone="secondary">Note: {event.notes}</AppText>
+              ) : null}
+              {event.type === "payment" && event.paymentIndex ? (
+                <GenerateReceiptButton
+                  transactionId={transactionId}
+                  transactionType="purchase"
+                  paymentNumber={event.paymentIndex}
+                  paymentId={event.paymentId}
+                  compact
+                />
+              ) : null}
+              {historyMatchesBalance ? (
+                <View style={[styles.historyBalance, { borderTopColor: theme.border }]}>
+                  <AppText size="small" tone="secondary">Balance after this</AppText>
+                  <AppText
+                    size="small"
+                    weight="semibold"
+                    style={{ color: event.balanceAfter > 0.005 ? theme.success : event.balanceAfter < -0.005 ? getPurchaseAuditPalette(theme, "refund", -1).accent : theme.textSecondary }}
+                  >
+                    {event.type === "purchase" && event.amount === 0
+                      ? "Purchase cancelled · no balance"
+                      : remaining}
+                  </AppText>
+                </View>
+              ) : null}
+            </View>
+          </View>
+        );
+      })}
+    </Section>
+  );
+}
+
+function getPurchaseBalanceLabel(balance: number, currency: string): string {
+  if (Math.abs(balance) < 0.005) return "Paid in full";
+  if (balance < 0) return `You still owe ${formatMoney(Math.abs(balance), currency)}`;
+  return `Supplier credit ${formatMoney(balance, currency)}`;
+}
+
+function getPurchaseAuditPalette(
+  theme: ReturnType<typeof useTheme>["theme"],
+  type: PurchaseAuditEntry["type"],
+  amount: number,
+): { accent: string } {
+  if (type === "purchase") return { accent: theme.textSecondary };
+  if (amount > 0) return { accent: theme.success };
+  if (amount < 0) {
+    return {
+      accent: theme.mode === "dark" ? "#F0C77C" : "#80510B",
+    };
+  }
+  return { accent: theme.textSecondary };
+}
+
+function getSettlementComponentTitle(
+  component: TransactionSettlement["lines"][number],
+  effect: number,
+): string {
+  const paymentDirection = effect > 0;
+  if (component.kind === "cash") {
+    return `${paymentDirection ? "Cash paid" : "Cash received"} · ${labelize(component.payment_method ?? "cash")}`;
+  }
+  if (component.kind === "service") {
+    return paymentDirection ? "Service you provided" : "Service received";
+  }
+  return paymentDirection ? "Goods you gave" : "Goods received";
+}
+
+function formatAuditTime(value: string): string {
+  const [hoursText, minutes] = value.slice(0, 5).split(":");
+  const hours = Number(hoursText);
+  if (!Number.isFinite(hours) || !minutes) return value.slice(0, 5);
+  return `${hours % 12 || 12}:${minutes} ${hours >= 12 ? "PM" : "AM"}`;
 }
 
 function Section({
@@ -974,15 +1326,10 @@ function Section({
   return (
     <Card style={styles.section}>
       <View style={styles.sectionHeading}>
-        <View
-          style={[
-            styles.sectionIcon,
-            { backgroundColor: `${accent}14` },
-          ]}
-        >
+        <View style={styles.sectionIcon}>
           <Ionicons name={icon} size={18} color={accent} />
         </View>
-        <AppText size="heading" weight="semibold" style={styles.sectionTitle}>
+        <AppText size="body" weight="semibold" style={styles.sectionTitle}>
           {title}
         </AppText>
       </View>
@@ -1016,38 +1363,6 @@ function DetailLine({
           flexShrink: 1,
           textAlign: "right",
         }}
-      >
-        {value}
-      </AppText>
-    </View>
-  );
-}
-
-function QuantityCell({
-  label,
-  value,
-  highlight = false,
-  accent,
-}: {
-  label: string;
-  value: string;
-  highlight?: boolean;
-  accent: string;
-}) {
-  const { theme } = useTheme();
-  return (
-    <View
-      style={[
-        styles.quantityCell,
-        { backgroundColor: `${accent}10` },
-      ]}
-    >
-      <AppText size="small" tone="secondary">
-        {label}
-      </AppText>
-      <AppText
-        weight="semibold"
-        style={{ color: highlight ? theme.danger : accent }}
       >
         {value}
       </AppText>
@@ -1111,6 +1426,23 @@ function formatQuantity(value: number | string): string {
   }).format(Number(value) || 0);
 }
 
+function pluralizeUnit(unit: string, quantity: number): string {
+  const normalized = unit.trim();
+  const lowerCaseUnit = normalized.toLocaleLowerCase();
+  if (
+    Math.abs(quantity) === 1 ||
+    /^(kg|g|mg|l|ml|cm|m|mm)$/.test(lowerCaseUnit) ||
+    lowerCaseUnit.endsWith("s")
+  ) {
+    return normalized;
+  }
+  if (/[sxz]$|(?:ch|sh)$/.test(lowerCaseUnit)) return `${normalized}es`;
+  if (/[^aeiou]y$/.test(lowerCaseUnit)) {
+    return `${normalized.slice(0, -1)}ies`;
+  }
+  return `${normalized}s`;
+}
+
 function formatDate(value: string): string {
   const parsed = new Date(`${value.slice(0, 10)}T00:00:00`);
   return Number.isNaN(parsed.valueOf())
@@ -1142,16 +1474,9 @@ const styles = StyleSheet.create({
   actionsHeading: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
     gap: 10,
   },
   actionsTitleCopy: { flex: 1, gap: 3 },
-  actionCountBadge: {
-    maxWidth: "45%",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 16,
-  },
   primaryAction: {
     minHeight: 76,
     flexDirection: "row",
@@ -1188,51 +1513,53 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   actionDivider: { height: StyleSheet.hairlineWidth, marginLeft: 49 },
-  hero: { gap: 16, padding: 18, borderRadius: 12, borderLeftWidth: 4 },
-  heroTop: { flexDirection: "row", alignItems: "center", gap: 13 },
-  heroIcon: {
-    width: 48,
-    height: 48,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 14,
-    backgroundColor: "#E8EDE5",
-  },
+  hero: { gap: 14, padding: 18, borderRadius: 14 },
+  heroTop: { flexDirection: "row", alignItems: "center", gap: 10 },
   heroTitle: { flex: 1, minWidth: 0, gap: 2 },
-  copyButton: {
-    alignSelf: "flex-start",
-    minHeight: 36,
+  referenceRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 7,
-    paddingHorizontal: 11,
-    borderWidth: 1,
-    borderRadius: 10,
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  referenceText: { flex: 1, minWidth: 0 },
+  copyButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingVertical: 4,
   },
   heroTotal: { flex: 1, minWidth: 0 },
   heroAmountRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    justifyContent: "space-between",
+  },
+  progressTrack: {
+    width: "100%",
+    height: 7,
+    overflow: "hidden",
+    borderRadius: 4,
+  },
+  progressFill: { height: "100%", borderRadius: 4 },
+  financialSummary: { gap: 7 },
+  deliverySummary: { gap: 9, paddingTop: 13, borderTopWidth: 1 },
+  deliverySummaryHeading: {
+    flexDirection: "row",
     flexWrap: "wrap",
-    gap: 12,
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 6,
   },
-  balanceBadge: {
-    maxWidth: "100%",
-    paddingHorizontal: 11,
-    paddingVertical: 7,
-    borderRadius: 16,
-  },
-  heroDetails: { gap: 7 },
+  deliverySummaryTitle: { flex: 1, minWidth: 0, gap: 2 },
+  heroFooter: { alignItems: "flex-start" },
   notes: { paddingTop: 12, borderTopWidth: 1, borderTopColor: "#D8DED5" },
   section: { gap: 13, padding: 17, borderRadius: 12 },
-  sectionHeading: { flexDirection: "row", alignItems: "center", gap: 10 },
+  sectionHeading: { flexDirection: "row", alignItems: "center", gap: 9 },
   sectionIcon: {
-    width: 34,
-    height: 34,
+    width: 24,
+    height: 24,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 11,
   },
   sectionTitle: { flex: 1, minWidth: 0 },
   sectionContent: { gap: 12, paddingTop: 12, borderTopWidth: 1 },
@@ -1245,13 +1572,13 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   itemCopy: { flex: 1, minWidth: 0, gap: 2 },
-  quantityGrid: { flexDirection: "row", gap: 8 },
-  quantityCell: {
-    flex: 1,
-    minWidth: 0,
-    gap: 2,
-    padding: 9,
-    borderRadius: 10,
+  purchaseTotalLine: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    gap: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 10,
   },
   discountLine: {
     flexDirection: "row",
@@ -1262,8 +1589,6 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: "#D8DED5",
   },
-  receiptSummary: { flexDirection: "row", gap: 8 },
-  receiptMetric: { flex: 1, minWidth: 0, gap: 3, padding: 10, borderRadius: 11 },
   receiptEmpty: { flexDirection: "row", alignItems: "center", gap: 10, padding: 13, borderRadius: 12 },
   subsectionHeading: { gap: 3, paddingTop: 3 },
   batchSummary: { gap: 10, borderWidth: 1, borderRadius: 13, padding: 12 },
@@ -1287,51 +1612,44 @@ const styles = StyleSheet.create({
   receiptLineTop: { flexDirection: "row", alignItems: "center", gap: 10 },
   allocations: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
   receiptNote: { flexDirection: "row", alignItems: "flex-start", gap: 7, borderTopWidth: StyleSheet.hairlineWidth, paddingTop: 9 },
-  paymentRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    alignItems: "center",
-    gap: 10,
-  },
-  paymentIcon: {
-    width: 36,
-    height: 36,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 12,
-  },
+  historyLoading: { minHeight: 40, flexDirection: "row", alignItems: "center", gap: 9 },
+  historyError: { flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderRadius: 10, padding: 10 },
+  historyErrorCopy: { flex: 1, minWidth: 0, gap: 3 },
+  historyMismatch: { flexDirection: "row", alignItems: "flex-start", gap: 8, borderWidth: 1, borderRadius: 10, padding: 10 },
+  historyMismatchText: { flex: 1, minWidth: 0 },
+  historyEvent: { flexDirection: "row", gap: 10 },
+  historyRail: { width: 16, alignItems: "center" },
+  historyDot: { zIndex: 1, width: 10, height: 10, borderWidth: 2, borderRadius: 5, marginTop: 4 },
+  historyConnector: { position: "absolute", top: 12, bottom: -3, width: 1 },
+  historyEventBody: { flex: 1, minWidth: 0, gap: 5, paddingBottom: 13 },
+  historyEventHeading: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 8 },
+  historyEventTitle: { flex: 1, minWidth: 0, gap: 2 },
+  historyMetadata: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  historyMetadataItem: { flexDirection: "row", alignItems: "center", gap: 4 },
+  historyComponents: { gap: 1, borderWidth: 1, borderRadius: 9, paddingHorizontal: 9, marginTop: 2 },
+  historyComponent: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 8, borderTopWidth: StyleSheet.hairlineWidth, paddingVertical: 8 },
+  historyComponentCopy: { flex: 1, minWidth: 0, gap: 2 },
+  historyBalance: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between", gap: 4, borderTopWidth: StyleSheet.hairlineWidth, paddingTop: 6, marginTop: 2 },
   paymentCopy: { flex: 1, minWidth: 0, gap: 2 },
-  supplierTotal: {
-    gap: 10,
-  },
-  balanceSummaryCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    padding: 12,
-    borderRadius: 12,
-  },
-  balanceSummaryCopy: {
-    flex: 1,
-    minWidth: 0,
-    gap: 3,
-  },
   balanceRow: {
     minHeight: 56,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    flexWrap: "wrap",
-    gap: 10,
-    paddingVertical: 10,
+    gap: 8,
+    paddingVertical: 9,
     borderBottomWidth: 1,
   },
   balanceAmount: {
+    flexShrink: 1,
     flexDirection: "row",
-    flexWrap: "wrap",
     alignItems: "center",
     justifyContent: "flex-end",
     gap: 5,
+  },
+  balanceValueCopy: {
+    alignItems: "flex-end",
+    gap: 1,
   },
   detailLine: {
     flexDirection: "row",

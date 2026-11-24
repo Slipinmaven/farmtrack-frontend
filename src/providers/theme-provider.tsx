@@ -14,6 +14,7 @@ import { z } from "zod";
 
 import type { FarmSettings } from "@/features/farms/types";
 import { cacheSettings, readCachedSettings } from "@/lib/storage/farm";
+import { useAuth } from "@/providers/auth-provider";
 import {
   farmThemePresets,
   getFarmThemePreset,
@@ -186,6 +187,7 @@ function normalizeSettings(
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
+  const { status: authStatus } = useAuth();
   const {
     selectedFarm,
     status: farmStatus,
@@ -209,7 +211,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         .then((settings) => {
           if (active) setCachedEntry({ farmId, settings });
         })
-        .catch(() => undefined);
+        .catch(() => {
+          if (active) setCachedEntry({ farmId, settings: null });
+        });
     }
     return () => {
       active = false;
@@ -223,6 +227,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const cachedSettings =
     cachedEntry && cachedEntry.farmId === farmId ? cachedEntry.settings : null;
+  const cachedSettingsResolved = cachedEntry?.farmId === farmId;
   const useCache = farmStatus === "initializing" || farmStatus === "error";
   const baseSettings = useCache ? cachedSettings : serverSettings;
   const previewSettings =
@@ -241,6 +246,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         fontFamily: undefined,
         fontFamilySemibold: undefined,
       };
+  const themeResolved =
+    authStatus !== "loading" &&
+    (authStatus !== "authenticated" ||
+      (farmStatus !== "initializing" &&
+        (!farmId || serverSettings !== null || cachedSettingsResolved)));
 
   return (
     <ThemeContext.Provider
@@ -251,7 +261,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         setPreview,
       }}
     >
-      {children}
+      {themeResolved ? children : null}
     </ThemeContext.Provider>
   );
 }

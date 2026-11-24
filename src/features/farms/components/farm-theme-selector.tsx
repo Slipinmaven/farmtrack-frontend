@@ -48,19 +48,26 @@ export function FarmThemeSelector({ value, onSelect }: FarmThemeSelectorProps) {
         <PresetPreview preset={selectedPreset} compact />
         <View style={styles.triggerCopy}>
           <AppText weight="semibold">{selectedPreset.name}</AppText>
-          <AppText size="small" tone="secondary" numberOfLines={1}>
-            {selectedPreset.description}
+          <AppText size="small" tone="secondary">
+            Primary and accent colors
           </AppText>
         </View>
         <View style={styles.changeAction}>
-          <AppText
-            size="small"
-            weight="semibold"
-            style={{ color: theme.primary }}
+          <View
+            style={[
+              styles.changePill,
+              { backgroundColor: theme.backgroundSelected },
+            ]}
           >
-            Change
-          </AppText>
-          <Ionicons name="chevron-forward" size={16} color={theme.primary} />
+            <AppText
+              size="small"
+              weight="semibold"
+              style={{ color: theme.primary }}
+            >
+              Change
+            </AppText>
+            <Ionicons name="chevron-forward" size={15} color={theme.primary} />
+          </View>
         </View>
       </Pressable>
 
@@ -93,8 +100,7 @@ export function FarmThemeSelector({ value, onSelect }: FarmThemeSelectorProps) {
                   Choose a farm theme
                 </AppText>
                 <AppText size="small" tone="secondary">
-                  Preview both modes. Your choice updates the app immediately;
-                  save the profile to keep it.
+                  Choose the colors used across this farm.
                 </AppText>
               </View>
               <Pressable
@@ -249,6 +255,14 @@ const styles = StyleSheet.create({
   },
   triggerCopy: { flex: 1, gap: 3 },
   changeAction: { flexDirection: "row", alignItems: "center", gap: 2 },
+  changePill: {
+    minHeight: 34,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    borderRadius: 9,
+    paddingHorizontal: 9,
+  },
   modalRoot: { flex: 1, justifyContent: "flex-end" },
   scrim: {
     ...StyleSheet.absoluteFill,

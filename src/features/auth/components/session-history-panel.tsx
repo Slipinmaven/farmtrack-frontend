@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { router, type Href } from "expo-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 
 import { LoadingState } from "@/components/feedback/loading-state";
@@ -37,15 +37,20 @@ export function SessionHistoryPanel({
   const [showAll, setShowAll] = useState(false);
   const [status, setStatus] = useState<SessionStatusFilter>("all");
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [offset, setOffset] = useState(0);
   const [blockingSessionId, setBlockingSessionId] = useState<string | null>(
     null,
   );
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
   const sessions = useLoginSessions(userId, {
     limit: showAll ? pageSize : 5,
     offset: showAll ? offset : 0,
     status: showAll ? status : "all",
-    search: showAll ? search : "",
+    search: showAll ? debouncedSearch : "",
   });
   const revoke = useRevokeLoginSession(userId ?? "");
   const block = useBlockLoginSession(userId ?? "");
@@ -119,6 +124,8 @@ export function SessionHistoryPanel({
   const pageEnd = result
     ? Math.min(offset + result.sessions.length, result.total)
     : 0;
+  const currentPage = Math.floor(offset / pageSize) + 1;
+  const pageCount = result ? Math.max(1, Math.ceil(result.total / pageSize)) : 1;
 
   return (
     <View style={styles.container}>
@@ -184,6 +191,11 @@ export function SessionHistoryPanel({
             }}
             returnKeyType="search"
           />
+          {search !== debouncedSearch ? (
+            <AppText size="small" tone="secondary">
+              Updating results…
+            </AppText>
+          ) : null}
         </>
       ) : null}
 
@@ -192,7 +204,9 @@ export function SessionHistoryPanel({
       result?.sessions.length === 0 ? (
         <Card style={styles.state}>
           <AppText weight="semibold">
-            {search ? "No matching sign-ins" : "No sign-ins in this view"}
+            {debouncedSearch
+              ? "No matching sign-ins"
+              : "No sign-ins in this view"}
           </AppText>
           <AppText size="small" tone="secondary">
             Try another filter or search.
@@ -220,32 +234,96 @@ export function SessionHistoryPanel({
       ))}
 
       {!showAll && result && result.total > result.sessions.length ? (
-        <Button
-          label={`View all ${result.total} sign-ins`}
-          variant="secondary"
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`View all ${result.total} sign-ins`}
           onPress={() => {
             setShowAll(true);
             setOffset(0);
           }}
-        />
+          style={({ pressed }) => [
+            styles.viewAll,
+            {
+              backgroundColor: pressed
+                ? theme.backgroundSelected
+                : theme.backgroundElement,
+              borderColor: theme.border,
+              opacity: pressed ? 0.88 : 1,
+            },
+          ]}
+        >
+          <View style={[styles.viewAllIcon, { backgroundColor: `${theme.primary}18` }]}>
+            <Ionicons name="time-outline" size={19} color={theme.primary} />
+          </View>
+          <View style={styles.viewAllCopy}>
+            <AppText weight="semibold">Browse sign-in history</AppText>
+            <AppText size="small" tone="secondary">
+              {result.total} sign-ins · shown in pages of {pageSize}
+            </AppText>
+          </View>
+          <Ionicons name="arrow-forward" size={18} color={theme.primary} />
+        </Pressable>
       ) : null}
       {showAll && result && result.total > 0 ? (
-        <View style={styles.pagination}>
-          <Button
-            label="Previous"
-            variant="secondary"
-            disabled={offset === 0}
+        <View
+          accessibilityLabel={`Showing sign-ins ${pageStart} through ${pageEnd} of ${result.total}`}
+          style={[
+            styles.pagination,
+            {
+              backgroundColor: theme.backgroundElement,
+              borderColor: theme.border,
+            },
+          ]}
+        >
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Previous page"
+            accessibilityState={{ disabled: offset === 0 || sessions.isFetching }}
+            disabled={offset === 0 || sessions.isFetching}
             onPress={() => setOffset(Math.max(0, offset - pageSize))}
-          />
-          <AppText size="small" tone="secondary" style={styles.pageCount}>
-            {pageStart}–{pageEnd} of {result.total}
-          </AppText>
-          <Button
-            label="Next"
-            variant="secondary"
-            disabled={pageEnd >= result.total}
+            style={({ pressed }) => [
+              styles.pageArrow,
+              {
+                backgroundColor: theme.background,
+                borderColor: theme.border,
+                opacity: offset === 0 || sessions.isFetching ? 0.4 : pressed ? 0.7 : 1,
+              },
+            ]}
+          >
+            <Ionicons name="chevron-back" size={19} color={theme.text} />
+          </Pressable>
+          <View style={styles.pageSummary}>
+            <AppText size="small" weight="semibold">
+              {pageStart}–{pageEnd} of {result.total}
+            </AppText>
+            <AppText size="small" tone="secondary">
+              Page {currentPage} of {pageCount}
+            </AppText>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Next page"
+            accessibilityState={{
+              disabled: pageEnd >= result.total || sessions.isFetching,
+            }}
+            disabled={pageEnd >= result.total || sessions.isFetching}
             onPress={() => setOffset(offset + pageSize)}
-          />
+            style={({ pressed }) => [
+              styles.pageArrow,
+              {
+                backgroundColor: theme.background,
+                borderColor: theme.border,
+                opacity:
+                  pageEnd >= result.total || sessions.isFetching
+                    ? 0.4
+                    : pressed
+                      ? 0.7
+                      : 1,
+              },
+            ]}
+          >
+            <Ionicons name="chevron-forward" size={19} color={theme.text} />
+          </Pressable>
         </View>
       ) : null}
       {showAll ? (
@@ -430,18 +508,34 @@ function SessionCard({
               : ""}
         </AppText>
       ) : null}
-      <View style={styles.actions}>
-        <Pressable
-          accessibilityRole="button"
-          onPress={onActivity}
-          style={styles.activityLink}
-        >
-          <Ionicons name="list-outline" size={17} color={theme.primary} />
-          <AppText size="small" weight="semibold" tone="muted">
-            View activity
+      <Pressable
+        accessibilityRole="button"
+        onPress={onActivity}
+        style={({ pressed }) => [
+          styles.activityLink,
+          {
+            backgroundColor: pressed
+              ? theme.backgroundSelected
+              : theme.backgroundElement,
+            borderColor: theme.border,
+          },
+        ]}
+      >
+        <View style={[styles.activityIcon, { backgroundColor: `${theme.primary}18` }]}>
+          <Ionicons name="list-outline" size={18} color={theme.primary} />
+        </View>
+        <View style={styles.activityCopy}>
+          <AppText size="small" weight="semibold">
+            Session activity
           </AppText>
-        </Pressable>
-        {!session.revoked_at && !session.is_current ? (
+          <AppText size="small" tone="secondary">
+            Review account actions from this sign-in
+          </AppText>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color={theme.textSecondary} />
+      </Pressable>
+      {!session.revoked_at && !session.is_current ? (
+        <View style={styles.actions}>
           <Pressable
             accessibilityRole="button"
             disabled={actionPending}
@@ -450,7 +544,7 @@ function SessionCard({
               styles.endButton,
               {
                 backgroundColor: `${theme.danger}12`,
-                borderColor: `${theme.danger}55`,
+                borderColor: `${theme.danger}44`,
                 opacity: pressed ? 0.72 : actionPending ? 0.55 : 1,
               },
             ]}
@@ -464,45 +558,118 @@ function SessionCard({
               End session
             </AppText>
           </Pressable>
-        ) : null}
-      </View>
+        </View>
+      ) : null}
       {!session.revoked_at &&
       !session.is_current &&
       !session.is_current_device ? (
-        <>
+        <View
+          style={[
+            styles.blockSection,
+            {
+              backgroundColor: blocking
+                ? `${theme.danger}0A`
+                : theme.backgroundElement,
+              borderColor: blocking ? `${theme.danger}55` : theme.border,
+            },
+          ]}
+        >
           <Pressable
             accessibilityRole="button"
             accessibilityState={{ expanded: blocking }}
             onPress={onToggleBlock}
             style={styles.blockLink}
           >
-            <AppText size="small" tone="secondary">
-              {blocking ? "Cancel device block" : "Block this device…"}
-            </AppText>
+            <View style={[styles.blockIcon, { backgroundColor: `${theme.danger}15` }]}>
+              <Ionicons
+                name="ban-outline"
+                size={17}
+                color={theme.danger}
+              />
+            </View>
+            <View style={styles.blockCopy}>
+              <AppText size="small" weight="semibold">
+                {blocking ? "Choose a block duration" : "Block future sign-ins"}
+              </AppText>
+              <AppText size="small" tone="secondary">
+                Stop this device from signing in again
+              </AppText>
+            </View>
             <Ionicons
               name={blocking ? "chevron-up" : "chevron-down"}
-              size={16}
+              size={17}
               color={theme.textSecondary}
             />
           </Pressable>
           {blocking ? (
-            <View style={styles.blockChoices}>
-              <Button
-                label="30 days"
-                variant="secondary"
-                disabled={actionPending}
-                onPress={() => onBlock(false)}
-              />
-              <Button
-                label="Permanently"
-                variant="secondary"
-                disabled={actionPending}
-                style={{ borderColor: `${theme.danger}66` }}
-                onPress={() => onBlock(true)}
-              />
-            </View>
+            <>
+              <AppText size="small" tone="secondary">
+                This ends sessions from this device. Temporary blocks expire
+                automatically; permanent blocks stay until you remove them.
+              </AppText>
+              <View style={styles.blockChoices}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Block this device for 30 days"
+                  disabled={actionPending}
+                  onPress={() => onBlock(false)}
+                  style={({ pressed }) => [
+                    styles.blockChoice,
+                    {
+                      backgroundColor: `${theme.secondary}12`,
+                      borderColor: `${theme.secondary}66`,
+                      opacity: pressed ? 0.72 : actionPending ? 0.55 : 1,
+                    },
+                  ]}
+                >
+                  <View style={[styles.blockChoiceIcon, { backgroundColor: `${theme.secondary}20` }]}>
+                    <Ionicons name="time-outline" size={18} color={theme.secondary} />
+                  </View>
+                  <View style={styles.blockChoiceCopy}>
+                    <AppText size="small" weight="semibold">
+                      Temporary block
+                    </AppText>
+                    <AppText size="small" tone="secondary">
+                      Ends automatically after 30 days
+                    </AppText>
+                  </View>
+                  <Ionicons name="arrow-forward" size={17} color={theme.secondary} />
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Block this device permanently"
+                  disabled={actionPending}
+                  onPress={() => onBlock(true)}
+                  style={({ pressed }) => [
+                    styles.blockChoice,
+                    {
+                      backgroundColor: `${theme.danger}10`,
+                      borderColor: `${theme.danger}66`,
+                      opacity: pressed ? 0.72 : actionPending ? 0.55 : 1,
+                    },
+                  ]}
+                >
+                  <View style={[styles.blockChoiceIcon, { backgroundColor: `${theme.danger}18` }]}>
+                    <Ionicons name="lock-closed-outline" size={17} color={theme.danger} />
+                  </View>
+                  <View style={styles.blockChoiceCopy}>
+                    <AppText
+                      size="small"
+                      weight="semibold"
+                      style={{ color: theme.danger }}
+                    >
+                      Permanent block
+                    </AppText>
+                    <AppText size="small" tone="secondary">
+                      Stays blocked until you remove it
+                    </AppText>
+                  </View>
+                  <Ionicons name="arrow-forward" size={17} color={theme.danger} />
+                </Pressable>
+              </View>
+            </>
           ) : null}
-        </>
+        </View>
       ) : null}
       {session.is_current_device && !session.is_current ? (
         <AppText size="small" tone="secondary">
@@ -517,10 +684,16 @@ function SessionCard({
 function SessionFact({ label, value }: { label: string; value: string }) {
   return (
     <View style={styles.fact}>
-      <AppText size="small" tone="secondary">
+      <AppText size="small" tone="secondary" style={{ flexShrink: 0 }}>
         {label}
       </AppText>
-      <AppText size="small" weight="semibold">
+      <AppText
+        size="small"
+        weight="semibold"
+        numberOfLines={2}
+        ellipsizeMode="middle"
+        style={styles.factValue}
+      >
         {value}
       </AppText>
     </View>
@@ -580,7 +753,7 @@ function formatDateTime(value: string): string {
 }
 
 const styles = StyleSheet.create({
-  container: { gap: 10 },
+  container: { gap: 12, minWidth: 0 },
   state: { gap: 10 },
   filterRow: { flexDirection: "row", gap: 6 },
   filter: {
@@ -592,7 +765,25 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     paddingHorizontal: 10,
   },
-  sessionCard: { gap: 10 },
+  viewAll: {
+    minHeight: 76,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  viewAllIcon: {
+    width: 42,
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 13,
+  },
+  viewAllCopy: { flex: 1, minWidth: 0, gap: 3 },
+  sessionCard: { gap: 12, minWidth: 0 },
   sessionHeading: { flexDirection: "row", alignItems: "center", gap: 9 },
   deviceIcon: {
     width: 36,
@@ -601,27 +792,42 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderRadius: 6,
   },
-  sessionCopy: { flex: 1, gap: 2 },
+  sessionCopy: { flex: 1, minWidth: 0, gap: 2 },
   status: { borderRadius: 4, paddingHorizontal: 7, paddingVertical: 3 },
   sessionFacts: { gap: 4 },
-  fact: { flexDirection: "row", justifyContent: "space-between", gap: 10 },
+  fact: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  factValue: { flex: 1, minWidth: 0, textAlign: "right", flexShrink: 1 },
   actions: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "space-between",
+    justifyContent: "flex-end",
     alignItems: "center",
-    gap: 8,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "rgba(120, 120, 120, 0.25)",
-    paddingTop: 8,
+    paddingTop: 10,
   },
   activityLink: {
-    minHeight: 38,
+    minHeight: 62,
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 4,
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 11,
+    paddingVertical: 9,
   },
+  activityIcon: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+  },
+  activityCopy: { flex: 1, minWidth: 0, gap: 2 },
   endButton: {
     minHeight: 38,
     flexDirection: "row",
@@ -632,23 +838,71 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     paddingHorizontal: 11,
   },
+  blockSection: {
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 11,
+  },
   blockLink: {
-    minHeight: 34,
+    minHeight: 48,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    gap: 10,
   },
-  blockChoices: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  blockIcon: {
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+  },
+  blockCopy: { flex: 1, minWidth: 0, gap: 2 },
+  blockChoices: { flexDirection: "column", gap: 8 },
+  blockChoice: {
+    minHeight: 66,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+  },
+  blockChoiceIcon: {
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 10,
+  },
+  blockChoiceCopy: { flex: 1, minWidth: 0, gap: 2 },
   pagination: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 8,
+    gap: 12,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 9,
   },
-  pageCount: { flex: 1, textAlign: "center" },
+  pageArrow: {
+    width: 42,
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderRadius: 12,
+  },
+  pageSummary: { flex: 1, alignItems: "center", gap: 2 },
   recentLink: { alignSelf: "center", paddingVertical: 5 },
   blockedTitle: { marginTop: 9 },
-  blockedRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  blockedRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    minWidth: 0,
+  },
   blockedIndicator: {
     width: 34,
     height: 34,

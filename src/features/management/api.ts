@@ -235,6 +235,7 @@ export type InventoryOpeningSetupInput =
       setup_date: string;
       chicken_batches: {
         name: string;
+        product_id: string;
         chicken_type: "layers" | "broiler" | "kienyeji" | "breeder" | "other";
         breed?: string;
         hatch_date?: string;
@@ -292,6 +293,46 @@ export type ProfitabilityStock = {
   unvalued_quantity: string;
 };
 
+export type ProfitabilityProduct = {
+  product_id: string;
+  product_name: string;
+  product_type: ProductType;
+  unit_name: string;
+  unit_abbreviation: string;
+  quantity_sold: string;
+  sales_value: string;
+  sales_credits: string;
+  net_sales: string;
+  cost_of_goods_sold: string;
+  average_selling_price: string | null;
+  average_unit_cost: string | null;
+  gross_profit: string | null;
+  uncosted_quantity: string;
+  uncosted_movement_quantity: string;
+  uncosted_movement_types: ("sale" | "consumption" | "loss")[];
+  estimated_cost_used: boolean;
+};
+
+export type EggStockReconciliation = {
+  product_id: string;
+  product_name: string;
+  unit_name: string;
+  unit_abbreviation: string;
+  supported_quantity: string;
+  ledger_quantity: string;
+  difference: string;
+};
+
+export type ReservedEggSale = {
+  transaction_id: string;
+  reference_number: string | null;
+  transaction_date: string;
+  product_id: string;
+  product_name: string;
+  unit_abbreviation: string;
+  reserved_quantity: string;
+};
+
 export type ProfitabilityReport = {
   farm_id: string;
   from_date: string;
@@ -306,12 +347,19 @@ export type ProfitabilityReport = {
   cost_of_goods_sold: string;
   product_consumption_cost: string;
   egg_production_cost_allocated: string;
+  egg_production_zero_cost_confirmed: boolean;
+  egg_production_zero_cost_confirmation_available: boolean;
   unallocated_consumption_expense: string;
   operating_expenses: string;
   inventory_losses: string;
   net_profit: string | null;
   closing_stock_as_of: string;
   closing_stock: ProfitabilityStock[];
+  product_performance: ProfitabilityProduct[];
+  egg_stock_reconciliation: EggStockReconciliation[];
+  reserved_egg_sales: ReservedEggSale[];
+  unvalued_period_movement_count: number;
+  missing_inventory_record_count: number;
   closing_stock_valued_cost: string;
   closing_stock_unvalued_quantity: string;
   untracked_chicken_quantity: string;
@@ -322,9 +370,16 @@ export type ProfitabilityReport = {
   supplier_return_credits_excluded: string;
 };
 
+export type EggProductionCostConfirmationInput = {
+  from_date: string;
+  to_date: string;
+};
+
 export type ProfitabilityStockValuationInput = {
   product_id: string;
   unit_cost: string;
+  from_date?: string;
+  to_date?: string;
 };
 
 export type ProfitabilityStockValuationResult = {
@@ -438,6 +493,26 @@ export type TransactionSettlement = {
   reason: string;
   notes: string | null;
   created_at: string;
+};
+
+export type PurchaseReplacementHistory = {
+  id: string;
+  purchase_return_id: string;
+  transaction_id: string;
+  replacement_date: string;
+  replacement_time: string | null;
+  notes: string | null;
+  created_at: string;
+  credit_applied_total: number | string;
+  items: {
+    id: string;
+    quantity_received: number | string;
+    replacement_quantity: number | string;
+    bonus_quantity: number | string;
+    credit_applied_amount: number | string;
+    chicken_type: string;
+    block_allocations: { block_id: string; quantity: number; block_name?: string | null }[];
+  }[];
 };
 
 export type TransactionSettlementCreatePayload = {
@@ -569,6 +644,52 @@ export type ContactTransactionHistory = {
   offset: number;
 };
 
+export type AccountLedgerEvent = {
+  id: string;
+  transaction_id: string;
+  transaction_type: "sale" | "purchase";
+  contact_id: string | null;
+  contact_name: string | null;
+  event_type:
+    | "transaction"
+    | "payment"
+    | "settlement"
+    | "return"
+    | "refund"
+    | "replacement";
+  event_date: string;
+  event_time: string | null;
+  reference_number: string | null;
+  description: string;
+  amount: number | string;
+  running_balance: number | string;
+  cash_amount: number | string | null;
+  payment_method: string | null;
+  payment_reference: string | null;
+  components: {
+    kind: "cash" | "goods" | "service";
+    label: string;
+    amount: number | string;
+    payment_method: string | null;
+    reference_number: string | null;
+  }[];
+};
+
+export type AccountLedgerAccount = {
+  contact_id: string | null;
+  contact_name: string;
+  roles: ContactRole[];
+  balance: number | string;
+  last_activity: string | null;
+};
+
+export type AccountLedger = {
+  events: AccountLedgerEvent[];
+  accounts: AccountLedgerAccount[];
+  opening_balance: number | string | null;
+  closing_balance: number | string | null;
+};
+
 export type ContactRoleRecord = {
   id: string;
   contact_id: string;
@@ -640,6 +761,7 @@ export type FarmActivityFeed = {
   items: FarmActivity[];
   next_cursor: string | null;
   has_more: boolean;
+  total_count: number | null;
 };
 
 export type FarmActivitySummary = {
@@ -780,7 +902,7 @@ export async function getExpenses(
   farmId: string,
   filters?: {
     search?: string;
-    category?: string;
+    category?: string | string[];
     block_id?: string;
     payment_status?: string;
     from_date?: string;
@@ -789,9 +911,17 @@ export async function getExpenses(
     limit?: number;
   },
 ): Promise<ExpensePage> {
+  const params = new URLSearchParams();
+  Object.entries(filters ?? {}).forEach(([key, value]) => {
+    if (Array.isArray(value)) {
+      value.forEach((item) => params.append(key, item));
+    } else if (value !== undefined) {
+      params.append(key, String(value));
+    }
+  });
   const { data } = await apiClient.get<ExpensePage>(
     `/farms/${farmId}/expenses`,
-    { params: filters },
+    { params },
   );
   return data;
 }
@@ -824,6 +954,21 @@ export async function recordProfitabilityStockValuation(
 ): Promise<ProfitabilityStockValuationResult> {
   const { data } = await apiClient.post<ProfitabilityStockValuationResult>(
     `/farms/${farmId}/reports/profitability/stock-valuation`,
+    payload,
+  );
+  return data;
+}
+
+export async function confirmZeroEggProductionCost(
+  farmId: string,
+  payload: EggProductionCostConfirmationInput,
+): Promise<{ confirmed: boolean; from_date: string; to_date: string }> {
+  const { data } = await apiClient.post<{
+    confirmed: boolean;
+    from_date: string;
+    to_date: string;
+  }>(
+    `/farms/${farmId}/reports/profitability/confirm-zero-egg-production-cost`,
     payload,
   );
   return data;
@@ -985,6 +1130,16 @@ export async function getTransactionSettlements(
   return data;
 }
 
+export async function getPurchaseReplacements(
+  farmId: string,
+  transactionId: string,
+): Promise<PurchaseReplacementHistory[]> {
+  const { data } = await apiClient.get<PurchaseReplacementHistory[]>(
+    `/farms/${farmId}/purchases/${transactionId}/replacements`,
+  );
+  return data;
+}
+
 export async function createTransactionSettlement(
   farmId: string,
   transactionId: string,
@@ -1126,6 +1281,27 @@ export async function getContactTransactionHistory(
   const { data } = await apiClient.get<ContactTransactionHistory>(
     `/farms/${farmId}/contacts/${contactId}/transactions`,
     { params: options },
+  );
+  return data;
+}
+
+export async function getAccountLedger(
+  farmId: string,
+  options: {
+    contactId?: string;
+    fromDate?: string;
+    toDate?: string;
+  },
+): Promise<AccountLedger> {
+  const { data } = await apiClient.get<AccountLedger>(
+    `/farms/${farmId}/contacts/ledger`,
+    {
+      params: {
+        contact_id: options.contactId,
+        from_date: options.fromDate || undefined,
+        to_date: options.toDate || undefined,
+      },
+    },
   );
   return data;
 }
@@ -1306,5 +1482,14 @@ export async function markNotificationRead(
 ): Promise<void> {
   await apiClient.patch(
     `/farms/${farmId}/notifications/${notificationId}/read`,
+  );
+}
+
+export async function archiveNotification(
+  farmId: string,
+  notificationId: string,
+): Promise<void> {
+  await apiClient.patch(
+    `/farms/${farmId}/notifications/${notificationId}/archive`,
   );
 }

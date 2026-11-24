@@ -21,6 +21,7 @@ import { queryKeys } from "@/lib/query/keys";
 export function useBlocks(
   userId: string | undefined,
   farmId: string | undefined,
+  enabled = true,
 ) {
   return useQuery({
     queryKey:
@@ -28,7 +29,7 @@ export function useBlocks(
         ? queryKeys.blocks(userId, farmId)
         : ["blocks", "unselected"],
     queryFn: () => getBlocks(farmId!),
-    enabled: Boolean(userId && farmId),
+    enabled: Boolean(userId && farmId && enabled),
   });
 }
 
@@ -54,9 +55,17 @@ export function useCreateBlock(userId: string, farmId: string) {
   return useMutation({
     mutationFn: (payload: CreateBlockPayload) => createBlock(farmId, payload),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: queryKeys.blocks(userId, farmId),
-      });
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.blocks(userId, farmId),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["chicken-sale-options", userId, farmId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["chicken-purchase-options", userId, farmId],
+        }),
+      ]);
     },
   });
 }
@@ -91,6 +100,12 @@ export function useUpdateBlock(userId: string, farmId: string) {
         queryClient.invalidateQueries({
           queryKey: ["block", userId, farmId, block.id],
         }),
+        queryClient.invalidateQueries({
+          queryKey: ["chicken-sale-options", userId, farmId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["chicken-purchase-options", userId, farmId],
+        }),
       ]);
     },
   });
@@ -104,6 +119,12 @@ export function useDeleteBlock(userId: string, farmId: string) {
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: queryKeys.blocks(userId, farmId),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["chicken-sale-options", userId, farmId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["chicken-purchase-options", userId, farmId],
         }),
         queryClient.removeQueries({
           queryKey: ["block", userId, farmId, blockId],

@@ -21,6 +21,8 @@ import {
   useChickenSaleDetails,
   useChickenSaleFulfillment,
 } from "@/features/chickens/hooks";
+import { formatChickenCount } from "@/features/chickens/format";
+import { GenerateReceiptButton } from "@/features/receipts/receipt-actions";
 import { normalizeApiError } from "@/lib/api/errors";
 import { useAuth } from "@/providers/auth-provider";
 import { useFarm } from "@/providers/farm-provider";
@@ -270,7 +272,7 @@ function SaleDetailsContent() {
                 >
                   <Ionicons
                     name="receipt-outline"
-                    size={25}
+                    size={22}
                     color={theme.primary}
                   />
                 </View>
@@ -278,7 +280,11 @@ function SaleDetailsContent() {
                   <AppText size="small" tone="secondary" numberOfLines={2}>
                     {sale.customer_name ?? "Customer not recorded"}
                   </AppText>
-                  <AppText size="heading" weight="semibold" numberOfLines={2}>
+                  <AppText
+                    size="body"
+                    weight="semibold"
+                    numberOfLines={2}
+                  >
                     {transaction.reference_number
                       ? `Sale ${transaction.reference_number}`
                       : "Sale"}
@@ -313,7 +319,7 @@ function SaleDetailsContent() {
                   <AppText size="small" tone="secondary">
                     Sale total
                   </AppText>
-                  <AppText size="title" weight="semibold">
+                  <AppText size="heading" weight="semibold">
                     {formatMoney(transaction.transaction_total, theme.currency)}
                   </AppText>
                 </View>
@@ -336,6 +342,10 @@ function SaleDetailsContent() {
                   </AppText>
                 </View>
               </View>
+              <GenerateReceiptButton
+                transactionId={saleId}
+                transactionType="sale"
+              />
               <View style={styles.heroDetails}>
                 <DetailLine
                   label="Date"
@@ -744,7 +754,7 @@ function SaleDetailsContent() {
                                   style={{ color: theme.text, flex: 1 }}
                                 >
                                   {allocation.batch_name} · {allocation.block_name} ·{" "}
-                                  {allocation.quantity} birds
+                                  {formatChickenCount(allocation.quantity, "bird")}
                                 </AppText>
                               </View>
                             ))}
@@ -852,6 +862,13 @@ function SaleDetailsContent() {
                           {payment.notes}
                         </AppText>
                       ) : null}
+                      <GenerateReceiptButton
+                        transactionId={saleId}
+                        transactionType="sale"
+                        paymentNumber={index + 1}
+                        paymentId={payment.id}
+                        compact
+                      />
                     </View>
                     <AppText weight="semibold" style={{ color: theme.success }}>
                       {formatMoney(payment.amount, theme.currency)}
@@ -1182,14 +1199,14 @@ const styles = StyleSheet.create({
     borderRadius: 11,
   },
   reminderNoticeCopy: { flex: 1, minWidth: 0 },
-  hero: { gap: 15, padding: 18, borderLeftWidth: 4 },
-  heroHeading: { flexDirection: "row", alignItems: "center", gap: 12 },
+  hero: { gap: 12, padding: 16, borderLeftWidth: 3 },
+  heroHeading: { flexDirection: "row", alignItems: "center", gap: 10 },
   heroIcon: {
-    width: 50,
-    height: 50,
+    width: 44,
+    height: 44,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 16,
+    borderRadius: 13,
   },
   heroTitle: { flex: 1, gap: 3 },
   copyButton: {

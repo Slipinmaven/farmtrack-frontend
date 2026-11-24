@@ -1,6 +1,15 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Controller, useForm } from "react-hook-form";
-import { ScrollView, StyleSheet, Switch, View } from "react-native";
+import { useRef } from "react";
+import {
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  View,
+  type ScrollViewInstance,
+  type TextInputInstance,
+} from "react-native";
 import { z } from "zod";
 
 import { AppText } from "@/components/ui/app-text";
@@ -42,6 +51,11 @@ export function BlockForm({
 }: BlockFormProps) {
   const { theme } = useTheme();
   const dialog = useAppDialog();
+  const scrollView = useRef<ScrollViewInstance>(null);
+  const nameInput = useRef<TextInputInstance>(null);
+  const descriptionInput = useRef<TextInputInstance>(null);
+  const capacityInput = useRef<TextInputInstance>(null);
+  const extraCapacityInput = useRef<TextInputInstance>(null);
   const form = useForm<FormInput, unknown, FormOutput>({
     resolver: zodResolver(schema),
     defaultValues: {
@@ -65,29 +79,51 @@ export function BlockForm({
     }
   }
 
+  function scrollInputIntoView(input: TextInputInstance | null) {
+    if (Platform.OS !== "android" || !input) return;
+
+    setTimeout(() => {
+      scrollView.current?.scrollResponderScrollNativeHandleToKeyboard(
+        input,
+        20,
+        true,
+      );
+    }, 350);
+  }
+
   return (
     <ScrollView
+      ref={scrollView}
       style={styles.scroll}
       contentContainerStyle={styles.content}
       keyboardShouldPersistTaps="handled"
       automaticallyAdjustKeyboardInsets
     >
       <Card style={styles.form}>
-        <AppText size="small" tone="secondary">
-          Keep block capacity aligned with its current chicken occupancy.
-        </AppText>
+        <View style={styles.sectionHeading}>
+          <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+            BLOCK DETAILS
+          </AppText>
+          <AppText size="small" tone="secondary">
+            Set a name and its housing capacity.
+          </AppText>
+        </View>
         <Controller
           control={form.control}
           name="name"
           render={({ field, fieldState }) => (
             <TextField
+              ref={nameInput}
               label="Block name"
               placeholder="e.g. North house"
               autoCapitalize="words"
               maxLength={100}
+              returnKeyType="next"
               value={field.value}
               onChangeText={field.onChange}
               onBlur={field.onBlur}
+              onFocus={() => scrollInputIntoView(nameInput.current)}
+              onSubmitEditing={() => descriptionInput.current?.focus()}
               error={fieldState.error?.message}
             />
           )}
@@ -97,47 +133,73 @@ export function BlockForm({
           name="description"
           render={({ field }) => (
             <TextField
+              ref={descriptionInput}
               label="Description (optional)"
               multiline
+              blurOnSubmit
+              returnKeyType="next"
               style={styles.multiline}
               value={field.value}
               onChangeText={field.onChange}
+              onFocus={() => scrollInputIntoView(descriptionInput.current)}
+              onSubmitEditing={() => capacityInput.current?.focus()}
             />
           )}
         />
-        <View style={styles.capacityFields}>
-          <Controller
-            control={form.control}
-            name="capacity"
-            render={({ field, fieldState }) => (
-              <TextField
-                label="Base capacity"
-                keyboardType="number-pad"
-                value={field.value}
-                onChangeText={field.onChange}
-                onBlur={field.onBlur}
-                error={fieldState.error?.message}
-              />
-            )}
-          />
-          <Controller
-            control={form.control}
-            name="over_capacity_limit"
-            render={({ field, fieldState }) => (
-              <TextField
-                label="Extra allowance"
-                keyboardType="number-pad"
-                value={field.value}
-                onChangeText={field.onChange}
-                onBlur={field.onBlur}
-                error={fieldState.error?.message}
-              />
-            )}
-          />
+        <View style={styles.capacitySection}>
+          <View style={styles.sectionHeading}>
+            <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+              CAPACITY
+            </AppText>
+            <AppText size="small" tone="secondary">
+              Maximum birds = capacity + extra allowance.
+            </AppText>
+          </View>
+          <View style={styles.capacityFields}>
+            <Controller
+              control={form.control}
+              name="capacity"
+              render={({ field, fieldState }) => (
+                <View style={styles.capacityField}>
+                  <TextField
+                    ref={capacityInput}
+                    label="Base capacity"
+                    placeholder="e.g. 500"
+                    keyboardType="number-pad"
+                    returnKeyType="next"
+                    value={field.value}
+                    onChangeText={field.onChange}
+                    onBlur={field.onBlur}
+                    onFocus={() => scrollInputIntoView(capacityInput.current)}
+                    onSubmitEditing={() => extraCapacityInput.current?.focus()}
+                    error={fieldState.error?.message}
+                  />
+                </View>
+              )}
+            />
+            <Controller
+              control={form.control}
+              name="over_capacity_limit"
+              render={({ field, fieldState }) => (
+                <View style={styles.capacityField}>
+                  <TextField
+                    ref={extraCapacityInput}
+                    label="Extra allowance"
+                    placeholder="0"
+                    keyboardType="number-pad"
+                    returnKeyType="done"
+                    value={field.value}
+                    onChangeText={field.onChange}
+                    onBlur={field.onBlur}
+                    onFocus={() => scrollInputIntoView(extraCapacityInput.current)}
+                    onSubmitEditing={() => void form.handleSubmit(submit)()}
+                    error={fieldState.error?.message}
+                  />
+                </View>
+              )}
+            />
+          </View>
         </View>
-        <AppText size="small" tone="secondary">
-          Maximum occupancy is the base capacity plus the extra allowance.
-        </AppText>
         <Controller
           control={form.control}
           name="is_active"
@@ -162,7 +224,7 @@ export function BlockForm({
         <Button
           label={submitLabel}
           loading={form.formState.isSubmitting}
-          onPress={form.handleSubmit(submit)}
+          onPress={() => void form.handleSubmit(submit)()}
         />
       </Card>
     </ScrollView>
@@ -177,12 +239,15 @@ const styles = StyleSheet.create({
     maxWidth: 640,
     alignSelf: "center",
     paddingHorizontal: 18,
-    paddingTop: 12,
-    paddingBottom: 32,
+    paddingTop: 16,
+    paddingBottom: 40,
   },
-  form: { gap: 16 },
+  form: { gap: 18 },
+  sectionHeading: { gap: 3 },
+  capacitySection: { gap: 12 },
   multiline: { minHeight: 84, textAlignVertical: "top" },
-  capacityFields: { gap: 14 },
+  capacityFields: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
+  capacityField: { flex: 1, minWidth: 0 },
   switchRow: {
     minHeight: 48,
     flexDirection: "row",

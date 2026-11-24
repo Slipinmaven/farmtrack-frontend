@@ -9,6 +9,12 @@ import {
   StyleSheet,
   View,
 } from "react-native";
+import Animated, {
+  FadeInDown,
+  FadeInUp,
+  FadeOutUp,
+  LinearTransition,
+} from "react-native-reanimated";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { LoadingState } from "@/components/feedback/loading-state";
@@ -19,7 +25,11 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { DatePickerField } from "@/components/ui/date-picker-field";
 import { useEggCollectionOptions, useEggCollections } from "@/features/eggs/hooks";
-import { useChickenSaleOptions } from "@/features/chickens/hooks";
+import { zonedDateTimeToUtc } from "@/features/dashboard/date-range";
+import {
+  useChickenLosses,
+  useChickenSaleOptions,
+} from "@/features/chickens/hooks";
 import {
   useExpenseSummary,
   useFarmActivities,
@@ -27,7 +37,11 @@ import {
   useUnreadNotificationCount,
 } from "@/features/management/hooks";
 import { useReminders } from "@/features/reminders/hooks";
-import { useSalesReport } from "@/features/sales/hooks";
+import {
+  useOutstandingBalances,
+  usePendingSaleDeliveries,
+  useSalesReport,
+} from "@/features/sales/hooks";
 import { getActivityDetail, getActivityLabel } from "@/features/management/activity-presentation";
 import { useAuth } from "@/providers/auth-provider";
 import { useFarm } from "@/providers/farm-provider";
@@ -50,10 +64,16 @@ export default function DashboardScreen() {
     React.useState<DashboardRangePreset>("today");
   const [salesFromDate, setSalesFromDate] = React.useState(today);
   const [salesToDate, setSalesToDate] = React.useState(today);
-  const [showActivity, setShowActivity] = React.useState(false);
+  const [showActivity, setShowActivity] = React.useState(true);
+  const [showSalesTrend, setShowSalesTrend] = React.useState(false);
+  const [showAllAttention, setShowAllAttention] = React.useState(false);
   const salesRangeValid =
     salesFromDate <= salesToDate && salesToDate <= today;
   const flockQuery = useChickenSaleOptions(user?.id, farmId);
+  const chickenLossesQuery = useChickenLosses(user?.id, farmId, {
+    from_date: salesFromDate,
+    to_date: salesToDate,
+  });
   const eggsQuery = useEggCollectionOptions(user?.id, farmId);
   const eggCollectionsQuery = useEggCollections(user?.id, farmId, {
     from_datetime: zonedDateTimeToUtc(salesFromDate, "00:00:00", timezone),
@@ -67,13 +87,29 @@ export default function DashboardScreen() {
     offset: 0,
     limit: 1,
   }, salesRangeValid);
+  const previousSalesRange = getPreviousDateRange(salesFromDate, salesToDate);
+  const previousSalesQuery = useSalesReport(
+    user?.id,
+    farmId,
+    {
+      from_date: previousSalesRange.from,
+      to_date: previousSalesRange.to,
+      status: "completed",
+      include_daily: false,
+      offset: 0,
+      limit: 1,
+    },
+    salesRangeValid,
+  );
+  const pendingDeliveriesQuery = usePendingSaleDeliveries(user?.id, farmId);
+  const outstandingBalancesQuery = useOutstandingBalances(user?.id, farmId);
   const expensesQuery = useExpenseSummary(user?.id, farmId, {
     from_date: salesFromDate,
     to_date: salesToDate,
   });
   const monthlyProfitQuery = useProfitabilityReport(user?.id, farmId, {
-    from_date: monthStart(today),
-    to_date: today,
+    from_date: salesFromDate,
+    to_date: salesToDate,
   });
   const notificationsQuery = useUnreadNotificationCount(user?.id, farmId);
   const remindersQuery = useReminders(user?.id, farmId);
@@ -82,19 +118,23 @@ export default function DashboardScreen() {
     farmId,
     "",
     undefined,
-    undefined,
-    undefined,
+    zonedDateTimeToUtc(salesFromDate, "00:00:00", timezone),
+    zonedDateTimeToUtc(salesToDate, "23:59:59", timezone),
   );
   const isRefreshing =
     salesRangeQuery.isRefetching ||
+    previousSalesQuery.isRefetching ||
     expensesQuery.isRefetching ||
     monthlyProfitQuery.isRefetching ||
     eggCollectionsQuery.isRefetching ||
     flockQuery.isRefetching ||
+    chickenLossesQuery.isRefetching ||
     eggsQuery.isRefetching ||
     notificationsQuery.isRefetching ||
     remindersQuery.isRefetching ||
-    activityQuery.isRefetching;
+    activityQuery.isRefetching ||
+    pendingDeliveriesQuery.isRefetching ||
+    outstandingBalancesQuery.isRefetching;
 
   const flock = flockQuery.data;
   const liveBirds = (flock?.batches ?? []).reduce(
@@ -102,11 +142,17 @@ export default function DashboardScreen() {
       total + batch.stocks.reduce((batchTotal, stock) => batchTotal + stock.quantity, 0),
     0,
   );
-  const nearCapacityBlocks = (flock?.blocks ?? []).filter(
-    (block) =>
-      block.maximum_chickens > 0 &&
-      block.current_chickens >= block.maximum_chickens,
-  );
+  const layingHens = (flock?.batches ?? [])
+    .filter((batch) => batch.chicken_type === "layers")
+    .reduce(
+      (total, batch) =>
+        total +
+        batch.stocks.reduce(
+          (batchTotal, stock) => batchTotal + stock.quantity,
+          0,
+        ),
+      0,
+    );
   const collectedInRange = (eggCollectionsQuery.data ?? [])
     .filter(
       (collection) =>
@@ -122,6 +168,10 @@ export default function DashboardScreen() {
     (total, product) => total + Number(product.available_quantity_in_base_unit),
     0,
   );
+  const mortalityCount = (chickenLossesQuery.data ?? []).reduce(
+    (total, loss) => total + loss.quantity,
+    0,
+  );
   const reminders = useMemo(
     () =>
       (remindersQuery.data ?? [])
@@ -132,6 +182,11 @@ export default function DashboardScreen() {
   const recentActivity =
     activityQuery.data?.pages.flatMap((page) => page.items).slice(0, 3) ?? [];
   const salesRangeDays = daysBetween(salesFromDate, salesToDate) + 1;
+  const layRate =
+    layingHens > 0 && salesRangeDays > 0
+      ? (collectedInRange / (layingHens * salesRangeDays)) * 100
+      : null;
+  const layRateOutsideRange = layRate !== null && layRate > 100;
   const salesTrend = buildSalesTrend(
     salesFromDate,
     salesToDate,
@@ -152,14 +207,18 @@ export default function DashboardScreen() {
   async function refreshDashboard() {
     await Promise.all([
       salesRangeQuery.refetch(),
+      previousSalesQuery.refetch(),
       expensesQuery.refetch(),
       monthlyProfitQuery.refetch(),
       eggCollectionsQuery.refetch(),
       flockQuery.refetch(),
+      chickenLossesQuery.refetch(),
       eggsQuery.refetch(),
       notificationsQuery.refetch(),
       remindersQuery.refetch(),
       activityQuery.refetch(),
+      pendingDeliveriesQuery.refetch(),
+      outstandingBalancesQuery.refetch(),
     ]);
   }
 
@@ -170,7 +229,7 @@ export default function DashboardScreen() {
         edges={["top"]}
       >
         <ScrollView contentContainerStyle={styles.content}>
-          <FarmPageHeader title="Farm overview" />
+          <FarmPageHeader title="Farm overview" compact />
           <Card style={styles.sectionCard}>
             <AppText size="heading" weight="semibold">
               All farms are inactive
@@ -237,29 +296,36 @@ export default function DashboardScreen() {
     );
   }
 
-  const greeting = greetingInTimezone(now, timezone);
-  const dateLabel = new Intl.DateTimeFormat(undefined, {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    timeZone: timezone,
-  }).format(now);
   const periodSales = salesRangeQuery.data?.summary;
   const periodExpenses = expensesQuery.data;
+  const currentSalesTotal = Number(periodSales?.sales_total ?? 0);
+  const previousSalesTotal = Number(
+    previousSalesQuery.data?.summary.sales_total ?? 0,
+  );
+  const salesComparison =
+    previousSalesTotal > 0
+      ? ((currentSalesTotal - previousSalesTotal) / previousSalesTotal) * 100
+      : null;
+  const unallocatedAmount = Number(periodSales?.unallocated_amount ?? 0);
+  const residualAmount = Math.abs(unallocatedAmount);
+  const residualLabel =
+    unallocatedAmount < 0
+      ? "Customer credit"
+      : unallocatedAmount > 0
+        ? "Returns & adjustments"
+        : "Credits & adjustments";
   const periodTitle = getDashboardRangeTitle(dashboardRangePreset);
   const queryErrors = [
     salesRangeQuery.isError && "Sales",
+    monthlyProfitQuery.isError && "Profitability",
     expensesQuery.isError && "Expenses",
     eggCollectionsQuery.isError && "Egg collection",
     flockQuery.isError && "Flock",
+    chickenLossesQuery.isError && "Poultry losses",
     eggsQuery.isError && "Egg stock",
   ].filter(Boolean);
   const pendingReminders = reminders.filter(
     (reminder) => new Date(reminder.due_at).getTime() >= now.getTime(),
-  );
-  const overdueReminders = reminders.length - pendingReminders.length;
-  const firstOverdueReminder = reminders.find(
-    (reminder) => new Date(reminder.due_at).getTime() < now.getTime(),
   );
   const formattedMoney = (amount: number | string) =>
     `${currency} ${new Intl.NumberFormat(undefined, {
@@ -272,6 +338,205 @@ export default function DashboardScreen() {
   const hasUncostedCurrentStock =
     Number(monthlyProfitQuery.data?.closing_stock_unvalued_quantity ?? 0) > 0 ||
     Number(monthlyProfitQuery.data?.untracked_chicken_quantity ?? 0) > 0;
+  const pendingDeliveries = pendingDeliveriesQuery.data ?? [];
+  const attentionIsLoading =
+    notificationsQuery.isLoading ||
+    remindersQuery.isLoading ||
+    flockQuery.isLoading ||
+    pendingDeliveriesQuery.isLoading ||
+    outstandingBalancesQuery.isLoading;
+  const showNeedsAttention =
+    attentionIsLoading ||
+    notificationsQuery.isError ||
+    remindersQuery.isError ||
+    flockQuery.isError ||
+    pendingDeliveriesQuery.isError ||
+    outstandingBalancesQuery.isError ||
+    Number(notificationsQuery.data ?? 0) > 0 ||
+    reminders.length > 0 ||
+    pendingDeliveries.length > 0 ||
+    (outstandingBalancesQuery.data?.items.length ?? 0) > 0;
+  const pendingChickenDeliveries = pendingDeliveries.filter((sale) =>
+    sale.items.some((item) => item.product_type === "chickens"),
+  );
+  const pendingChickenQuantity = pendingChickenDeliveries.reduce(
+    (total, sale) =>
+      total +
+      sale.items.reduce(
+        (saleTotal, item) =>
+          saleTotal +
+          (item.product_type === "chickens"
+            ? Number(item.quantity_remaining_base)
+            : 0),
+        0,
+      ),
+    0,
+  );
+  const chickenShortfall = Math.max(0, pendingChickenQuantity - liveBirds);
+  const outstandingBalances = outstandingBalancesQuery.data;
+  const attentionActions: {
+    key: string;
+    order: number;
+    amount: number;
+    icon: keyof typeof Ionicons.glyphMap;
+    title: string;
+    detail: string;
+    status: string;
+    priority: "urgent" | "action" | "upcoming";
+    onPress: () => void;
+  }[] = [];
+
+  if (chickenShortfall > 0 && pendingChickenDeliveries[0]) {
+    const sale = pendingChickenDeliveries[0];
+    attentionActions.push({
+      key: `shortfall-${sale.id}`,
+      order: 0,
+      amount: chickenShortfall,
+      icon: "warning-outline",
+      title: "Not enough chickens for delivery",
+      detail: `${formatCompactNumber(chickenShortfall)} more needed · ${sale.reference_number ?? "Sale"}`,
+      status: "Urgent",
+      priority: "urgent",
+      onPress: () =>
+        router.push({
+          pathname: "/sales/[saleId]/deliver",
+          params: { saleId: sale.id },
+        }),
+    });
+  }
+
+  for (const reminder of reminders.filter(
+    (item) => new Date(item.due_at).getTime() < now.getTime(),
+  )) {
+    attentionActions.push({
+      key: `overdue-${reminder.id}`,
+      order: 1,
+      amount: -new Date(reminder.due_at).getTime(),
+      icon: "time-outline",
+      title: "Overdue farm task",
+      detail: reminder.title,
+      status: "Urgent",
+      priority: "urgent",
+      onPress: () =>
+        router.push({
+          pathname: "/reminders/[reminderId]",
+          params: { reminderId: reminder.id },
+        }),
+    });
+  }
+
+  for (const sale of [...pendingDeliveries].sort((left, right) =>
+    left.transaction_date.localeCompare(right.transaction_date),
+  ).filter(
+    (sale) =>
+      chickenShortfall <= 0 ||
+      sale.id !== pendingChickenDeliveries[0]?.id,
+  )) {
+    const productSummary = sale.items
+      .map(
+        (item) =>
+          `${formatCompactNumber(Number(item.quantity_remaining))} ${item.unit_name ?? item.product_name}`,
+      )
+      .join(", ");
+    const eggOnly = sale.items.every((item) => item.product_type === "eggs");
+    attentionActions.push({
+      key: `delivery-${sale.id}`,
+      order: 2,
+      amount: -new Date(sale.transaction_date).getTime(),
+      icon: "cube-outline",
+      title: `Record delivery${sale.customer_name ? ` for ${sale.customer_name}` : ""}`,
+      detail: `${sale.reference_number ?? "Sale"} · ${productSummary} remaining`,
+      status: "Action",
+      priority: "action",
+      onPress: () =>
+        router.push({
+          pathname: eggOnly
+            ? "/sales/[saleId]/deliver-eggs"
+            : "/sales/[saleId]/deliver",
+          params: { saleId: sale.id },
+        }),
+    });
+  }
+
+  for (const balance of outstandingBalances?.items ?? []) {
+    const isSale = balance.transaction_type === "sale";
+    const due = Number(balance.balance_due);
+    const amount = due > 0 ? due : Number(balance.credit_balance);
+    const person = balance.contact_name ?? (isSale ? "customer" : "supplier");
+    const title =
+      due > 0
+        ? isSale
+          ? `Collect from ${person}`
+          : `Pay ${person}`
+        : isSale
+          ? `Settle credit with ${person}`
+          : `Apply ${person}’s credit`;
+    attentionActions.push({
+      key: `balance-${balance.id}`,
+      order: due > 0 ? 3 : 4,
+      amount,
+      icon: "wallet-outline",
+      title,
+      detail: `${formattedMoney(amount)} · ${balance.reference_number ?? "No reference"}`,
+      status: due > 0 ? "Settle" : "Credit",
+      priority: due > 0 ? "action" : "upcoming",
+      onPress: () =>
+        router.push({
+          pathname: "/transactions/[transactionId]/settlements",
+          params: {
+            transactionId: balance.id,
+            transactionType: balance.transaction_type,
+            balanceDue: String(balance.balance_due),
+            creditBalance: String(balance.credit_balance),
+            accountBalanceTotal: String(balance.account_balance_due),
+            accountCreditTotal: String(balance.account_credit_balance),
+            contactName: person,
+            referenceNumber: balance.reference_number ?? "",
+          },
+        }),
+    });
+  }
+
+  for (const reminder of pendingReminders) {
+    attentionActions.push({
+      key: `reminder-${reminder.id}`,
+      order: 5,
+      amount: -new Date(reminder.due_at).getTime(),
+      icon: "calendar-outline",
+      title: "Upcoming farm task",
+      detail: `${reminder.title} · ${formatReminderDate(reminder.due_at, timezone)}`,
+      status: "Soon",
+      priority: "upcoming",
+      onPress: () =>
+        router.push({
+          pathname: "/reminders/[reminderId]",
+          params: { reminderId: reminder.id },
+        }),
+    });
+  }
+
+  if (Number(notificationsQuery.data ?? 0) > 0) {
+    attentionActions.push({
+      key: "unread-notifications",
+      order: 6,
+      amount: Number(notificationsQuery.data),
+      icon: "notifications-outline",
+      title: "Unread farm updates",
+      detail: `${notificationsQuery.data} ${Number(notificationsQuery.data) === 1 ? "update" : "updates"} to review`,
+      status: "Review",
+      priority: "upcoming",
+      onPress: () => router.push("/notifications"),
+    });
+  }
+  const topAttentionActions = attentionActions
+    .sort(
+      (left, right) =>
+        left.order - right.order || right.amount - left.amount,
+    )
+    .slice(0, 3);
+  const displayedAttentionActions = showAllAttention
+    ? attentionActions
+    : topAttentionActions;
 
   return (
     <SafeAreaView
@@ -289,7 +554,7 @@ export default function DashboardScreen() {
           />
         }
       >
-        <FarmPageHeader title="Farm overview" />
+        <FarmPageHeader title="Farm overview" compact />
 
         {farm.farms.length > 1 ? (
           <ScrollView
@@ -310,17 +575,10 @@ export default function DashboardScreen() {
           </ScrollView>
         ) : null}
 
-        <View style={styles.greeting}>
-          <View style={styles.greetingCopy}>
-            <AppText size="heading" weight="semibold">
-              {greeting}
-            </AppText>
-            <AppText size="small" tone="secondary">
-              {dateLabel}
-            </AppText>
-          </View>
-        </View>
-
+        <Animated.View
+          entering={FadeInDown.delay(35).duration(280)}
+          layout={LinearTransition.springify().damping(18)}
+        >
         <View
           style={[
             styles.periodSelector,
@@ -349,7 +607,6 @@ export default function DashboardScreen() {
                 </AppText>
               </View>
             </View>
-            <Ionicons name="options-outline" size={18} color={theme.textSecondary} />
           </View>
           <View style={styles.periodOptions}>
             <RangeOption
@@ -358,12 +615,12 @@ export default function DashboardScreen() {
               onPress={() => selectDashboardRange("today")}
             />
             <RangeOption
-              label="Week to date"
+              label="Week"
               selected={dashboardRangePreset === "week"}
               onPress={() => selectDashboardRange("week")}
             />
             <RangeOption
-              label="This month"
+              label="Month"
               selected={dashboardRangePreset === "month"}
               onPress={() => selectDashboardRange("month")}
             />
@@ -374,7 +631,11 @@ export default function DashboardScreen() {
             />
           </View>
           {dashboardRangePreset === "custom" ? (
-            <View style={styles.periodDateFilters}>
+            <Animated.View
+              entering={FadeInDown.duration(180)}
+              exiting={FadeOutUp.duration(130)}
+              style={styles.periodDateFilters}
+            >
               <DatePickerField
                 label="From"
                 value={salesFromDate}
@@ -390,7 +651,7 @@ export default function DashboardScreen() {
                 onChange={setSalesToDate}
                 style={styles.dateField}
               />
-            </View>
+            </Animated.View>
           ) : null}
           {dashboardRangePreset === "week" ? (
             <AppText size="small" tone="secondary">
@@ -403,8 +664,10 @@ export default function DashboardScreen() {
             </AppText>
           ) : null}
         </View>
+        </Animated.View>
 
         {queryErrors.length > 0 ? (
+          <Animated.View entering={FadeInDown.duration(240)}>
           <Card style={styles.errorCard}>
             <AppText size="small" weight="semibold">
               Some dashboard figures couldn’t be updated.
@@ -415,36 +678,44 @@ export default function DashboardScreen() {
             <Button
               label="Retry"
               variant="quiet"
-              onPress={() => {
-                void salesRangeQuery.refetch();
-                void expensesQuery.refetch();
-                void monthlyProfitQuery.refetch();
-                void eggCollectionsQuery.refetch();
-                void flockQuery.refetch();
-                void eggsQuery.refetch();
-              }}
+              onPress={() => void refreshDashboard()}
             />
           </Card>
+          </Animated.View>
         ) : null}
 
+        <Animated.View
+          key={`sales-${salesFromDate}-${salesToDate}`}
+          entering={FadeInDown.duration(320)}
+          layout={LinearTransition.springify().damping(18)}
+        >
         <View
           style={[
             styles.todayPanel,
             {
               backgroundColor: theme.backgroundElement,
               borderLeftColor: theme.primary,
+              borderColor: theme.border,
             },
           ]}
         >
           <Pressable
             accessibilityRole="button"
+            accessibilityLabel={`Open sales report for ${periodTitle}, ${formattedMoney(periodSales?.sales_total ?? 0)} total`}
             onPress={() =>
               router.push({
                 pathname: "/(tabs)/sales",
                 params: { from_date: salesFromDate, to_date: salesToDate },
               })
             }
-            style={styles.todaySales}
+            style={({ pressed }) => [
+              styles.todaySales,
+              {
+                backgroundColor: pressed
+                  ? theme.backgroundSelected
+                  : "transparent",
+              },
+            ]}
           >
             <View style={styles.todaySalesHeading}>
               <View style={styles.todaySalesLabel}>
@@ -453,7 +724,61 @@ export default function DashboardScreen() {
                   SALES {periodTitle.toUpperCase()}
                 </AppText>
               </View>
-              <Ionicons name="arrow-forward" size={18} color={theme.primary} />
+              <View
+                style={[
+                  styles.comparisonBadge,
+                  {
+                    backgroundColor:
+                      salesComparison === null
+                        ? theme.background
+                        : salesComparison >= 0
+                          ? `${theme.success}18`
+                          : `${theme.danger}18`,
+                  },
+                ]}
+              >
+                {previousSalesQuery.isLoading ? (
+                  <AppText size="small" tone="secondary">
+                    Comparing…
+                  </AppText>
+                ) : salesComparison === null ? (
+                  <AppText size="small" tone="secondary">
+                    {previousSalesQuery.isError
+                      ? "Comparison unavailable"
+                      : previousSalesQuery.data && currentSalesTotal > 0
+                        ? "New sales"
+                        : previousSalesQuery.data
+                          ? "No sales either period"
+                          : "No prior data"}
+                  </AppText>
+                ) : (
+                  <>
+                    <Ionicons
+                      name={
+                        salesComparison >= 0
+                          ? "trending-up-outline"
+                          : "trending-down-outline"
+                      }
+                      size={14}
+                      color={
+                        salesComparison >= 0 ? theme.success : theme.danger
+                      }
+                    />
+                    <AppText
+                      size="small"
+                      weight="semibold"
+                      style={{
+                        color:
+                          salesComparison >= 0 ? theme.success : theme.danger,
+                      }}
+                    >
+                      {salesComparison > 0 ? "+" : ""}
+                      {salesComparison.toFixed(1)}%
+                    </AppText>
+                  </>
+                )}
+              </View>
+              <Ionicons name="arrow-forward" size={17} color={theme.primary} />
             </View>
             <AppText
               size="title"
@@ -468,10 +793,18 @@ export default function DashboardScreen() {
                   ? "Unavailable"
                   : formattedMoney(periodSales?.sales_total ?? 0)}
             </AppText>
+            <AppText size="small" tone="secondary">
+              {salesRangeQuery.isLoading || salesRangeQuery.isError
+                ? "Sales count unavailable"
+                : `${(periodSales?.transaction_count ?? 0).toLocaleString()} recorded ${(periodSales?.transaction_count ?? 0) === 1 ? "sale" : "sales"}`}
+            </AppText>
             <View style={styles.salesBreakdown}>
               <View style={styles.salesBreakdownItem}>
-                <AppText size="small" tone="secondary">Received</AppText>
-                <AppText size="small" weight="semibold">
+                <View style={styles.salesLegendLabel}>
+                  <View style={[styles.salesLegendDot, { backgroundColor: theme.success }]} />
+                  <AppText size="small" tone="secondary">Net received</AppText>
+                </View>
+                <AppText size="small" weight="semibold" numberOfLines={1} adjustsFontSizeToFit>
                   {salesRangeQuery.isLoading || salesRangeQuery.isError
                     ? "—"
                     : formattedMoney(periodSales?.amount_received ?? 0)}
@@ -479,254 +812,365 @@ export default function DashboardScreen() {
               </View>
               <View style={[styles.salesDivider, { backgroundColor: theme.border }]} />
               <View style={styles.salesBreakdownItem}>
-                <AppText size="small" tone="secondary">Still owed</AppText>
-                <AppText size="small" weight="semibold">
+                <View style={styles.salesLegendLabel}>
+                  <View style={[styles.salesLegendDot, { backgroundColor: theme.danger }]} />
+                  <AppText size="small" tone="secondary">Still owed</AppText>
+                </View>
+                <AppText size="small" weight="semibold" numberOfLines={1} adjustsFontSizeToFit>
                   {salesRangeQuery.isLoading || salesRangeQuery.isError
                     ? "—"
                     : formattedMoney(periodSales?.balance_due ?? 0)}
                 </AppText>
               </View>
-              <AppText size="small" tone="secondary" style={styles.salesDefinition}>
-                Sales are not the same as cash collected.
-              </AppText>
+              <View style={[styles.salesDivider, { backgroundColor: theme.border }]} />
+              <View style={styles.salesBreakdownItem}>
+                <View style={styles.salesLegendLabel}>
+                  <View style={[styles.salesLegendDot, { backgroundColor: theme.secondary }]} />
+                  <AppText size="small" tone="secondary">{residualLabel}</AppText>
+                </View>
+                <AppText size="small" weight="semibold" numberOfLines={1} adjustsFontSizeToFit>
+                  {salesRangeQuery.isLoading || salesRangeQuery.isError
+                    ? "—"
+                    : formattedMoney(residualAmount)}
+                </AppText>
+              </View>
             </View>
+            <AppText size="small" tone="secondary" style={styles.salesDefinition}>
+              Compared with the previous {salesRangeDays === 1 ? "day" : `${salesRangeDays}-day period`}. Net received includes payments and cash settlements, less refunds.
+            </AppText>
           </Pressable>
         </View>
+        </Animated.View>
 
-        <SectionHeading title={`Activity · ${periodTitle}`} />
-        <View style={styles.operationsStrip}>
-          <MiniMetric
-            icon="receipt-outline"
-            label="Expenses"
-            value={expensesQuery.isError ? null : periodExpenses?.total_amount}
-            currency={currency}
-            loading={expensesQuery.isLoading}
-            accent={theme.secondary}
-          />
-          <View style={[styles.operationDivider, { backgroundColor: theme.border }]} />
-          <MiniMetric
-            icon="egg-outline"
-            label="Eggs collected"
-            value={eggCollectionsQuery.isError ? null : collectedInRange}
-            unit="eggs"
-            loading={eggCollectionsQuery.isLoading}
-            accent={theme.success}
-          />
-        </View>
-
-        <SectionHeading title="Month-to-date profitability" />
-        <View
-          style={[
-            styles.monthlyProfitCard,
-            {
-              backgroundColor: theme.backgroundElement,
-              borderLeftColor: theme.secondary,
-            },
-          ]}
-        >
-          <View style={[styles.profitIcon, { backgroundColor: theme.backgroundElement }]}>
-            <Ionicons
-              name={monthlyProfitQuery.data?.complete ? "analytics-outline" : "information-circle-outline"}
-              size={20}
-              color={monthlyProfitQuery.data?.complete ? theme.primary : theme.secondary}
-            />
-          </View>
-          <View style={styles.monthlyProfitCopy}>
-            {monthlyProfitQuery.isLoading ? (
-              <AppText size="body" weight="semibold">
-                Calculating profit or loss…
-              </AppText>
-            ) : monthlyProfitQuery.isError ? (
-              <AppText size="body" weight="semibold" style={{ color: theme.danger }}>
-                Profitability could not be loaded
-              </AppText>
-            ) : monthlyProfitQuery.data?.complete &&
-              monthlyProfitQuery.data.net_profit !== null ? (
-              <AppText
-                size="title"
-                weight="semibold"
-                style={{
-                  color:
-                    Number(monthlyProfitQuery.data.net_profit) < 0
-                      ? theme.danger
-                      : theme.success,
-                }}
+        {showNeedsAttention ? (
+          <Animated.View
+            entering={FadeInDown.delay(140).duration(280)}
+            layout={LinearTransition.springify().damping(18)}
+            style={styles.attentionSection}
+          >
+            <View style={styles.attentionHeading}>
+              <View style={styles.attentionHeadingCopy}>
+                <SectionHeading title="Needs attention" />
+                <AppText size="small" tone="secondary">
+                  {attentionActions.length}{" "}
+                  {attentionActions.length === 1 ? "action" : "actions"}
+                </AppText>
+              </View>
+              {attentionActions.length > 3 ? (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => setShowAllAttention((showing) => !showing)}
+                  style={styles.seeAllAttention}
+                >
+                  <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+                    {showAllAttention ? "Show top 3" : "See all"}
+                  </AppText>
+                </Pressable>
+              ) : null}
+            </View>
+            <View style={styles.attentionList}>
+              {displayedAttentionActions.map((action, index) => (
+                <Animated.View
+                  key={action.key}
+                  entering={FadeInDown.delay(Math.min(index * 45, 180)).duration(240)}
+                >
+                  <DashboardLink
+                    icon={action.icon}
+                    title={action.title}
+                    detail={action.detail}
+                    status={action.status}
+                    priority={action.priority}
+                    onPress={action.onPress}
+                  />
+                </Animated.View>
+              ))}
+              {topAttentionActions.length === 0 && !attentionIsLoading ? (
+                <AppText size="small" tone="secondary">
+                  No urgent farm tasks.
+                </AppText>
+              ) : null}
+              {[
+                notificationsQuery.isError,
+                remindersQuery.isError,
+                flockQuery.isError,
+                pendingDeliveriesQuery.isError,
+                outstandingBalancesQuery.isError,
+              ].some(Boolean) ? (
+                <AppText size="small" style={{ color: theme.danger }}>
+                  Some farm tasks couldn’t be checked.
+                </AppText>
+              ) : null}
+              {attentionIsLoading ? (
+                <AppText size="small" tone="secondary">
+                  Checking for farm tasks…
+                </AppText>
+              ) : null}
+            </View>
+          </Animated.View>
+        ) : null}
+        {!showNeedsAttention ? (
+          <Animated.View entering={FadeInDown.delay(140).duration(280)}>
+            <View
+              style={[
+                styles.allCaughtUp,
+                {
+                  backgroundColor: `${theme.success}12`,
+                  borderColor: `${theme.success}35`,
+                },
+              ]}
+            >
+              <View
+                style={[
+                  styles.attentionIcon,
+                  { backgroundColor: `${theme.success}1B` },
+                ]}
               >
-                {formattedMoney(monthlyProfitQuery.data.net_profit)}
-              </AppText>
-            ) : (
-              <>
-                <AppText size="body" weight="semibold">
-                  Profit is not verified
+                <Ionicons
+                  name="checkmark-done-outline"
+                  size={20}
+                  color={theme.success}
+                />
+              </View>
+              <View style={styles.linkCopy}>
+                <AppText size="small" weight="semibold">
+                  You’re all caught up
                 </AppText>
                 <AppText size="small" tone="secondary">
-                  {profitabilityIssue}
+                  No overdue tasks, pending deliveries or balances need action.
                 </AppText>
-              </>
-            )}
-            {monthlyProfitQuery.data?.complete &&
-            monthlyProfitQuery.data.net_profit !== null ? (
-              <AppText size="small" tone="secondary">
-                Net profit after sales credits, stock costs, expenses and recorded losses.
-              </AppText>
-            ) : null}
-          </View>
-          <Pressable
-            accessibilityRole="button"
-            onPress={() =>
-              router.push(
-                monthlyProfitQuery.data?.complete
-                  ? "/reports"
-                  : hasUncostedCurrentStock
-                    ? "/reports/stock-costing"
-                    : "/reports",
-              )
-            }
-            style={styles.profitAction}
-          >
-            <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
-              {monthlyProfitQuery.data?.complete
-                ? "Report"
-                : hasUncostedCurrentStock
-                  ? "Add costs"
-                  : "View report"}
-            </AppText>
-            <Ionicons name="chevron-forward" size={16} color={theme.primary} />
-          </Pressable>
-        </View>
+              </View>
+            </View>
+          </Animated.View>
+        ) : null}
 
         <SectionHeading title="Quick actions" />
-        <View style={styles.actionGrid}>
+        <Animated.View
+          entering={FadeInDown.delay(200).duration(280)}
+          style={styles.actionGrid}
+        >
           <QuickAction
-            icon="cart-outline"
-            label="Egg sale"
-            onPress={() => router.push("/egg-sale")}
-            accent={theme.primary}
+            icon="cash-outline"
+            label="Record sale"
+            detail="Sell eggs or chickens"
+            onPress={() => router.push("/sales/new")}
           />
           <QuickAction
             icon="egg-outline"
-            label="Collect"
+            label="Collect eggs"
+            detail="Log a collection"
             onPress={() => router.push("/egg-collection")}
-            accent={theme.success}
           />
           <QuickAction
             icon="add-circle-outline"
-            label="Expense"
+            label="Add expense"
+            detail="Track farm spending"
             onPress={() => router.push({ pathname: "/expenses", params: { new: "1" } })}
-            accent={theme.secondary}
           />
           <QuickAction
             icon="alert-circle-outline"
-            label="Loss"
+            label="Log loss"
+            detail="Record flock losses"
             onPress={() => router.push("/chicken-loss")}
-            accent={theme.danger}
           />
-        </View>
+        </Animated.View>
 
-        <SectionHeading title="Needs attention" />
-        <View style={[styles.attentionList, { borderTopColor: theme.border }]}>
-          {notificationsQuery.isError ? (
-            <AppText size="small" style={{ color: theme.danger }}>
-              Notifications couldn’t be checked.
-            </AppText>
-          ) : Number(notificationsQuery.data ?? 0) > 0 ? (
-            <DashboardLink
-              icon="notifications-outline"
-              title="Unread farm updates"
-              detail={`${notificationsQuery.data} ${Number(notificationsQuery.data) === 1 ? "update" : "updates"} to review`}
-              status="Review"
-              onPress={() => router.push("/notifications")}
-            />
-          ) : null}
-          {nearCapacityBlocks.length > 0 ? (
-            <DashboardLink
-              icon="warning-outline"
-              title="Blocks at capacity"
-              detail={nearCapacityBlocks.map((block) => block.name).join(", ")}
-              status="At limit"
-              onPress={() => router.push("/(tabs)/blocks")}
-              critical
-            />
-          ) : null}
-          {remindersQuery.isError ? (
-            <AppText size="small" style={{ color: theme.danger }}>
-              Reminders couldn’t be checked.
-            </AppText>
-          ) : overdueReminders > 0 ? (
-            <DashboardLink
-              icon="time-outline"
-              title="Overdue reminders"
-              detail={`${overdueReminders} ${overdueReminders === 1 ? "task is" : "tasks are"} overdue`}
-              status="Overdue"
-              onPress={() =>
-                firstOverdueReminder
-                  ? router.push({
-                      pathname: "/reminders/[reminderId]",
-                      params: { reminderId: firstOverdueReminder.id },
-                    })
-                  : router.push("/notifications")
-              }
-              critical
-            />
-          ) : pendingReminders.length > 0 ? (
-            <DashboardLink
-              icon="calendar-outline"
-              title="Upcoming reminder"
-              detail={`${pendingReminders[0].title} · ${formatReminderDate(pendingReminders[0].due_at, timezone)}`}
-              status="Upcoming"
-              onPress={() =>
-                router.push({
-                  pathname: "/reminders/[reminderId]",
-                  params: { reminderId: pendingReminders[0].id },
-                })
-              }
-            />
-          ) : null}
-          {flockQuery.isError ? (
-            <AppText size="small" style={{ color: theme.danger }}>
-              Block capacity alerts couldn’t be checked.
-            </AppText>
-          ) : null}
-          {notificationsQuery.isLoading ||
-          remindersQuery.isLoading ||
-          flockQuery.isLoading ? (
-            <AppText size="small" tone="secondary">
-              Checking farm tasks…
-            </AppText>
-          ) : null}
-          {!notificationsQuery.isLoading &&
-          !remindersQuery.isLoading &&
-          !flockQuery.isLoading &&
-          !flockQuery.isError &&
-          !notificationsQuery.isError &&
-          !remindersQuery.isError &&
-          Number(notificationsQuery.data ?? 0) === 0 &&
-          nearCapacityBlocks.length === 0 &&
-          reminders.length === 0 ? (
-            <View style={styles.clearState}>
-              <Ionicons name="checkmark-circle-outline" size={18} color={theme.success} />
+        <SectionHeading title="Poultry" />
+        <Animated.View
+          entering={FadeInDown.delay(250).duration(280)}
+          style={[
+            styles.poultrySummary,
+            { borderColor: theme.border },
+          ]}
+        >
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => router.push("/(tabs)/flock")}
+            style={({ pressed }) => [
+              styles.poultryMetric,
+              { opacity: pressed ? 0.8 : 1 },
+            ]}
+          >
+            <Ionicons name="leaf-outline" size={19} color={theme.primary} />
+            <View style={styles.poultryCopy}>
+              <AppText size="small" tone="secondary">LIVE FLOCK</AppText>
+              <AppText size="body" weight="semibold">
+                {flockQuery.isLoading || flockQuery.isError ? "—" : liveBirds.toLocaleString()}
+              </AppText>
               <AppText size="small" tone="secondary">
-                All clear
+                {flockQuery.isLoading || flockQuery.isError
+                  ? "Flock counts unavailable"
+                  : `${flock?.batches.length ?? 0} batches · ${flock?.blocks.length ?? 0} blocks`}
               </AppText>
             </View>
-          ) : null}
-        </View>
+            <Ionicons name="chevron-forward" size={15} color={theme.textSecondary} />
+          </Pressable>
+          <View style={[styles.poultryDivider, { backgroundColor: theme.border }]} />
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => router.push("/(tabs)/eggs")}
+            style={({ pressed }) => [
+              styles.poultryMetric,
+              { opacity: pressed ? 0.8 : 1 },
+            ]}
+          >
+            <Ionicons name="egg-outline" size={19} color={theme.success} />
+            <View style={styles.poultryCopy}>
+              <AppText size="small" tone="secondary">EGGS AVAILABLE</AppText>
+              <AppText size="body" weight="semibold">
+                {eggsQuery.isLoading || eggsQuery.isError ? "—" : availableEggs.toLocaleString()}
+              </AppText>
+              <AppText size="small" tone="secondary">
+                {eggsQuery.isLoading || eggsQuery.isError
+                  ? "Product count unavailable"
+                  : `Across ${(eggsQuery.data?.products ?? []).length} products`}
+              </AppText>
+            </View>
+            <Ionicons name="chevron-forward" size={15} color={theme.textSecondary} />
+          </Pressable>
+          <View style={[styles.poultryDivider, { backgroundColor: theme.border }]} />
+          <View style={styles.poultryMetric}>
+            <Ionicons name="trending-up-outline" size={19} color={theme.primary} />
+            <View style={styles.poultryCopy}>
+              <AppText size="small" tone="secondary">
+                LAY RATE · {periodTitle.toUpperCase()}
+              </AppText>
+              <AppText size="body" weight="semibold">
+                {flockQuery.isLoading ||
+                flockQuery.isError ||
+                eggCollectionsQuery.isLoading ||
+                eggCollectionsQuery.isError ||
+                layRate === null
+                  ? "—"
+                  : `${layRate.toFixed(1)}%${layRateOutsideRange ? " · check counts" : ""}`}
+              </AppText>
+              <AppText
+                size="small"
+                tone={layRateOutsideRange ? undefined : "secondary"}
+                style={layRateOutsideRange ? { color: theme.danger } : undefined}
+              >
+                {layRateOutsideRange
+                  ? `${collectedInRange.toLocaleString()} eggs recorded vs ${layingHens.toLocaleString()} current layers. Counts may differ across this period.`
+                  : "Eggs per layer per day"}
+              </AppText>
+              {layRateOutsideRange ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Review egg collection records"
+                  onPress={() => router.push("/(tabs)/eggs")}
+                  style={styles.reviewEggsAction}
+                >
+                  <AppText
+                    size="small"
+                    weight="semibold"
+                    style={{ color: theme.primary }}
+                  >
+                    Review egg records
+                  </AppText>
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
+          <View style={[styles.poultryDivider, { backgroundColor: theme.border }]} />
+          <View style={styles.poultryMetric}>
+            <Ionicons name="heart-dislike-outline" size={19} color={theme.danger} />
+            <View style={styles.poultryCopy}>
+              <AppText size="small" tone="secondary">
+                MORTALITY · {periodTitle.toUpperCase()}
+              </AppText>
+              <AppText size="body" weight="semibold">
+                {chickenLossesQuery.isLoading || chickenLossesQuery.isError
+                  ? "—"
+                  : mortalityCount.toLocaleString()}
+              </AppText>
+              <AppText size="small" tone="secondary">
+                Birds lost during this period
+              </AppText>
+            </View>
+          </View>
+        </Animated.View>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => router.push("/inventory")}
+          style={({ pressed }) => [
+            styles.inventoryLink,
+            { opacity: pressed ? 0.75 : 1 },
+          ]}
+        >
+          <Ionicons name="cube-outline" size={17} color={theme.primary} />
+          <AppText size="small" weight="semibold" style={styles.linkCopy}>
+            Feed, equipment & other stock
+          </AppText>
+          <Ionicons name="chevron-forward" size={16} color={theme.textSecondary} />
+        </Pressable>
 
-        <View style={styles.chartHeading}>
+        <Animated.View
+          key={`totals-${salesFromDate}-${salesToDate}`}
+          entering={FadeInDown.delay(300).duration(280)}
+          layout={LinearTransition.springify().damping(18)}
+          style={styles.periodTotalsSection}
+        >
+          <SectionHeading title="Period totals" detail={periodTitle} />
+          <View style={styles.operationsStrip}>
+            <MiniMetric
+              icon="receipt-outline"
+              label="Expenses"
+              value={expensesQuery.isError ? null : periodExpenses?.total_amount}
+              currency={currency}
+              loading={expensesQuery.isLoading}
+              accent={theme.secondary}
+            />
+            <MiniMetric
+              icon="egg-outline"
+              label="Eggs collected"
+              value={eggCollectionsQuery.isError ? null : collectedInRange}
+              unit="eggs"
+              loading={eggCollectionsQuery.isLoading}
+              accent={theme.success}
+            />
+          </View>
+        </Animated.View>
+
+        <Animated.View
+          entering={FadeInDown.delay(320).duration(260)}
+          layout={LinearTransition.springify().damping(18)}
+        >
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: showSalesTrend }}
+          onPress={() => setShowSalesTrend((visible) => !visible)}
+          style={[
+            styles.chartHeading,
+            {
+              backgroundColor: theme.backgroundElement,
+              borderColor: theme.border,
+            },
+          ]}
+        >
+          <View style={[styles.chartIcon, { backgroundColor: theme.backgroundSelected }]}>
+            <Ionicons name="stats-chart-outline" size={18} color={theme.primary} />
+          </View>
           <View style={styles.chartTitle}>
-            <AppText size="heading" weight="semibold">
+            <AppText size="body" weight="semibold">
               Sales trend
             </AppText>
             <AppText size="small" tone="secondary">
-              Completed sales · {periodTitle.toLowerCase()}
+              {salesRangeQuery.data
+                ? `${formatCompactMoney(salesTrendTotal, currency)} · ${periodTitle.toLowerCase()}`
+                : `Completed sales · ${periodTitle.toLowerCase()}`}
             </AppText>
           </View>
-          {salesRangeQuery.data ? (
-            <AppText size="small" weight="semibold">
-              {formatCompactMoney(salesTrendTotal, currency)}
-            </AppText>
-          ) : null}
-        </View>
+          <Ionicons
+            name={showSalesTrend ? "chevron-up" : "chevron-down"}
+            size={18}
+            color={theme.primary}
+          />
+        </Pressable>
+        {showSalesTrend ? (
+        <Animated.View
+          entering={FadeInDown.duration(220)}
+          exiting={FadeOutUp.duration(150)}
+          style={styles.chartContent}
+        >
         {!salesRangeValid ? (
           <AppText size="small" style={{ color: theme.danger }}>
             Choose a valid date range ending today or earlier.
@@ -765,6 +1209,22 @@ export default function DashboardScreen() {
                 Peak {formatCompactMoney(salesTrendMax, currency)}
               </AppText>
             </View>
+            <View style={styles.comparisonChart}>
+              <ComparisonBar
+                label="This period"
+                amount={currentSalesTotal}
+                max={Math.max(currentSalesTotal, previousSalesTotal, 1)}
+                currency={currency}
+                color={theme.primary}
+              />
+              <ComparisonBar
+                label="Previous"
+                amount={previousSalesTotal}
+                max={Math.max(currentSalesTotal, previousSalesTotal, 1)}
+                currency={currency}
+                color={theme.secondary}
+              />
+            </View>
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={salesTrend.length > 10}
@@ -772,20 +1232,26 @@ export default function DashboardScreen() {
             <View
               style={[
                 styles.chartBars,
-                { width: Math.max(salesTrend.length * 42, 280) },
+                { width: Math.max(salesTrend.length * 56, 280) },
               ]}
             >
               {salesTrend.map((item, index) => (
                 <View key={item.day} style={styles.chartDay}>
                   <View style={styles.chartValue}>
-                    <AppText size="small" tone="secondary" numberOfLines={1}>
+                    <AppText
+                      size="small"
+                      tone="secondary"
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                    >
                       {salesRangeDays > 14 && index % 3 !== 0
                         ? ""
                         : formatCompactNumber(item.value)}
                     </AppText>
                   </View>
                   <View style={styles.chartTrack}>
-                    <View
+                    <Animated.View
+                      entering={FadeInUp.delay(Math.min(index * 25, 250)).duration(320)}
                       style={[
                         styles.chartBar,
                         {
@@ -823,75 +1289,51 @@ export default function DashboardScreen() {
             </Pressable>
           </View>
         )}
-
-        <SectionHeading title="Poultry" />
-        <View
-          style={[
-            styles.poultrySummary,
-            { borderColor: theme.border },
-          ]}
-        >
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => router.push("/(tabs)/flock")}
-            style={styles.poultryMetric}
-          >
-            <Ionicons name="leaf-outline" size={19} color={theme.primary} />
-            <View style={styles.poultryCopy}>
-              <AppText size="small" tone="secondary">LIVE FLOCK</AppText>
-              <AppText size="body" weight="semibold">
-                {flockQuery.isLoading || flockQuery.isError ? "—" : liveBirds.toLocaleString()}
-              </AppText>
-              <AppText size="small" tone="secondary">
-                {flock?.batches.length ?? 0} batches · {flock?.blocks.length ?? 0} blocks
-              </AppText>
-            </View>
-            <Ionicons name="chevron-forward" size={15} color={theme.textSecondary} />
-          </Pressable>
-          <View style={[styles.poultryDivider, { backgroundColor: theme.border }]} />
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => router.push("/(tabs)/eggs")}
-            style={styles.poultryMetric}
-          >
-            <Ionicons name="egg-outline" size={19} color={theme.success} />
-            <View style={styles.poultryCopy}>
-              <AppText size="small" tone="secondary">EGGS AVAILABLE</AppText>
-              <AppText size="body" weight="semibold">
-                {eggsQuery.isLoading || eggsQuery.isError ? "—" : availableEggs.toLocaleString()}
-              </AppText>
-              <AppText size="small" tone="secondary">
-                Across {(eggsQuery.data?.products ?? []).length} products
-              </AppText>
-            </View>
-            <Ionicons name="chevron-forward" size={15} color={theme.textSecondary} />
-          </Pressable>
-        </View>
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => router.push("/inventory")}
-          style={styles.inventoryLink}
-        >
-          <Ionicons name="cube-outline" size={17} color={theme.primary} />
-          <AppText size="small" weight="semibold" style={styles.linkCopy}>
-            Feed, equipment & other stock
-          </AppText>
-          <Ionicons name="chevron-forward" size={16} color={theme.textSecondary} />
-        </Pressable>
+        </Animated.View>
+        ) : null}
+        </Animated.View>
 
         <View style={styles.activityHeading}>
           <SectionHeading title="Recent activity" />
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => setShowActivity((visible) => !visible)}
-          >
-            <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
-              {showActivity ? "Hide" : "View"}
-            </AppText>
-          </Pressable>
+          <View style={styles.activityActions}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Open notifications${Number(notificationsQuery.data ?? 0) > 0 ? `, ${notificationsQuery.data} unread` : ""}`}
+              onPress={() => router.push("/notifications")}
+              hitSlop={8}
+              style={styles.activityAction}
+            >
+              <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+                {Number(notificationsQuery.data ?? 0) > 0
+                  ? `Notifications · ${notificationsQuery.data}`
+                  : "Notifications"}
+              </AppText>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={showActivity ? "Hide recent activity" : "Show recent activity"}
+              accessibilityState={{ expanded: showActivity }}
+              onPress={() => setShowActivity((visible) => !visible)}
+              hitSlop={8}
+              style={styles.activityAction}
+            >
+              <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+                {showActivity ? "Hide" : "Show recent"}
+              </AppText>
+              <Ionicons
+                name={showActivity ? "chevron-up" : "chevron-down"}
+                size={15}
+                color={theme.primary}
+              />
+            </Pressable>
+          </View>
         </View>
         {showActivity ? (
-        <View style={styles.activityList}>
+        <Animated.View
+          entering={FadeInDown.duration(220)}
+          exiting={FadeOutUp.duration(150)}
+          style={styles.activityList}
+        >
           {activityQuery.isLoading ? (
             <AppText size="small" tone="secondary">
               Loading recent activity…
@@ -901,19 +1343,24 @@ export default function DashboardScreen() {
               Recent activity couldn’t be loaded.
             </AppText>
           ) : recentActivity.length > 0 ? (
-            recentActivity.map((activity) => (
-              <DashboardLink
+            recentActivity.map((activity, index) => (
+              <Animated.View
                 key={activity.id}
-                icon="time-outline"
-                title={getActivityLabel(activity.type)}
-                detail={getActivityDetail(activity.details) || "Farm record updated"}
-                onPress={() =>
-                  router.push({
-                    pathname: "/activities/[activityId]",
-                    params: { activityId: activity.id },
-                  })
-                }
-              />
+                entering={FadeInDown.delay(index * 45).duration(230)}
+              >
+                <DashboardLink
+                  icon="time-outline"
+                  title={getActivityLabel(activity.type)}
+                  detail={getActivityDetail(activity.details) || "Farm record updated"}
+                  priority="upcoming"
+                  onPress={() =>
+                    router.push({
+                      pathname: "/activities/[activityId]",
+                      params: { activityId: activity.id },
+                    })
+                  }
+                />
+              </Animated.View>
             ))
           ) : (
             <View style={styles.emptyState}>
@@ -937,10 +1384,164 @@ export default function DashboardScreen() {
               <Ionicons name="arrow-forward" size={16} color={theme.primary} />
             </Pressable>
           ) : null}
-        </View>
+        </Animated.View>
         ) : null}
 
-        <View style={styles.footerLinks}>
+        <Animated.View
+          key={`profit-${salesFromDate}-${salesToDate}`}
+          entering={FadeInDown.delay(440).duration(280)}
+        >
+        <View
+          style={[
+            styles.monthlyProfitCard,
+            {
+              backgroundColor: theme.backgroundElement,
+              borderColor: theme.border,
+            },
+          ]}
+        >
+          <View style={styles.profitHeading}>
+            <View
+              style={[
+                styles.profitIcon,
+                { backgroundColor: theme.backgroundSelected },
+              ]}
+            >
+              <Ionicons
+                name={
+                  monthlyProfitQuery.data?.complete
+                    ? "analytics-outline"
+                    : "information-circle-outline"
+                }
+                size={20}
+                color={
+                  monthlyProfitQuery.data?.complete
+                    ? theme.primary
+                    : theme.secondary
+                }
+              />
+            </View>
+            <View style={styles.monthlyProfitCopy}>
+              <AppText size="small" weight="semibold">
+                ESTIMATED PROFIT
+              </AppText>
+              <AppText size="small" tone="secondary">
+                {formatRangeLabel(salesFromDate, salesToDate)}
+              </AppText>
+            </View>
+            <View
+              style={[
+                styles.profitStatus,
+                {
+                  backgroundColor:
+                    monthlyProfitQuery.isError
+                      ? `${theme.danger}18`
+                      : monthlyProfitQuery.data?.complete
+                        ? `${theme.success}18`
+                        : `${theme.secondary}18`,
+                },
+              ]}
+            >
+              <AppText
+                size="small"
+                weight="semibold"
+                style={{
+                  color: monthlyProfitQuery.isError
+                    ? theme.danger
+                    : monthlyProfitQuery.data?.complete
+                      ? theme.success
+                      : theme.secondary,
+                }}
+              >
+                {monthlyProfitQuery.isLoading
+                  ? "Calculating"
+                  : monthlyProfitQuery.isError
+                    ? "Unavailable"
+                    : monthlyProfitQuery.data?.complete
+                      ? "Estimated"
+                      : "Needs records"}
+              </AppText>
+            </View>
+          </View>
+          <View style={styles.profitValueBlock}>
+            {monthlyProfitQuery.isLoading ? (
+              <AppText size="title" weight="semibold">
+                Calculating…
+              </AppText>
+            ) : monthlyProfitQuery.isError ? (
+              <AppText size="body" weight="semibold" style={{ color: theme.danger }}>
+                Couldn’t calculate profit
+              </AppText>
+            ) : monthlyProfitQuery.data?.complete &&
+              monthlyProfitQuery.data.net_profit !== null ? (
+              <AppText
+                size="title"
+                weight="semibold"
+                style={{
+                  color:
+                    Number(monthlyProfitQuery.data.net_profit) < 0
+                      ? theme.danger
+                      : theme.success,
+                }}
+              >
+                {formattedMoney(monthlyProfitQuery.data.net_profit)}
+              </AppText>
+            ) : (
+              <AppText size="body" weight="semibold">
+                Profit not yet verified
+              </AppText>
+            )}
+            {monthlyProfitQuery.data?.complete &&
+            monthlyProfitQuery.data.net_profit !== null ? (
+              <AppText size="small" tone="secondary">
+                Estimate for this period; actual results may differ.
+              </AppText>
+            ) : !monthlyProfitQuery.isLoading && !monthlyProfitQuery.isError ? (
+              <AppText size="small" tone="secondary">
+                {profitabilityIssue}
+              </AppText>
+            ) : null}
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={
+              monthlyProfitQuery.data?.complete
+                ? "Open profitability report"
+                : hasUncostedCurrentStock
+                  ? "Add missing stock costs"
+                  : "Review profitability records"
+            }
+            onPress={() =>
+              router.push(
+                monthlyProfitQuery.data?.complete
+                  ? "/reports"
+                  : hasUncostedCurrentStock
+                    ? "/reports/stock-costing"
+                    : "/reports",
+              )
+            }
+            style={({ pressed }) => [
+              styles.profitAction,
+              {
+                backgroundColor: theme.primary,
+                opacity: pressed ? 0.88 : 1,
+                transform: [{ scale: pressed ? 0.99 : 1 }],
+              },
+            ]}
+          >
+            <AppText size="small" weight="semibold" style={{ color: theme.onPrimary }}>
+              {monthlyProfitQuery.data?.complete
+                ? "Open profitability report"
+                : hasUncostedCurrentStock
+                  ? "Add missing stock costs"
+                  : "Review missing records"}
+            </AppText>
+            <Ionicons name="arrow-forward" size={17} color={theme.onPrimary} />
+          </Pressable>
+        </View>
+        </Animated.View>
+
+        <Animated.View entering={FadeInDown.delay(500).duration(280)} style={styles.footerLinks}>
           <DashboardShortcut
             icon="bar-chart-outline"
             label="Financial reports"
@@ -953,7 +1554,7 @@ export default function DashboardScreen() {
             detail="Review upcoming and overdue tasks"
             onPress={() => router.push("/reminders" as Href)}
           />
-        </View>
+        </Animated.View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -976,35 +1577,47 @@ function MiniMetric({
   loading: boolean;
   accent: string;
 }) {
-  const displayValue =
+  const { theme } = useTheme();
+  const numericValue =
     typeof value === "number" || typeof value === "string"
+      ? Number(value)
+      : Number.NaN;
+  const displayValue =
+    Number.isFinite(numericValue)
       ? currency
         ? `${currency} ${new Intl.NumberFormat(undefined, {
             minimumFractionDigits: 0,
             maximumFractionDigits: 2,
-          }).format(Number(value))}`
+          }).format(numericValue)}`
         : `${new Intl.NumberFormat(undefined, {
             maximumFractionDigits: 0,
-          }).format(Number(value))}${unit ? ` ${unit}` : ""}`
+          }).format(numericValue)}${unit ? ` ${unit}` : ""}`
       : "—";
 
   return (
-    <View style={styles.operationMetric}>
+    <View
+      style={[
+        styles.operationMetric,
+        {
+          backgroundColor: theme.backgroundElement,
+          borderColor: theme.border,
+        },
+      ]}
+    >
       <View style={styles.operationMetricHeading}>
         <View style={[styles.operationMetricIcon, { backgroundColor: `${accent}14` }]}>
           <Ionicons name={icon} size={17} color={accent} />
         </View>
-        <AppText size="body" weight="semibold" numberOfLines={1}>
+        <AppText
+          size="small"
+          weight="semibold"
+          numberOfLines={2}
+          style={styles.operationMetricLabel}
+        >
           {label}
         </AppText>
       </View>
-      <AppText
-        size="body"
-        weight="semibold"
-        numberOfLines={1}
-        adjustsFontSizeToFit
-        style={styles.operationValue}
-      >
+      <AppText size="title" weight="semibold" numberOfLines={1} adjustsFontSizeToFit style={styles.operationValue}>
         {loading ? "…" : displayValue}
       </AppText>
     </View>
@@ -1026,11 +1639,13 @@ function RangeOption({
       accessibilityRole="button"
       accessibilityState={{ selected }}
       onPress={onPress}
-      style={[
+      style={({ pressed }) => [
         styles.rangeOption,
         {
           backgroundColor: selected ? theme.primary : "transparent",
           borderColor: selected ? theme.primary : theme.border,
+          opacity: pressed ? 0.82 : 1,
+          transform: [{ scale: pressed ? 0.97 : 1 }],
         },
       ]}
     >
@@ -1063,12 +1678,12 @@ function SectionHeading({ title, detail }: { title: string; detail?: string }) {
 function QuickAction({
   icon,
   label,
-  accent,
+  detail,
   onPress,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
-  accent: string;
+  detail: string;
   onPress: () => void;
 }) {
   const { theme } = useTheme();
@@ -1078,22 +1693,67 @@ function QuickAction({
       onPress={onPress}
       style={({ pressed }) => [
         styles.quickAction,
-        { borderBottomColor: theme.border, opacity: pressed ? 0.65 : 1 },
+        {
+          backgroundColor: theme.primary,
+          opacity: pressed ? 0.88 : 1,
+          transform: [{ scale: pressed ? 0.975 : 1 }],
+        },
       ]}
     >
-      <View style={[styles.quickActionIcon, { backgroundColor: `${accent}1A` }]}>
-        <Ionicons name={icon} size={17} color={accent} />
+      <View style={[styles.quickActionIcon, { backgroundColor: `${theme.onPrimary}24` }]}>
+        <Ionicons name={icon} size={17} color={theme.onPrimary} />
       </View>
-      <AppText
-        size="small"
-        weight="semibold"
-        numberOfLines={1}
-        style={styles.quickActionLabel}
-      >
+      <View style={styles.quickActionCopy}>
+        <AppText
+          size="small"
+          weight="semibold"
+          numberOfLines={1}
+          style={[styles.quickActionLabel, { color: theme.onPrimary }]}
+        >
+          {label}
+        </AppText>
+        <AppText
+          size="small"
+          numberOfLines={1}
+          style={[styles.quickActionDetail, { color: `${theme.onPrimary}CC` }]}
+        >
+          {detail}
+        </AppText>
+      </View>
+    </Pressable>
+  );
+}
+
+function ComparisonBar({
+  label,
+  amount,
+  max,
+  currency,
+  color,
+}: {
+  label: string;
+  amount: number;
+  max: number;
+  currency: string;
+  color: string;
+}) {
+  return (
+    <View style={styles.comparisonRow}>
+      <AppText size="small" tone="secondary" style={styles.comparisonLabel}>
         {label}
       </AppText>
-      <Ionicons name="chevron-forward" size={15} color={theme.textSecondary} />
-    </Pressable>
+      <View style={styles.comparisonTrack}>
+        <View
+          style={[
+            styles.comparisonFill,
+            { width: toPercent((amount / max) * 100), backgroundColor: color },
+          ]}
+        />
+      </View>
+      <AppText size="small" weight="semibold" style={styles.comparisonValue}>
+        {formatCompactMoney(amount, currency)}
+      </AppText>
+    </View>
   );
 }
 
@@ -1102,18 +1762,23 @@ function DashboardLink({
   title,
   detail,
   status,
+  priority,
   onPress,
-  critical = false,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   title: string;
   detail: string;
   status?: string;
+  priority: "urgent" | "action" | "upcoming";
   onPress: () => void;
-  critical?: boolean;
 }) {
   const { theme } = useTheme();
-  const accent = critical ? theme.danger : theme.primary;
+  const accent =
+    priority === "urgent"
+      ? theme.danger
+      : priority === "action"
+        ? theme.secondary
+        : theme.primary;
   return (
     <Pressable
       accessibilityRole="button"
@@ -1123,7 +1788,8 @@ function DashboardLink({
         {
           borderColor: `${accent}55`,
           backgroundColor: `${accent}0D`,
-          opacity: pressed ? 0.72 : 1,
+          opacity: pressed ? 0.9 : 1,
+          transform: [{ scale: pressed ? 0.99 : 1 }],
         },
       ]}
     >
@@ -1139,7 +1805,11 @@ function DashboardLink({
         <AppText size="small" weight="semibold">
           {title}
         </AppText>
-        <AppText size="small" tone="secondary" numberOfLines={2}>
+        <AppText
+          size="small"
+          tone="secondary"
+          numberOfLines={priority === "urgent" ? 4 : 3}
+        >
           {detail}
         </AppText>
       </View>
@@ -1181,7 +1851,8 @@ function DashboardShortcut({
         {
           backgroundColor: theme.backgroundElement,
           borderColor: theme.border,
-          opacity: pressed ? 0.75 : 1,
+          opacity: pressed ? 0.9 : 1,
+          transform: [{ scale: pressed ? 0.99 : 1 }],
         },
       ]}
     >
@@ -1240,12 +1911,35 @@ function getDashboardRangeTitle(preset: DashboardRangePreset): string {
     case "today":
       return "Today";
     case "week":
-      return "Week to date";
+      return "Week";
     case "month":
-      return "This month";
+      return "Month";
     case "custom":
       return "Selected period";
   }
+}
+
+function getPreviousDateRange(
+  fromDate: string,
+  toDate: string,
+): { from: string; to: string } {
+  const start = new Date(`${fromDate}T00:00:00Z`);
+  const end = new Date(`${toDate}T00:00:00Z`);
+  if (Number.isNaN(start.valueOf()) || Number.isNaN(end.valueOf())) {
+    return { from: fromDate, to: toDate };
+  }
+  const duration = Math.max(
+    0,
+    Math.floor((end.valueOf() - start.valueOf()) / 86_400_000),
+  );
+  const previousEnd = new Date(start.valueOf() - 86_400_000);
+  const previousStart = new Date(
+    previousEnd.valueOf() - duration * 86_400_000,
+  );
+  return {
+    from: previousStart.toISOString().slice(0, 10),
+    to: previousEnd.toISOString().slice(0, 10),
+  };
 }
 
 function daysBetween(fromDate: string, toDate: string): number {
@@ -1297,50 +1991,6 @@ function monthStart(date: string): string {
   return `${date.slice(0, 7)}-01`;
 }
 
-function zonedDateTimeToUtc(
-  date: string,
-  time: string,
-  timezone: string,
-): string {
-  const [year, month, day] = date.split("-").map(Number);
-  const [hour, minute, second] = time.split(":").map(Number);
-  const desiredUtc = Date.UTC(year, month - 1, day, hour, minute, second);
-  const zonedParts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(new Date(desiredUtc));
-  const value = (type: string) =>
-    Number(zonedParts.find((part) => part.type === type)?.value ?? 0);
-  const representedUtc = Date.UTC(
-    value("year"),
-    value("month") - 1,
-    value("day"),
-    value("hour"),
-    value("minute"),
-    value("second"),
-  );
-  return new Date(desiredUtc - (representedUtc - desiredUtc)).toISOString();
-}
-
-function greetingInTimezone(date: Date, timezone: string): string {
-  const hour = Number(
-    new Intl.DateTimeFormat("en-GB", {
-      timeZone: timezone,
-      hour: "2-digit",
-      hourCycle: "h23",
-    })
-      .formatToParts(date)
-      .find((part) => part.type === "hour")?.value ?? 12,
-  );
-  return hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
-}
-
 function formatReminderDate(value: string, timezone: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "date unavailable";
@@ -1366,12 +2016,20 @@ function formatCompactNumber(value: number): string {
 }
 
 function formatRangeLabel(fromDate: string, toDate: string): string {
+  const date = (value: string) => new Date(`${value}T12:00:00Z`);
   const formatDate = (value: string) =>
     new Intl.DateTimeFormat(undefined, {
       day: "numeric",
       month: "short",
       timeZone: "UTC",
-    }).format(new Date(`${value}T12:00:00Z`));
+    }).format(date(value));
+  if (fromDate === toDate) {
+    const weekday = new Intl.DateTimeFormat(undefined, {
+      weekday: "short",
+      timeZone: "UTC",
+    }).format(date(fromDate));
+    return `${weekday}, ${formatDate(fromDate)}`;
+  }
   return `${formatDate(fromDate)} – ${formatDate(toDate)}`;
 }
 
@@ -1383,13 +2041,17 @@ function formatCompactMoney(value: number, currency: string): string {
   return `${currency} ${compact}`;
 }
 
+function toPercent(value: number): `${number}%` {
+  return `${Math.min(100, Math.max(0, value))}%`;
+}
+
 function getProfitabilityIssue(reasons: string[]): string {
   const reason = reasons[0]?.toLowerCase() ?? "";
   if (reason.includes("products still on hand")) {
     return "Some stock you still have needs a purchase or production cost.";
   }
   if (reason.includes("sale, consumption, or loss")) {
-    return "Some past sales, stock use or losses have no recorded cost.";
+    return "A sale, product use, or loss is missing its inventory record or cost.";
   }
   if (reason.includes("egg production")) {
     return "Feed or other costs for egg production are missing.";
@@ -1411,23 +2073,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 14,
     gap: 16,
-    paddingBottom: 32,
+    paddingBottom: 160,
   },
   farmPicker: { gap: 8 },
-  greeting: {
-    minHeight: 62,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-    paddingHorizontal: 2,
-  },
-  greetingCopy: { gap: 0 },
   periodSelector: {
     gap: 14,
-    padding: 14,
+    padding: 15,
     borderWidth: 1,
-    borderRadius: 16,
+    borderRadius: 18,
   },
   periodHeading: {
     flexDirection: "row",
@@ -1449,11 +2102,7 @@ const styles = StyleSheet.create({
     borderRadius: 11,
   },
   periodHeadingCopy: { flex: 1, gap: 2 },
-  periodOptions: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 7,
-  },
+  periodOptions: { flexDirection: "row", gap: 7 },
   periodDateFilters: {
     flexDirection: "row",
     gap: 10,
@@ -1466,41 +2115,63 @@ const styles = StyleSheet.create({
     marginBottom: -3,
   },
   sectionTitle: { fontSize: 16, lineHeight: 22 },
-  sectionCard: { gap: 8, borderRadius: 6 },
+  sectionCard: { gap: 8, borderRadius: 14 },
+  periodTotalsSection: { gap: 10 },
   monthlyProfitCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    minHeight: 80,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    borderRadius: 4,
-    borderLeftWidth: 3,
+    gap: 14,
+    padding: 15,
+    borderWidth: 1,
+    borderRadius: 17,
   },
   profitIcon: {
-    width: 28,
-    height: 32,
+    width: 40,
+    height: 40,
     alignItems: "center",
     justifyContent: "center",
+    borderRadius: 12,
   },
-  monthlyProfitCopy: { flex: 1, gap: 2, minWidth: 0 },
-  profitAction: {
+  profitHeading: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 1,
-    paddingLeft: 2,
+    gap: 10,
   },
-  errorCard: { gap: 7, borderRadius: 6 },
+  monthlyProfitCopy: { flex: 1, gap: 3, minWidth: 0 },
+  profitStatus: {
+    borderRadius: 12,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+  },
+  profitValueBlock: { gap: 5, paddingLeft: 2 },
+  profitAction: {
+    minHeight: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+  },
+  errorCard: { gap: 7, borderRadius: 14 },
+  allCaughtUp: {
+    minHeight: 68,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderWidth: 1,
+    borderRadius: 15,
+  },
   todayPanel: {
-    borderLeftWidth: 3,
-    borderRadius: 4,
+    borderWidth: 1,
+    borderLeftWidth: 4,
+    borderRadius: 17,
     overflow: "hidden",
   },
   todaySales: {
-    gap: 8,
+    gap: 12,
     paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 15,
+    paddingTop: 16,
+    paddingBottom: 16,
   },
   todaySalesHeading: {
     flexDirection: "row",
@@ -1508,29 +2179,49 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   todaySalesLabel: { flexDirection: "row", alignItems: "center", gap: 7 },
-  accentDot: { width: 7, height: 7, borderRadius: 4 },
-  salesTotal: { fontSize: 29, lineHeight: 35, letterSpacing: -0.5 },
-  salesBreakdown: {
+  accentDot: { width: 8, height: 8, borderRadius: 4 },
+  comparisonBadge: {
+    minHeight: 30,
     flexDirection: "row",
     alignItems: "center",
-    gap: 14,
-    paddingTop: 9,
+    gap: 5,
+    borderRadius: 15,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+  },
+  salesTotal: { fontSize: 34, lineHeight: 41, letterSpacing: -0.7 },
+  salesBreakdown: {
+    gap: 0,
+    paddingTop: 4,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: "#80808040",
   },
-  salesBreakdownItem: { flex: 1, gap: 1, minWidth: 0 },
-  salesDivider: { width: StyleSheet.hairlineWidth, height: 28 },
-  salesDefinition: { flex: 1, fontSize: 11, lineHeight: 15, textAlign: "right" },
-  operationsStrip: {
-    flexDirection: "column",
-    paddingVertical: 1,
-  },
-  operationMetric: {
-    minHeight: 54,
+  salesBreakdownItem: {
+    minHeight: 38,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    gap: 10,
+  },
+  salesLegendLabel: { flexDirection: "row", alignItems: "center", gap: 5 },
+  salesLegendDot: { width: 8, height: 8, borderRadius: 4 },
+  salesDivider: { height: StyleSheet.hairlineWidth },
+  salesDefinition: { fontSize: 12, lineHeight: 17 },
+  operationsStrip: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  operationMetric: {
+    flexGrow: 1,
+    flexBasis: "45%",
+    minWidth: 145,
+    minHeight: 112,
+    justifyContent: "space-between",
     gap: 12,
+    padding: 13,
+    borderWidth: 1,
+    borderRadius: 15,
   },
   operationMetricHeading: {
     flex: 1,
@@ -1540,35 +2231,30 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   operationMetricIcon: {
-    width: 30,
-    height: 30,
+    width: 34,
+    height: 34,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 7,
+    borderRadius: 10,
   },
-  operationValue: {
-    maxWidth: "52%",
-    textAlign: "right",
-  },
-  operationDivider: {
-    height: StyleSheet.hairlineWidth,
-    marginLeft: 40,
-  },
+  operationMetricLabel: { flex: 1, minWidth: 0 },
+  operationValue: { fontSize: 19, fontVariant: ["tabular-nums"] },
   actionGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    borderTopWidth: StyleSheet.hairlineWidth,
+    gap: 9,
   },
   quickAction: {
-    width: "50%",
-    minHeight: 58,
+    flexGrow: 1,
+    flexBasis: "46%",
+    minWidth: 145,
+    minHeight: 76,
     flexDirection: "row",
     alignItems: "center",
-    gap: 9,
-    paddingHorizontal: 2,
-    paddingVertical: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#80808040",
+    gap: 10,
+    paddingHorizontal: 11,
+    paddingVertical: 11,
+    borderRadius: 15,
   },
   quickActionIcon: {
     width: 30,
@@ -1577,7 +2263,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderRadius: 7,
   },
-  quickActionLabel: { flex: 1, minWidth: 0 },
+  quickActionCopy: { flex: 1, minWidth: 0, gap: 3 },
+  quickActionLabel: { minWidth: 0 },
+  quickActionDetail: { fontSize: 11, opacity: 0.9 },
   dashboardLink: {
     minHeight: 68,
     flexDirection: "row",
@@ -1605,31 +2293,68 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
   },
   attentionList: { gap: 9 },
-  clearState: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 4 },
-  chartHeading: {
+  attentionSection: { gap: 8 },
+  attentionHeading: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 10,
-    paddingHorizontal: 2,
+    gap: 12,
   },
-  chartTitle: { flex: 1, gap: 1 },
+  attentionHeadingCopy: { flex: 1, gap: 0 },
+  seeAllAttention: {
+    minHeight: 44,
+    justifyContent: "center",
+    paddingHorizontal: 8,
+  },
+  chartHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    minHeight: 72,
+    borderWidth: 1,
+    borderRadius: 15,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  chartIcon: {
+    width: 38,
+    height: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+  },
+  chartTitle: { flex: 1, gap: 3 },
+  chartContent: { gap: 10 },
   rangeOption: {
-    minHeight: 36,
+    flex: 1,
+    minHeight: 44,
     justifyContent: "center",
     borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 12,
+    alignItems: "center",
+    borderRadius: 9,
+    paddingHorizontal: 5,
   },
   dateField: { flex: 1 },
   chartCard: {
     gap: 10,
     borderWidth: 1,
-    borderRadius: 6,
+    borderRadius: 15,
     padding: 14,
     overflow: "hidden",
   },
   chartMeta: { flexDirection: "row", justifyContent: "space-between", gap: 8 },
+  comparisonChart: { gap: 7, paddingVertical: 2 },
+  comparisonRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  comparisonLabel: { width: 82 },
+  comparisonTrack: {
+    height: 7,
+    flex: 1,
+    overflow: "hidden",
+    borderRadius: 4,
+    backgroundColor: "#80808020",
+  },
+  comparisonFill: { height: "100%", borderRadius: 4 },
+  comparisonValue: { width: 76, textAlign: "right" },
   chartState: { minHeight: 48, justifyContent: "center", paddingHorizontal: 3 },
   chartBars: {
     flexDirection: "row",
@@ -1637,7 +2362,7 @@ const styles = StyleSheet.create({
     gap: 8,
     height: 124,
   },
-  chartDay: { width: 34, alignItems: "center", justifyContent: "flex-end", gap: 5 },
+  chartDay: { width: 48, alignItems: "center", justifyContent: "flex-end", gap: 5 },
   chartValue: { height: 18, justifyContent: "center" },
   chartTrack: {
     width: 20,
@@ -1668,6 +2393,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   poultryCopy: { flex: 1, gap: 1 },
+  reviewEggsAction: { minHeight: 44, justifyContent: "center", alignSelf: "flex-start" },
   poultryDivider: { height: StyleSheet.hairlineWidth, marginLeft: 28 },
   inventoryLink: {
     minHeight: 42,
@@ -1681,8 +2407,22 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-  activityList: { gap: 3, paddingHorizontal: 4 },
-  emptyState: { gap: 4, paddingVertical: 10 },
+  activityActions: { flexDirection: "row", alignItems: "center", gap: 6 },
+  activityAction: {
+    minHeight: 36,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    borderRadius: 10,
+    paddingHorizontal: 7,
+  },
+  activityList: { gap: 8 },
+  emptyState: {
+    gap: 4,
+    padding: 14,
+    borderRadius: 13,
+    backgroundColor: "#80808010",
+  },
   footerLinks: { gap: 10, paddingTop: 4 },
   dashboardShortcut: {
     minHeight: 76,

@@ -480,9 +480,13 @@ export function getActivityNarrative(activity: FarmActivity): string {
       return `Recorded replacement stock received${reference ? ` for purchase ${reference}` : ""}.`;
     case "chicken_movement_created": {
       const quantity = formatQuantity(details.quantity);
+      const quantityCount = numberValue(details.quantity);
       const from = stringValue(details.from_block_name);
       const to = stringValue(details.to_block_name);
-      return `Moved ${quantity || "birds"}${from ? ` from ${from}` : ""}${to ? ` to ${to}` : ""}.`;
+      const moved = quantity
+        ? `${quantity} ${quantityCount === 1 ? "bird" : "birds"}`
+        : "chickens";
+      return `Moved ${moved}${from ? ` from ${from}` : ""}${to ? ` to ${to}` : ""}.`;
     }
     case "chicken_loss_recorded": {
       const count = numberValue(details.total_quantity);
@@ -575,6 +579,17 @@ export function getActivityNarrative(activity: FarmActivity): string {
       return `Recorded a customer return${reference ? ` for sale ${reference}` : ""}.`;
     case "transaction_refund_created":
       return `Recorded a customer refund${amount ? ` of ${amount}` : ""}${reference ? ` for ${reference}` : ""}.`;
+    case "inventory_adjusted": {
+      const direction = details.direction === "in" ? "Added" : "Removed";
+      const quantity = formatQuantity(details.quantity);
+      const unit = formatUnitName(
+        details.unit_abbreviation ?? details.unit_name,
+        details.quantity,
+      );
+      const product = stringValue(details.product_name) ?? "stock";
+      const reason = stringValue(details.reason);
+      return `${direction} ${[quantity, unit].filter(Boolean).join(" ")} of ${product}${reason ? ` · ${reason}` : ""}.`;
+    }
     default:
       return getActivityDetail(details) || `${getActivityLabel(activity.type)}.`;
   }

@@ -1,5 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams, type Href } from "expo-router";
+import { useState } from "react";
 import {
   Linking,
   Pressable,
@@ -25,35 +26,41 @@ import {
   useDeleteContact,
 } from "@/features/management/hooks";
 import { normalizeApiError } from "@/lib/api/errors";
-import { formatRelativeDate } from "@/lib/date/format-relative-date";
 import { useAuth } from "@/providers/auth-provider";
 import { useFarm } from "@/providers/farm-provider";
 import { useTheme } from "@/providers/theme-provider";
 
 export default function ContactDetailsRoute() {
+  const { contactId } = useLocalSearchParams<{ contactId: string }>();
   return (
     <SessionGate>
-      <ContactDetailsContent />
+      <ContactDetailsContent key={contactId} contactId={contactId} />
     </SessionGate>
   );
 }
 
-function ContactDetailsContent() {
+function ContactDetailsContent({ contactId }: { contactId: string }) {
   const { user } = useAuth();
   const farm = useFarm();
   const { theme } = useTheme();
   const dialog = useAppDialog();
-  const { contactId } = useLocalSearchParams<{ contactId: string }>();
+  const [historyOffset, setHistoryOffset] = useState(0);
   const contactQuery = useContact(user?.id, farm.selectedFarm?.id, contactId);
   const historyQuery = useContactTransactionHistory(
     user?.id,
     farm.selectedFarm?.id,
     contactId,
+    historyOffset,
   );
   const remove = useDeleteContact(user?.id ?? "", farm.selectedFarm?.id ?? "");
   const contact = contactQuery.data;
-  const history =
-    historyQuery.data?.pages.flatMap((page) => page.items) ?? [];
+  const history = historyQuery.data?.items ?? [];
+  const totalTransactions = historyQuery.data?.total_count ?? 0;
+  const pageSize = historyQuery.data?.limit ?? 25;
+  const currentPage = Math.floor(historyOffset / pageSize) + 1;
+  const totalPages = Math.max(1, Math.ceil(totalTransactions / pageSize));
+  const rangeStart = history.length ? historyOffset + 1 : 0;
+  const rangeEnd = historyOffset + history.length;
 
   async function confirmDelete() {
     if (!contact) return;
@@ -108,6 +115,7 @@ function ContactDetailsContent() {
       edges={["top", "bottom"]}
     >
       <ScrollView
+        style={styles.scroll}
         contentContainerStyle={styles.content}
         refreshControl={
           <RefreshControl
@@ -168,7 +176,7 @@ function ContactDetailsContent() {
                     {farm.selectedFarm?.name ?? "Farm"} · Contact
                   </AppText>
                   <AppText
-                    size="title"
+                    size="heading"
                     weight="semibold"
                     style={styles.contactName}
                   >
@@ -186,11 +194,11 @@ function ContactDetailsContent() {
             <Card style={[styles.section, styles.informationCard]}>
               <View style={styles.sectionHeading}>
                 <View style={styles.sectionHeadingCopy}>
-                  <AppText size="heading" weight="semibold">
+                  <AppText size="body" weight="semibold">
                     Contact information
                   </AppText>
                   <AppText size="small" tone="secondary">
-                    Details for getting in touch.
+                    Ways to reach this contact.
                   </AppText>
                 </View>
                 <View
@@ -206,40 +214,48 @@ function ContactDetailsContent() {
                   />
                 </View>
               </View>
-              <InfoRow
-                icon="call-outline"
-                label="Phone"
-                value={contact.phone ?? "Not provided"}
-                onPress={
-                  contact.phone?.trim()
-                    ? () =>
-                        void openContactLink(
-                          `tel:${contact.phone!.replace(/[^\d+]/g, "")}`,
-                          "phone app",
-                        )
-                    : undefined
-                }
-              />
-              <InfoRow
-                icon="mail-outline"
-                label="Email"
-                value={contact.email ?? "Not provided"}
-                onPress={
-                  contact.email?.trim()
-                    ? () =>
-                        void openContactLink(
-                          `mailto:${encodeURIComponent(contact.email!.trim())}`,
-                          "email app",
-                        )
-                    : undefined
-                }
-              />
-              <InfoRow
-                icon="location-outline"
-                label="Address"
-                value={contact.address ?? "Not provided"}
-              />
-              {contact.notes ? (
+              {contact.phone?.trim() ? (
+                <InfoRow
+                  icon="call-outline"
+                  label="Phone"
+                  value={contact.phone}
+                  onPress={() =>
+                    void openContactLink(
+                      `tel:${contact.phone!.replace(/[^\d+]/g, "")}`,
+                      "phone app",
+                    )
+                  }
+                />
+              ) : null}
+              {contact.email?.trim() ? (
+                <InfoRow
+                  icon="mail-outline"
+                  label="Email"
+                  value={contact.email}
+                  onPress={() =>
+                    void openContactLink(
+                      `mailto:${encodeURIComponent(contact.email!.trim())}`,
+                      "email app",
+                    )
+                  }
+                />
+              ) : null}
+              {contact.address?.trim() ? (
+                <InfoRow
+                  icon="location-outline"
+                  label="Address"
+                  value={contact.address}
+                />
+              ) : null}
+              {!contact.phone?.trim() &&
+              !contact.email?.trim() &&
+              !contact.address?.trim() &&
+              !contact.notes?.trim() ? (
+                <AppText size="small" tone="secondary">
+                  No contact details have been added yet.
+                </AppText>
+              ) : null}
+              {contact.notes?.trim() ? (
                 <View
                   style={[
                     styles.notes,
@@ -255,40 +271,26 @@ function ContactDetailsContent() {
             </Card>
 
             <Card style={styles.section}>
-              <AppText size="heading" weight="semibold">
-                Record details
-              </AppText>
-              <DetailRow
-                label="Created"
-                value={formatRelativeDate(contact.created_at)}
-              />
-              <DetailRow
-                label="Last updated"
-                value={formatRelativeDate(contact.updated_at)}
-              />
-            </Card>
-
-            <Card style={styles.section}>
               <View style={styles.historyHeading}>
                 <View style={styles.historyHeadingCopy}>
                   <AppText
-                    size="heading"
+                    size="body"
                     weight="semibold"
                     style={styles.historyTitle}
                   >
-                    Transactions & balances
+                    Transactions
                   </AppText>
                   <AppText size="small" tone="secondary">
-                    Open a record to review its full details and settlement.
+                    Sales and purchases with this contact.
                   </AppText>
                 </View>
-                {historyQuery.data?.pages[0] ? (
+                {historyQuery.data ? (
                   <AppText
                     size="small"
                     tone="secondary"
                     style={styles.recordCount}
                   >
-                    {historyQuery.data.pages[0].total_count} records
+                    {rangeStart}–{rangeEnd} of {totalTransactions}
                   </AppText>
                 ) : null}
               </View>
@@ -312,7 +314,7 @@ function ContactDetailsContent() {
               ) : null}
               {!historyQuery.isLoading &&
               !historyQuery.isError &&
-              history.length === 0 ? (
+              totalTransactions === 0 ? (
                 <AppText size="small" tone="secondary">
                   No sales or purchases have been recorded for this contact.
                 </AppText>
@@ -320,65 +322,100 @@ function ContactDetailsContent() {
               {history.map((item) => (
                 <TransactionHistoryRow key={item.id} item={item} />
               ))}
-              {historyQuery.hasNextPage ? (
-                <Button
-                  label={
-                    historyQuery.isFetchingNextPage
-                      ? "Loading…"
-                      : "Load older transactions"
-                  }
-                  variant="secondary"
-                  disabled={historyQuery.isFetchingNextPage}
-                  onPress={() => void historyQuery.fetchNextPage()}
-                />
+              {totalTransactions > pageSize ? (
+                <View style={styles.pagination}>
+                  <Button
+                    label="Previous"
+                    variant="secondary"
+                    disabled={historyOffset === 0 || historyQuery.isFetching}
+                    onPress={() =>
+                      setHistoryOffset((current) =>
+                        Math.max(0, current - pageSize),
+                      )
+                    }
+                  />
+                  <AppText
+                    size="small"
+                    tone="secondary"
+                    style={styles.pageNumber}
+                  >
+                    Page {currentPage} of {totalPages}
+                  </AppText>
+                  <Button
+                    label="Next"
+                    variant="secondary"
+                    disabled={
+                      historyOffset + history.length >= totalTransactions ||
+                      historyQuery.isFetching
+                    }
+                    onPress={() => setHistoryOffset((current) => current + pageSize)}
+                  />
+                </View>
               ) : null}
             </Card>
-
-            <View style={styles.actions}>
-              <Button
-                label="Edit contact"
-                onPress={() =>
-                  router.push({
-                    pathname: "/contacts/[contactId]/edit",
-                    params: { contactId: contact.id },
-                  })
-                }
-              />
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ disabled: remove.isPending }}
-                disabled={remove.isPending}
-                onPress={() => void confirmDelete()}
-                style={({ pressed }) => [
-                  styles.deleteAction,
-                  { borderColor: theme.border, opacity: pressed ? 0.7 : 1 },
-                ]}
-              >
-                {remove.isPending ? (
-                  <AppText size="small" style={{ color: theme.danger }}>
-                    Deleting…
-                  </AppText>
-                ) : (
-                  <>
-                    <Ionicons
-                      name="trash-outline"
-                      size={17}
-                      color={theme.danger}
-                    />
-                    <AppText
-                      size="small"
-                      weight="semibold"
-                      style={{ color: theme.danger }}
-                    >
-                      Delete contact
-                    </AppText>
-                  </>
-                )}
-              </Pressable>
-            </View>
           </>
         ) : null}
       </ScrollView>
+      {contact && !contactQuery.isError ? (
+        <View
+          style={[
+            styles.actionBar,
+            {
+              borderTopColor: theme.border,
+              backgroundColor: theme.background,
+            },
+          ]}
+        >
+          <View style={styles.actions}>
+            <Button
+              label="Edit contact"
+              style={styles.editAction}
+              onPress={() =>
+                router.push({
+                  pathname: "/contacts/[contactId]/edit",
+                  params: { contactId: contact.id },
+                })
+              }
+            />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Delete contact"
+              accessibilityState={{ disabled: remove.isPending }}
+              disabled={remove.isPending}
+              onPress={() => void confirmDelete()}
+              style={({ pressed }) => [
+                styles.deleteAction,
+                {
+                  borderColor: theme.border,
+                  backgroundColor: theme.backgroundElement,
+                  opacity: pressed || remove.isPending ? 0.7 : 1,
+                },
+              ]}
+            >
+              {remove.isPending ? (
+                <AppText size="small" style={{ color: theme.danger }}>
+                  Deleting…
+                </AppText>
+              ) : (
+                <>
+                  <Ionicons
+                    name="trash-outline"
+                    size={17}
+                    color={theme.danger}
+                  />
+                  <AppText
+                    size="small"
+                    weight="semibold"
+                    style={{ color: theme.danger }}
+                  >
+                    Delete
+                  </AppText>
+                </>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -438,9 +475,8 @@ function TransactionHistoryRow({
       </View>
       <View style={styles.transactionCopy}>
         <View style={styles.transactionTitleLine}>
-          <AppText weight="semibold" style={styles.transactionTitle}>
+          <AppText weight="semibold">
             {isSale ? "Sale" : "Purchase"}
-            {item.reference_number ? ` · ${item.reference_number}` : ""}
           </AppText>
           <AppText
             size="small"
@@ -450,6 +486,14 @@ function TransactionHistoryRow({
             {formatMoney(item.transaction_total, theme.currency)}
           </AppText>
         </View>
+        <AppText
+          size="small"
+          tone="secondary"
+          numberOfLines={1}
+          ellipsizeMode="middle"
+        >
+          {item.reference_number ?? "No reference"}
+        </AppText>
         <AppText size="small" tone="secondary">
           {formatTransactionDate(item.transaction_date)} · {item.item_count}{" "}
           {item.item_count === 1 ? "item" : "items"}
@@ -515,20 +559,6 @@ function InfoRow({
   );
 }
 
-function DetailRow({ label, value }: { label: string; value: string }) {
-  const { theme } = useTheme();
-  return (
-    <View style={[styles.detailRow, { borderBottomColor: theme.border }]}>
-      <AppText size="small" tone="secondary">
-        {label}
-      </AppText>
-      <AppText size="small" style={styles.detailValue}>
-        {value}
-      </AppText>
-    </View>
-  );
-}
-
 function formatMoney(value: number | string, currency: string): string {
   return `${currency} ${new Intl.NumberFormat(undefined, {
     minimumFractionDigits: 2,
@@ -558,13 +588,14 @@ function contactInitials(name: string): string {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
+  scroll: { flex: 1 },
   content: {
     width: "100%",
     maxWidth: 760,
     alignSelf: "center",
-    padding: 20,
-    paddingBottom: 36,
-    gap: 14,
+    padding: 16,
+    paddingBottom: 20,
+    gap: 12,
   },
   state: { gap: 10 },
   profileCard: {
@@ -576,16 +607,16 @@ const styles = StyleSheet.create({
   profileContent: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 15,
-    padding: 18,
+    gap: 12,
+    padding: 14,
     minWidth: 0,
   },
   avatar: {
-    width: 68,
-    height: 68,
+    width: 54,
+    height: 54,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 22,
+    borderRadius: 18,
   },
   titleCopy: { flex: 1, gap: 5, minWidth: 0 },
   contactName: { flexShrink: 1 },
@@ -629,59 +660,67 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     justifyContent: "space-between",
-    flexWrap: "wrap",
-    gap: 12,
+    gap: 8,
   },
-  historyHeadingCopy: { flex: 1, flexBasis: 220, gap: 3, minWidth: 0 },
+  historyHeadingCopy: { flex: 1, gap: 3, minWidth: 0 },
   historyTitle: { flexShrink: 1 },
-  recordCount: { flexShrink: 0 },
+  recordCount: { flexShrink: 0, textAlign: "right" },
   historyError: { gap: 8 },
-  transactionRow: {
-    minHeight: 78,
+  pagination: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 8,
+  },
+  pageNumber: { flex: 1, textAlign: "center" },
+  transactionRow: {
+    minHeight: 88,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
     borderWidth: 1,
-    borderRadius: 11,
-    padding: 11,
+    borderRadius: 12,
+    padding: 10,
     minWidth: 0,
   },
   transactionIcon: {
-    width: 40,
-    height: 40,
+    width: 36,
+    height: 36,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 12,
+    borderRadius: 11,
   },
-  transactionCopy: { flex: 1, gap: 4, minWidth: 0 },
+  transactionCopy: { flex: 1, gap: 2, minWidth: 0 },
   transactionTitleLine: {
     flexDirection: "row",
     justifyContent: "space-between",
-    flexWrap: "wrap",
-    gap: 8,
+    alignItems: "center",
+    gap: 6,
     minWidth: 0,
   },
-  transactionTitle: { flex: 1, flexBasis: 120, minWidth: 0 },
   transactionAmount: { flexShrink: 1, textAlign: "right" },
   balanceLabel: { flexShrink: 1 },
-  detailRow: {
-    minHeight: 40,
+  actionBar: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 10,
+  },
+  actions: {
+    width: "100%",
+    maxWidth: 760,
+    alignSelf: "center",
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    flexWrap: "wrap",
-    gap: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    gap: 10,
+    paddingHorizontal: 16,
   },
-  detailValue: { flexShrink: 1, textAlign: "right" },
-  actions: { gap: 10 },
+  editAction: { flex: 1 },
   deleteAction: {
     minHeight: 48,
+    minWidth: 102,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
+    gap: 7,
     borderWidth: 1,
-    borderRadius: 10,
+    borderRadius: 8,
   },
 });

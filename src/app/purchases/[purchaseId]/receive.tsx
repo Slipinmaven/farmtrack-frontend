@@ -44,6 +44,7 @@ type ReceiptDraft = {
   batchId: string;
   batchSearch: string;
   createBatch: boolean;
+  showBatchDetails: boolean;
   batchName: string;
   age: string;
   ageUnit: ChickenAgeUnit;
@@ -87,6 +88,7 @@ function PurchaseReceiptContent() {
   const [draftOverride, setDraftOverride] = useState<ReceiptDraft[] | null>(null);
   const [receivedDate, setReceivedDate] = useState(localDateString);
   const [notes, setNotes] = useState("");
+  const [showNotes, setShowNotes] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ageUnitItemId, setAgeUnitItemId] = useState<string | null>(null);
 
@@ -109,6 +111,7 @@ function PurchaseReceiptContent() {
           batchId: linkedBatchId,
           batchSearch: "",
           createBatch: !linkedBatchId,
+          showBatchDetails: false,
           batchName: "",
           age: "",
           ageUnit: "weeks" as ChickenAgeUnit,
@@ -130,6 +133,11 @@ function PurchaseReceiptContent() {
   }
 
   function updateQuantity(transactionItemId: string, value: string) {
+    if (value && !/^\d+$/.test(value)) {
+      setError("Enter a whole number of chickens.");
+      return;
+    }
+    setError(null);
     updateDraft(transactionItemId, (draft) => ({ ...draft, quantity: value }));
   }
 
@@ -275,14 +283,6 @@ function PurchaseReceiptContent() {
   const outstandingItems = chickenItems.filter(
     (item) => Number(item.quantity_remaining) > 0,
   );
-  const totalPurchased = chickenItems.reduce(
-    (sum, item) => sum + Number(item.quantity),
-    0,
-  );
-  const totalReceived = chickenItems.reduce(
-    (sum, item) => sum + Number(item.quantity_received),
-    0,
-  );
   const totalOutstanding = outstandingItems.reduce(
     (sum, item) => sum + Number(item.quantity_remaining),
     0,
@@ -291,8 +291,6 @@ function PurchaseReceiptContent() {
     (sum, draft) => sum + (Number(draft.quantity) || 0),
     0,
   );
-  const receivedProgress =
-    totalPurchased > 0 ? Math.min(1, totalReceived / totalPurchased) : 0;
   const activeAgeDraft = drafts.find(
     (draft) => draft.transactionItemId === ageUnitItemId,
   );
@@ -309,11 +307,11 @@ function PurchaseReceiptContent() {
           keyboardDismissMode="on-drag"
           automaticallyAdjustKeyboardInsets
         >
-        <FarmPageHeader title="Record chicken receipt" showBack />
+        <FarmPageHeader title="Receive chickens" showBack />
         {isLoading ? (
           <Card style={styles.state}>
             <ActivityIndicator color={theme.primary} />
-            <AppText tone="secondary">Loading outstanding quantities and housing capacity…</AppText>
+            <AppText tone="secondary">Loading receipt…</AppText>
           </Card>
         ) : loadError ? (
           <Card style={styles.state}>
@@ -336,18 +334,12 @@ function PurchaseReceiptContent() {
             <>
               <Card style={styles.purchaseOverview}>
                 <View style={styles.overviewHeading}>
-                  <View style={[styles.overviewIcon, { backgroundColor: `${theme.primary}16` }]}>
-                    <Ionicons name="receipt-outline" size={21} color={theme.primary} />
-                  </View>
                   <View style={styles.overviewCopy}>
                     <AppText size="small" tone="secondary">
                       {detail.data.transaction.reference_number ?? "Chicken purchase"}
                     </AppText>
-                    <AppText weight="semibold">
+                    <AppText weight="semibold" numberOfLines={1}>
                       {detail.data.supplier_name ?? "Purchase"}
-                    </AppText>
-                    <AppText size="small" tone="secondary">
-                      Purchased {detail.data.transaction.transaction_date}
                     </AppText>
                   </View>
                   <View style={[styles.outstandingBadge, { backgroundColor: `${theme.secondary}18` }]}>
@@ -356,44 +348,12 @@ function PurchaseReceiptContent() {
                     </AppText>
                   </View>
                 </View>
-                <View style={[styles.progressTrack, { backgroundColor: theme.border }]}>
-                  <View
-                    style={[
-                      styles.progressFill,
-                      {
-                        width: `${receivedProgress * 100}%`,
-                        backgroundColor: theme.success,
-                      },
-                    ]}
-                  />
-                </View>
-                <View style={styles.overviewStats}>
-                  <OverviewStat label="Purchased" value={totalPurchased} color={theme.text} />
-                  <OverviewStat label="Received" value={totalReceived} color={theme.success} />
-                  <OverviewStat label="Outstanding" value={totalOutstanding} color={theme.secondary} />
-                </View>
-                <View style={[styles.receiptInstruction, { backgroundColor: theme.background }]}>
-                  <Ionicons name="information-circle-outline" size={18} color={theme.primary} />
-                  <AppText size="small" tone="secondary" style={styles.instructionCopy}>
-                    Record only what arrived today. Any balance stays outstanding for the next delivery.
-                  </AppText>
-                </View>
               </Card>
               <Card style={styles.dateCard}>
-                <View style={styles.sectionHeading}>
-                  <View>
-                    <AppText weight="semibold">Receipt details</AppText>
-                    <AppText size="small" tone="secondary">When did this delivery arrive?</AppText>
-                  </View>
-                  <Ionicons name="calendar-outline" size={20} color={theme.primary} />
-                </View>
                 <DatePickerField label="Receipt date" value={receivedDate} onChange={setReceivedDate} />
               </Card>
                 <View style={styles.itemsHeading}>
-                  <View>
-                    <AppText size="heading" weight="semibold">Items arriving</AppText>
-                    <AppText size="small" tone="secondary">Enter a quantity for each item delivered.</AppText>
-                  </View>
+                  <AppText size="body" weight="semibold">Items</AppText>
                   <View style={[styles.nowBadge, { backgroundColor: `${theme.primary}14` }]}>
                     <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
                       {totalReceivingNow.toLocaleString()} now
@@ -436,20 +396,20 @@ function PurchaseReceiptContent() {
                       <View style={[styles.quantitySummary, { backgroundColor: `${theme.primary}08` }]}>
                         <QuantityStat label="Bought" value={Number(item.quantity)} />
                         <QuantityStat label="Received" value={Number(item.quantity_received)} color={theme.success} />
-                        <QuantityStat label="Still due" value={Number(item.quantity_remaining)} color={theme.secondary} />
+                        <QuantityStat label="Due" value={Number(item.quantity_remaining)} color={theme.secondary} />
                       </View>
                       <View style={[styles.receiveNowPanel, { backgroundColor: theme.backgroundSelected }]}>
                         <View style={styles.receiveNowHeading}>
-                          <View>
-                            <AppText weight="semibold">Received in this delivery</AppText>
-                            <AppText size="small" tone="secondary">
-                              Up to {Number(item.quantity_remaining).toLocaleString()} remaining
-                            </AppText>
-                          </View>
+                          <AppText weight="semibold">Receive now</AppText>
                           <Pressable
                             accessibilityRole="button"
-                            accessibilityLabel={`Receive all ${item.quantity_remaining} remaining chickens`}
-                            onPress={() => updateQuantity(item.id, String(item.quantity_remaining))}
+                            accessibilityLabel={`Receive all ${Number(item.quantity_remaining).toLocaleString()} remaining chickens`}
+                            onPress={() =>
+                              updateQuantity(
+                                item.id,
+                                String(Number(item.quantity_remaining)),
+                              )
+                            }
                             style={[styles.fillRemainingButton, { backgroundColor: `${theme.primary}14` }]}
                           >
                             <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
@@ -462,7 +422,7 @@ function PurchaseReceiptContent() {
                           keyboardType="number-pad"
                           value={draft.quantity}
                           onChangeText={(value) => updateQuantity(item.id, value)}
-                          placeholder="Enter quantity received"
+                          placeholder="Quantity"
                           placeholderTextColor={theme.textSecondary}
                           style={[styles.quantityInput, { backgroundColor: theme.backgroundElement, color: theme.text, borderColor: theme.border }]}
                         />
@@ -477,20 +437,17 @@ function PurchaseReceiptContent() {
                       ) : (
                         <>
                           <View style={styles.subsectionHeading}>
-                            <AppText weight="semibold">Batch assignment</AppText>
-                            <AppText size="small" tone="secondary">Where should these birds be grouped?</AppText>
+                            <AppText weight="semibold">Batch</AppText>
                           </View>
                           <View style={styles.batchModeRow}>
                             <BatchModeOption
                               title="New batch"
-                              description="Auto-named by default"
                               icon="add-circle-outline"
                               selected={draft.createBatch}
                               onPress={() => updateDraft(item.id, (current) => ({ ...current, createBatch: true, batchId: "" }))}
                             />
                             <BatchModeOption
                               title="Existing batch"
-                              description={matchingBatches.length ? "Continue a group" : "No matching batches"}
                               icon="layers-outline"
                               selected={!draft.createBatch}
                               disabled={matchingBatches.length === 0}
@@ -498,23 +455,43 @@ function PurchaseReceiptContent() {
                             />
                           </View>
                           {draft.createBatch ? (
+                            <>
+                            <Pressable
+                              accessibilityRole="button"
+                              accessibilityState={{ expanded: draft.showBatchDetails }}
+                              onPress={() =>
+                                updateDraft(item.id, (current) => ({
+                                  ...current,
+                                  showBatchDetails: !current.showBatchDetails,
+                                }))
+                              }
+                              style={styles.optionalDetailsToggle}
+                            >
+                              <AppText size="small" tone="secondary">
+                                Batch name and age (optional)
+                              </AppText>
+                              <Ionicons
+                                name={draft.showBatchDetails ? "chevron-up" : "chevron-down"}
+                                size={17}
+                                color={theme.textSecondary}
+                              />
+                            </Pressable>
+                            {draft.showBatchDetails ? (
                             <View style={styles.batchDetails}>
                               <View style={styles.fieldLabel}>
                                 <AppText size="small" weight="semibold">Batch name</AppText>
-                                <AppText size="small" tone="secondary">Optional</AppText>
                               </View>
                               <TextInput
                                 accessibilityLabel="New chicken batch name"
                                 value={draft.batchName}
                                 onChangeText={(batchName) => updateDraft(item.id, (current) => ({ ...current, batchName }))}
-                                placeholder="Auto-generated if left blank"
+                                placeholder="Optional"
                                 placeholderTextColor={theme.textSecondary}
                                 maxLength={100}
                                 style={[styles.input, { backgroundColor: theme.background, color: theme.text, borderColor: theme.border }]}
                               />
                               <View style={styles.fieldLabel}>
-                                <AppText size="small" weight="semibold">Age on arrival</AppText>
-                                <AppText size="small" tone="secondary">Optional · estimates hatch date</AppText>
+                                <AppText size="small" weight="semibold">Age (optional)</AppText>
                               </View>
                               <View style={styles.ageRow}>
                                 <TextInput
@@ -543,6 +520,8 @@ function PurchaseReceiptContent() {
                                 </Pressable>
                               </View>
                             </View>
+                            ) : null}
+                            </>
                           ) : matchingBatches.length ? (
                             <>
                               <TextInput
@@ -575,10 +554,7 @@ function PurchaseReceiptContent() {
                         </>
                       )}
                       <View style={styles.subsectionHeading}>
-                        <AppText weight="semibold">Choose housing blocks</AppText>
-                        <AppText size="small" tone="secondary">
-                          Select one or more blocks, then enter the number going into each.
-                        </AppText>
+                        <AppText weight="semibold">Housing blocks</AppText>
                       </View>
                       {options.data.blocks.length === 0 ? (
                         <View style={[styles.allocationNotice, { backgroundColor: `${theme.danger}0D` }]}>
@@ -753,16 +729,30 @@ function PurchaseReceiptContent() {
                   );
                 })}
               <Card style={styles.notesCard}>
-                <AppText weight="semibold">Delivery notes <AppText tone="secondary">(optional)</AppText></AppText>
-                <TextInput
-                  accessibilityLabel="Receipt notes"
-                  value={notes}
-                  onChangeText={setNotes}
-                  placeholder="Condition, transport, or other useful details"
-                  placeholderTextColor={theme.textSecondary}
-                  multiline
-                  style={[styles.quantityInput, styles.notes, { backgroundColor: theme.background, color: theme.text, borderColor: theme.border }]}
-                />
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ expanded: showNotes }}
+                  onPress={() => setShowNotes((shown) => !shown)}
+                  style={styles.notesToggle}
+                >
+                  <AppText size="small" weight="semibold">Add delivery note (optional)</AppText>
+                  <Ionicons
+                    name={showNotes ? "chevron-up" : "chevron-down"}
+                    size={17}
+                    color={theme.textSecondary}
+                  />
+                </Pressable>
+                {showNotes ? (
+                  <TextInput
+                    accessibilityLabel="Receipt notes"
+                    value={notes}
+                    onChangeText={setNotes}
+                    placeholder="Condition or transport"
+                    placeholderTextColor={theme.textSecondary}
+                    multiline
+                    style={[styles.quantityInput, styles.notes, { backgroundColor: theme.background, color: theme.text, borderColor: theme.border }]}
+                  />
+                ) : null}
               </Card>
               {error ? (
                 <Card style={[styles.errorCard, { borderColor: `${theme.danger}66`, backgroundColor: `${theme.danger}0D` }]}>
@@ -771,11 +761,8 @@ function PurchaseReceiptContent() {
                 </Card>
               ) : null}
               <View style={styles.submitSection}>
-                <AppText size="small" tone="secondary">
-                  Only the quantity entered above is added to flock stock.
-                </AppText>
                 <Button
-                  label={`Record ${totalReceivingNow ? totalReceivingNow.toLocaleString() : ""} chickens received`}
+                  label="Record receipt"
                   loading={createReceipt.isPending}
                   disabled={createReceipt.isPending}
                   onPress={() => void submit()}
@@ -847,14 +834,12 @@ function PurchaseReceiptContent() {
 
 function BatchModeOption({
   title,
-  description,
   icon,
   selected,
   disabled = false,
   onPress,
 }: {
   title: string;
-  description: string;
   icon: "add-circle-outline" | "layers-outline";
   selected: boolean;
   disabled?: boolean;
@@ -884,9 +869,6 @@ function BatchModeOption({
       <View style={styles.batchModeCopy}>
         <AppText size="small" weight="semibold" style={selected ? { color: theme.primary } : undefined}>
           {title}
-        </AppText>
-        <AppText size="small" tone="secondary" numberOfLines={1}>
-          {description}
         </AppText>
       </View>
     </Pressable>
@@ -935,27 +917,6 @@ function Choice({
   );
 }
 
-function OverviewStat({
-  label,
-  value,
-  color,
-}: {
-  label: string;
-  value: number;
-  color: string;
-}) {
-  return (
-    <View style={styles.overviewStat}>
-      <AppText size="small" tone="secondary" numberOfLines={1}>
-        {label}
-      </AppText>
-      <AppText weight="semibold" style={{ color }}>
-        {value.toLocaleString()}
-      </AppText>
-    </View>
-  );
-}
-
 function QuantityStat({
   label,
   value,
@@ -983,80 +944,56 @@ const styles = StyleSheet.create({
     width: "100%",
     maxWidth: 760,
     alignSelf: "center",
-    padding: 20,
-    paddingBottom: 56,
-    gap: 16,
+    padding: 14,
+    paddingBottom: 32,
+    gap: 10,
   },
-  state: { gap: 12, alignItems: "flex-start", borderRadius: 16 },
-  purchaseOverview: { gap: 16, borderRadius: 18, padding: 18 },
-  overviewHeading: { flexDirection: "row", alignItems: "center", gap: 12 },
-  overviewIcon: {
-    width: 42,
-    height: 42,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 13,
-  },
-  overviewCopy: { flex: 1, minWidth: 0, gap: 3 },
+  state: { gap: 8, alignItems: "flex-start", borderRadius: 14 },
+  purchaseOverview: { gap: 8, borderRadius: 14, padding: 12 },
+  overviewHeading: { flexDirection: "row", alignItems: "center", gap: 8 },
+  overviewCopy: { flex: 1, minWidth: 0, gap: 1 },
   outstandingBadge: {
     borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-  },
-  progressTrack: { height: 7, overflow: "hidden", borderRadius: 999 },
-  progressFill: { height: "100%", borderRadius: 999 },
-  overviewStats: { flexDirection: "row", gap: 10 },
-  overviewStat: { flex: 1, minWidth: 0, gap: 4 },
-  receiptInstruction: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 9,
-    borderRadius: 12,
-    padding: 11,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
   },
   instructionCopy: { flex: 1, lineHeight: 19 },
-  dateCard: { gap: 14, borderRadius: 16, padding: 17 },
-  sectionHeading: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-  },
+  dateCard: { gap: 8, borderRadius: 13, padding: 10 },
   itemsHeading: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
-    paddingTop: 4,
+    paddingTop: 1,
   },
-  nowBadge: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 7 },
-  itemCard: { gap: 16, borderRadius: 18, padding: 17 },
-  itemTitleRow: { flexDirection: "row", alignItems: "center", gap: 11 },
+  nowBadge: { borderRadius: 999, paddingHorizontal: 8, paddingVertical: 5 },
+  itemCard: { gap: 10, borderRadius: 14, padding: 12 },
+  itemTitleRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   itemNumber: {
-    width: 37,
-    height: 37,
+    width: 30,
+    height: 30,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 12,
+    borderRadius: 9,
   },
-  itemTitleCopy: { flex: 1, minWidth: 0, gap: 3 },
-  quantitySummary: { flexDirection: "row", gap: 8, borderRadius: 13, padding: 12 },
-  quantityStat: { flex: 1, minWidth: 0, gap: 4 },
-  receiveNowPanel: { gap: 12, borderRadius: 14, padding: 14 },
+  itemTitleCopy: { flex: 1, minWidth: 0, gap: 1 },
+  quantitySummary: { flexDirection: "row", gap: 6, borderRadius: 10, padding: 8 },
+  quantityStat: { flex: 1, minWidth: 0, gap: 2 },
+  receiveNowPanel: { gap: 8, borderRadius: 11, padding: 10 },
   receiveNowHeading: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
   },
-  fillRemainingButton: { borderRadius: 9, paddingHorizontal: 10, paddingVertical: 7 },
+  fillRemainingButton: { borderRadius: 8, paddingHorizontal: 9, paddingVertical: 5 },
   quantityInput: {
-    minHeight: 54,
+    minHeight: 46,
     borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 18,
+    borderRadius: 10,
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+    fontSize: 16,
   },
   input: {
     minHeight: 48,
@@ -1073,7 +1010,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 12,
   },
-  subsectionHeading: { gap: 3, paddingTop: 2 },
+  subsectionHeading: { gap: 2, paddingTop: 0 },
   choiceList: { gap: 8 },
   choice: {
     minHeight: 48,
@@ -1091,17 +1028,25 @@ const styles = StyleSheet.create({
   batchModeOption: {
     flex: 1,
     minWidth: 0,
-    minHeight: 70,
+    minHeight: 48,
     flexDirection: "row",
     alignItems: "center",
     gap: 9,
     borderWidth: 1,
     borderRadius: 13,
-    paddingHorizontal: 11,
-    paddingVertical: 10,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
   },
-  batchModeCopy: { flex: 1, minWidth: 0, gap: 3 },
-  batchDetails: { gap: 9 },
+  batchModeCopy: { flex: 1, minWidth: 0 },
+  batchDetails: { gap: 6 },
+  optionalDetailsToggle: {
+    minHeight: 34,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderRadius: 8,
+    paddingHorizontal: 8,
+  },
   fieldLabel: {
     flexDirection: "row",
     alignItems: "center",
@@ -1122,8 +1067,8 @@ const styles = StyleSheet.create({
     borderRadius: 11,
     paddingHorizontal: 13,
   },
-  blockList: { gap: 9 },
-  blockChoice: { gap: 10, borderWidth: 1, borderRadius: 14, padding: 12 },
+  blockList: { gap: 7 },
+  blockChoice: { gap: 7, borderWidth: 1, borderRadius: 12, padding: 9 },
   blockChoiceHeader: {
     minHeight: 42,
     flexDirection: "row",
@@ -1145,7 +1090,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 10,
     borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: 10,
+    paddingTop: 7,
   },
   blockQuantityInput: {
     width: 92,
@@ -1161,7 +1106,7 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     gap: 9,
     borderRadius: 12,
-    padding: 12,
+    padding: 9,
   },
   allocationProgress: {
     flexDirection: "row",
@@ -1189,8 +1134,14 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingHorizontal: 13,
   },
-  notesCard: { gap: 12, borderRadius: 16, padding: 17 },
-  notes: { minHeight: 92, textAlignVertical: "top", fontSize: 16 },
+  notesCard: { gap: 8, borderRadius: 14, padding: 12 },
+  notesToggle: {
+    minHeight: 32,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  notes: { minHeight: 64, textAlignVertical: "top", fontSize: 15 },
   errorCard: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -1199,5 +1150,5 @@ const styles = StyleSheet.create({
     borderRadius: 13,
     padding: 13,
   },
-  submitSection: { gap: 10, paddingTop: 3 },
+  submitSection: { gap: 8, paddingTop: 1 },
 });

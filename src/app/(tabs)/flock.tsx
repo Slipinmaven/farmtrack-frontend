@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router, type Href } from "expo-router";
-import { useState } from "react";
+import { router, useFocusEffect, type Href } from "expo-router";
+import { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -9,6 +9,7 @@ import {
   StyleSheet,
   View,
 } from "react-native";
+import Animated, { FadeInDown } from "react-native-reanimated";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { FarmPageHeader } from "@/components/layout/farm-page-header";
@@ -20,11 +21,13 @@ import type {
   ChickenSaleBatch,
   ChickenSaleOptions,
 } from "@/features/chickens/api";
+import { formatChickenCount } from "@/features/chickens/format";
 import { useChickenSaleOptions } from "@/features/chickens/hooks";
 import type { FarmActivity } from "@/features/management/api";
 import { useFarmActivities } from "@/features/management/hooks";
 import { normalizeApiError } from "@/lib/api/errors";
 import { formatRelativeDate } from "@/lib/date/format-relative-date";
+import { usePendingSaleDeliveries } from "@/features/sales/hooks";
 import { useAuth } from "@/providers/auth-provider";
 import { useFarm } from "@/providers/farm-provider";
 import { useTheme } from "@/providers/theme-provider";
@@ -52,6 +55,10 @@ function FlockContent() {
   const { theme } = useTheme();
   const [inventoryView, setInventoryView] = useState<InventoryView>("blocks");
   const options = useChickenSaleOptions(user?.id, farm.selectedFarm?.id);
+  const pendingDeliveries = usePendingSaleDeliveries(
+    user?.id,
+    farm.selectedFarm?.id,
+  );
   const activity = useFarmActivities(
     user?.id,
     farm.selectedFarm?.id,
@@ -59,6 +66,22 @@ function FlockContent() {
     "flock",
     undefined,
     undefined,
+  );
+  const refetchOptions = options.refetch;
+  const refetchActivity = activity.refetch;
+  const refetchPendingDeliveries = pendingDeliveries.refetch;
+  const hasFocused = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (hasFocused.current) {
+        void Promise.all([
+          refetchOptions(),
+          refetchActivity(),
+          refetchPendingDeliveries(),
+        ]);
+      }
+      hasFocused.current = true;
+    }, [refetchActivity, refetchOptions, refetchPendingDeliveries]),
   );
   const blocks = options.data?.blocks ?? emptyBlocks;
   const batches = options.data?.batches ?? emptyBatches;
@@ -74,6 +97,14 @@ function FlockContent() {
     (total, block) => total + block.maximum_chickens,
     0,
   );
+  const capacityForUtilization = blocks.reduce(
+    (total, block) =>
+      total +
+      (block.maximum_chickens > 0
+        ? block.maximum_chickens
+        : block.capacity),
+    0,
+  );
   const birdsOverRatedCapacity = blocks.reduce(
     (total, block) =>
       total +
@@ -82,45 +113,125 @@ function FlockContent() {
         : 0),
     0,
   );
+  const birdsWithRatedCapacity = blocks.reduce(
+    (total, block) =>
+      total + (block.capacity > 0 ? block.current_chickens : 0),
+    0,
+  );
   const blocksOverRatedCapacity = blocks.filter(
     (block) => block.capacity > 0 && block.current_chickens > block.capacity,
   ).length;
   const blocksOverMaximum = blocks.filter(
-    (block) => block.current_chickens > block.maximum_chickens,
+    (block) =>
+      block.maximum_chickens > 0 &&
+      block.current_chickens > block.maximum_chickens,
+  ).length;
+  const blocksAtMaximum = blocks.filter(
+    (block) =>
+      block.maximum_chickens > 0 &&
+      block.current_chickens >= block.maximum_chickens,
+  ).length;
+  const blocksNearStandardCapacity = blocks.filter(
+    (block) =>
+      block.capacity > 0 &&
+      block.current_chickens / block.capacity >= 0.85 &&
+      block.current_chickens < block.capacity,
+  ).length;
+  const blocksAtStandardCapacity = blocks.filter(
+    (block) =>
+      block.capacity > 0 && block.current_chickens >= block.capacity,
+  ).length;
+  const blocksWithoutMaximum = blocks.filter(
+    (block) => block.maximum_chickens <= 0,
   ).length;
   const birdsOverMaximum = blocks.reduce(
     (total, block) =>
-      total + Math.max(0, block.current_chickens - block.maximum_chickens),
+      total +
+      (block.maximum_chickens > 0
+        ? Math.max(0, block.current_chickens - block.maximum_chickens)
+        : 0),
+    0,
+  );
+  const birdsInTrackedBlocks = blocks.reduce(
+    (total, block) =>
+      total +
+      (block.maximum_chickens > 0 || block.capacity > 0
+        ? block.current_chickens
+        : 0),
     0,
   );
   const maximumCapacityUsed =
-    maximumCapacity > 0
-      ? Math.min(100, (totalBirds / maximumCapacity) * 100)
+    capacityForUtilization > 0
+      ? Math.min(100, (birdsInTrackedBlocks / capacityForUtilization) * 100)
       : 0;
   const standardCapacityUsed =
     ratedCapacity > 0
-      ? Math.min(100, (totalBirds / ratedCapacity) * 100)
+      ? Math.min(100, (birdsWithRatedCapacity / ratedCapacity) * 100)
       : maximumCapacityUsed;
-  const birdsToRatedLimit = Math.max(0, ratedCapacity - totalBirds);
+  const birdsToRatedLimit = Math.max(
+    0,
+    ratedCapacity - birdsWithRatedCapacity,
+  );
+  const capacityStatusColor =
+    blocksOverMaximum > 0 || blocksAtMaximum > 0
+      ? theme.danger
+      : blocksOverRatedCapacity > 0 ||
+          blocksNearStandardCapacity > 0 ||
+          blocksAtStandardCapacity > 0
+        ? theme.secondary
+        : ratedCapacity > 0
+          ? theme.success
+          : theme.textSecondary;
+  const capacityStatusLabel =
+    blocksOverMaximum > 0
+      ? "Over maximum"
+      : maximumCapacity > 0 &&
+          blocksWithoutMaximum === 0 &&
+          maximumCapacityUsed >= 100
+        ? "At maximum"
+        : blocksAtMaximum > 0
+          ? "Some blocks full"
+        : blocksOverRatedCapacity > 0
+          ? "Extra allowance"
+          : blocksAtStandardCapacity > 0
+            ? "At standard capacity"
+          : blocksNearStandardCapacity > 0
+            ? "Near capacity"
+            : ratedCapacity > 0
+              ? "Within standard"
+              : "Capacity not set";
   const activeBlockCount = blocks.filter(
     (block) => block.current_chickens > 0,
   ).length;
-  const recentActivities = activity.data?.pages.flatMap((page) => page.items) ?? [];
-  const recentMovements = recentActivities.filter(
-    (entry) => entry.type === "chicken_movement_created",
-  ).length;
-  const recentLosses = recentActivities.filter(
-    (entry) => entry.type === "chicken_loss_recorded",
+  const hasMoveDestination = blocks.some(
+    (block) => block.available_capacity > 0,
   );
-  const recentLossBirds = recentLosses.reduce((total, entry) => {
-    const quantity = Number(entry.details?.total_quantity ?? 0);
-    return total + (Number.isFinite(quantity) ? quantity : 0);
-  }, 0);
+  const recentActivities = activity.data?.pages.flatMap((page) => page.items) ?? [];
+  const pendingChickenDeliveries = (pendingDeliveries.data ?? [])
+    .map((sale) => ({
+      sale,
+      items: sale.items.filter(
+        (item) =>
+          item.product_type === "chickens" &&
+          Number(item.quantity_remaining_base) > 0,
+      ),
+    }))
+    .filter(({ items }) => items.length > 0);
+  const firstPendingDelivery = pendingChickenDeliveries[0];
+  const firstPendingChickenBirds =
+    firstPendingDelivery?.items.reduce(
+      (total, item) => total + Number(item.quantity_remaining_base),
+      0,
+    ) ?? 0;
   const blockNames = new Map(blocks.map((block) => [block.id, block.name]));
   const batchNames = new Map(batches.map((batch) => [batch.id, batch.name]));
 
   async function refresh() {
-    await Promise.all([options.refetch(), activity.refetch()]);
+    await Promise.all([
+      options.refetch(),
+      activity.refetch(),
+      pendingDeliveries.refetch(),
+    ]);
   }
 
   return (
@@ -132,7 +243,11 @@ function FlockContent() {
         contentContainerStyle={styles.content}
         refreshControl={
           <RefreshControl
-            refreshing={options.isRefetching || activity.isRefetching}
+            refreshing={
+              options.isRefetching ||
+              activity.isRefetching ||
+              pendingDeliveries.isRefetching
+            }
             onRefresh={() => void refresh()}
             tintColor={theme.primary}
             colors={[theme.primary]}
@@ -146,11 +261,17 @@ function FlockContent() {
             <AppText size="heading" weight="semibold">
               Flock overview
             </AppText>
-            <AppText size="small" tone="secondary">
+            <AppText
+              size="small"
+              tone="secondary"
+              style={styles.batchPreviewText}
+            >
               Live inventory, housing, batches and recent activity
             </AppText>
           </View>
-          {options.isFetching || activity.isFetching ? (
+          {options.isFetching ||
+          activity.isFetching ||
+          pendingDeliveries.isFetching ? (
             <ActivityIndicator size="small" color={theme.primary} />
           ) : null}
         </View>
@@ -185,15 +306,16 @@ function FlockContent() {
 
         {options.data ? (
           <>
+            <Animated.View entering={FadeInDown.duration(260)}>
             <Card style={styles.flockSummary}>
               <View style={styles.flockHero}>
                 <View
                   style={[
                     styles.totalBirdIcon,
-                    { backgroundColor: theme.primary },
+                    { backgroundColor: `${theme.primary}18` },
                   ]}
                 >
-                  <Ionicons name="leaf-outline" size={22} color={theme.onPrimary} />
+                  <Ionicons name="leaf-outline" size={22} color={theme.primary} />
                 </View>
                 <View style={styles.totalBirdCopy}>
                   <AppText
@@ -201,7 +323,7 @@ function FlockContent() {
                     weight="semibold"
                     style={{ color: theme.textSecondary }}
                   >
-                    CURRENT FLOCK
+                    LIVE FLOCK
                   </AppText>
                   <View style={styles.flockTotalLine}>
                     <AppText
@@ -210,71 +332,63 @@ function FlockContent() {
                       {totalBirds.toLocaleString()}
                     </AppText>
                     <AppText size="small" tone="secondary">
-                      birds housed
+                      {totalBirds === 1 ? "bird on the farm" : "birds on the farm"}
                     </AppText>
                   </View>
                 </View>
               </View>
 
-              <View style={styles.capacityInsight}>
+              <View
+                style={[
+                  styles.capacityInsight,
+                  { borderTopColor: theme.border },
+                ]}
+              >
                 <View style={styles.capacityInsightHeading}>
                   <View style={styles.capacityInsightTitle}>
                     <Ionicons
-                      name="speedometer-outline"
+                      name="grid-outline"
                       size={17}
                       color={theme.primary}
                     />
-                    <AppText size="small" weight="semibold" numberOfLines={1}>
-                      Housing capacity
+                    <AppText size="small" weight="semibold">
+                      Housing space
                     </AppText>
                   </View>
                   <View
                     style={[
                       styles.capacityStatusBadge,
-                      { backgroundColor: theme.backgroundSelected },
+                      {
+                        backgroundColor: `${capacityStatusColor}15`,
+                      },
                     ]}
                   >
                     <View
                       style={[
                         styles.capacityStatusDot,
-                        {
-                          backgroundColor:
-                            blocksOverMaximum > 0
-                              ? theme.danger
-                              : blocksOverRatedCapacity > 0
-                                ? theme.secondary
-                                : ratedCapacity > 0
-                                  ? theme.success
-                                  : theme.textSecondary,
-                        },
+                        { backgroundColor: capacityStatusColor },
                       ]}
                     />
-                    <AppText size="small" weight="semibold" numberOfLines={1}>
-                      {blocksOverMaximum > 0
-                        ? "Over maximum"
-                        : blocksOverRatedCapacity > 0
-                          ? "Extra allowance"
-                          : ratedCapacity > 0
-                            ? "Within standard"
-                            : "Capacity not set"}
+                    <AppText
+                      size="small"
+                      weight="semibold"
+                      style={{ color: capacityStatusColor }}
+                    >
+                      {capacityStatusLabel}
                     </AppText>
                   </View>
                 </View>
                 <View style={styles.capacityDataRow}>
                   <AppText size="small" tone="secondary">
-                    {ratedCapacity > 0
-                      ? "Used"
-                      : maximumCapacity > 0
-                        ? "Maximum used"
-                        : "Not configured"}
+                    {ratedCapacity > 0 ? "Standard capacity used" : "Maximum used"}
                   </AppText>
                   <AppText weight="semibold">
-                    {maximumCapacity > 0
-                      ? `${standardCapacityUsed.toFixed(0)}%`
+                    {capacityForUtilization > 0
+                      ? formatPercent(standardCapacityUsed)
                       : "—"}
                   </AppText>
                 </View>
-                {maximumCapacity > 0 ? (
+                {capacityForUtilization > 0 ? (
                   <View
                     style={[
                       styles.summaryCapacityTrack,
@@ -286,29 +400,26 @@ function FlockContent() {
                         styles.capacityFill,
                         {
                           width: `${standardCapacityUsed}%`,
-                          backgroundColor:
-                            blocksOverMaximum > 0
-                              ? theme.danger
-                              : blocksOverRatedCapacity > 0
-                                ? theme.secondary
-                                : theme.mode === "dark"
-                                  ? "#FFFFFF"
-                                  : theme.primary,
+                          backgroundColor: capacityStatusColor,
                         },
                       ]}
                     />
                   </View>
                 ) : null}
-                <AppText size="small" tone="secondary" numberOfLines={2}>
-                  {maximumCapacity <= 0
-                    ? "Set block capacity to track space."
+                <AppText size="small" tone="secondary">
+                  {capacityForUtilization <= 0
+                    ? "Set housing capacity to see how much room is left."
                     : blocksOverMaximum > 0
-                      ? `${birdsOverMaximum.toLocaleString()} above max · ${blocksOverMaximum} ${blocksOverMaximum === 1 ? "block" : "blocks"}`
+                        ? `${birdsOverMaximum.toLocaleString()} birds over the housing maximum`
+                        : blocksAtMaximum > 0
+                        ? `${blocksAtMaximum} ${blocksAtMaximum === 1 ? "block is" : "blocks are"} at maximum capacity`
                       : birdsOverRatedCapacity > 0
-                        ? `${birdsOverRatedCapacity.toLocaleString()} above standard · ${blocksOverRatedCapacity} ${blocksOverRatedCapacity === 1 ? "block" : "blocks"}`
+                          ? blocksWithoutMaximum > 0
+                            ? `${birdsOverRatedCapacity.toLocaleString()} above standard · set maximum capacity for ${blocksWithoutMaximum} ${blocksWithoutMaximum === 1 ? "block" : "blocks"}`
+                            : `${birdsOverRatedCapacity.toLocaleString()} above standard · ${Math.max(0, maximumCapacity - birdsInTrackedBlocks).toLocaleString()} maximum spaces remain`
                         : ratedCapacity > 0
-                          ? `${birdsToRatedLimit.toLocaleString()} standard spaces left`
-                          : `Maximum ${maximumCapacity.toLocaleString()} birds`}
+                            ? `${birdsToRatedLimit.toLocaleString()} standard spaces remain`
+                            : `${Math.max(0, maximumCapacity - birdsInTrackedBlocks).toLocaleString()} maximum spaces remain`}
                 </AppText>
               </View>
 
@@ -321,7 +432,7 @@ function FlockContent() {
                   theme={theme}
                 />
                 <SummaryStat
-                  label="Blocks occupied"
+                  label="Blocks with birds"
                   value={`${activeBlockCount} / ${blocks.length}`}
                   icon="grid-outline"
                   accent={theme.primary}
@@ -329,38 +440,141 @@ function FlockContent() {
                 />
               </View>
             </Card>
+            </Animated.View>
 
-            <View style={styles.actionGrid}>
-              <ActionButton
-                label="Purchase"
-                icon="cart-outline"
-                color={theme.primary}
-                onPress={() => router.push("/chicken-purchase" as Href)}
-                theme={theme}
-              />
-              <ActionButton
-                label="Sale"
-                icon="cash-outline"
-                color={theme.success}
-                onPress={() => router.push("/chicken-sale" as Href)}
-                theme={theme}
-              />
-              <ActionButton
-                label="Record loss"
-                icon="alert-circle-outline"
-                color={theme.danger}
-                onPress={() => router.push("/chicken-loss" as Href)}
-                theme={theme}
-              />
-              <ActionButton
-                label="Move flock"
-                icon="swap-horizontal-outline"
-                color={theme.secondary}
-                onPress={() => router.push("/chicken-movement" as Href)}
-                theme={theme}
-              />
-            </View>
+            {pendingDeliveries.isError ? (
+              <Card style={styles.deliveryError}>
+                <View style={styles.deliveryErrorCopy}>
+                  <AppText size="small" weight="semibold">
+                    Couldn’t check for pending chicken deliveries
+                  </AppText>
+                  <AppText size="small" tone="secondary">
+                    {normalizeApiError(pendingDeliveries.error).message}
+                  </AppText>
+                </View>
+                <Button
+                  label="Retry"
+                  variant="secondary"
+                  onPress={() => void pendingDeliveries.refetch()}
+                />
+              </Card>
+            ) : firstPendingDelivery ? (
+              <Animated.View entering={FadeInDown.duration(250).delay(60)}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Record delivery for ${firstPendingDelivery.sale.customer_name ?? firstPendingDelivery.sale.reference_number ?? "customer sale"}`}
+                  onPress={() =>
+                    router.push({
+                      pathname: "/sales/[saleId]/deliver",
+                      params: { saleId: firstPendingDelivery.sale.id },
+                    })
+                  }
+                  style={({ pressed }) => [
+                    styles.deliveryCard,
+                    {
+                      backgroundColor: theme.backgroundElement,
+                      borderColor: `${theme.secondary}55`,
+                      opacity: pressed ? 0.84 : 1,
+                    },
+                  ]}
+                >
+                  <View style={styles.deliverySummary}>
+                    <View
+                      style={[
+                        styles.deliveryIcon,
+                        { backgroundColor: `${theme.secondary}18` },
+                      ]}
+                    >
+                      <Ionicons
+                        name="cube-outline"
+                        size={20}
+                        color={theme.secondary}
+                      />
+                    </View>
+                    <View style={styles.deliveryCopy}>
+                      <AppText weight="semibold">
+                        Chicken delivery pending
+                      </AppText>
+                      <AppText size="small" tone="secondary">
+                        {firstPendingDelivery.sale.customer_name ??
+                          firstPendingDelivery.sale.reference_number ??
+                          "Customer sale"}
+                      </AppText>
+                      <AppText size="small" weight="semibold" style={{ color: theme.secondary }}>
+                        {formatChickenCount(firstPendingChickenBirds, "bird")} to deliver
+                      </AppText>
+                      {pendingChickenDeliveries.length > 1 ? (
+                        <AppText size="small" tone="secondary">
+                          First of {pendingChickenDeliveries.length} sales awaiting delivery
+                        </AppText>
+                      ) : null}
+                    </View>
+                  </View>
+                  <View style={styles.deliveryAction}>
+                    <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+                      Record delivery
+                    </AppText>
+                    <Ionicons name="chevron-forward" size={16} color={theme.primary} />
+                  </View>
+                </Pressable>
+              </Animated.View>
+            ) : null}
 
+            <Animated.View
+              entering={FadeInDown.duration(250).delay(100)}
+              style={styles.actionSection}
+            >
+              <AppText size="small" weight="semibold" tone="secondary">
+                FLOCK ACTIONS
+              </AppText>
+              {totalBirds > 0 ? (
+                <ActionButton
+                  label="Sell chickens"
+                  icon="cash-outline"
+                  color={theme.onPrimary}
+                  onPress={() => router.push("/chicken-sale" as Href)}
+                  theme={theme}
+                  prominent
+                />
+              ) : null}
+              <View style={styles.actionGrid}>
+                <ActionButton
+                  label="Purchase birds"
+                  icon="cart-outline"
+                  color={totalBirds > 0 ? theme.primary : theme.onPrimary}
+                  onPress={() => router.push("/chicken-purchase" as Href)}
+                  theme={theme}
+                  prominent={totalBirds === 0}
+                  inGrid
+                />
+                {totalBirds > 0 ? (
+                  <>
+                    <ActionButton
+                      label="Record loss"
+                      icon="alert-circle-outline"
+                      color={theme.danger}
+                      onPress={() => router.push("/chicken-loss" as Href)}
+                      theme={theme}
+                      inGrid
+                    />
+                    {blocks.length > 1 && hasMoveDestination ? (
+                      <ActionButton
+                        label="Move birds"
+                        icon="swap-horizontal-outline"
+                        color={theme.secondary}
+                        onPress={() => router.push("/chicken-movement" as Href)}
+                        theme={theme}
+                        inGrid
+                      />
+                    ) : null}
+                  </>
+                ) : null}
+              </View>
+            </Animated.View>
+
+            <Animated.View
+              entering={FadeInDown.duration(250).delay(140)}
+            >
             <Card style={styles.inventoryCard}>
               <View style={styles.sectionHeading}>
                 <View style={styles.headingCopy}>
@@ -422,8 +636,13 @@ function FlockContent() {
                           .map((stock) => ({ batch, quantity: stock.quantity })),
                       );
                       const maximum = block.maximum_chickens;
-                      const occupancy = maximum
-                        ? Math.min(100, (block.current_chickens / maximum) * 100)
+                      const occupancyLimit =
+                        maximum > 0 ? maximum : block.capacity;
+                      const occupancy = occupancyLimit
+                        ? Math.min(
+                            100,
+                            (block.current_chickens / occupancyLimit) * 100,
+                          )
                         : 0;
                       const birdsAboveRated = Math.max(
                         0,
@@ -431,31 +650,50 @@ function FlockContent() {
                           ? block.current_chickens - block.capacity
                           : 0,
                       );
-                      const birdsAboveMaximum = Math.max(
+                      const birdsAboveMaximum =
+                        maximum > 0
+                          ? Math.max(0, block.current_chickens - maximum)
+                          : 0;
+                      const standardSpacesLeft = Math.max(
                         0,
-                        block.current_chickens - maximum,
+                        block.capacity - block.current_chickens,
                       );
+                      const isAtMaximum =
+                        maximum > 0 && block.current_chickens >= maximum;
+                      const isNearRatedCapacity =
+                          block.capacity > 0
+                            ? block.current_chickens / block.capacity >= 0.85
+                            : maximum > 0 &&
+                              block.current_chickens / maximum >= 0.85;
                       const blockStatusColor =
-                        birdsAboveMaximum > 0
-                          ? theme.danger
-                          : birdsAboveRated > 0
+                          birdsAboveMaximum > 0 || isAtMaximum
+                            ? theme.danger
+                          : birdsAboveRated > 0 || isNearRatedCapacity
                             ? theme.secondary
-                            : block.capacity > 0
-                              ? theme.success
-                              : theme.textSecondary;
+                              : occupancyLimit > 0
+                                ? theme.success
+                                : theme.textSecondary;
                       const blockCapacityMessage =
-                        birdsAboveMaximum > 0
-                          ? `${birdsAboveMaximum.toLocaleString()} birds above maximum`
-                          : block.capacity <= 0
-                            ? "Capacity not set"
-                          : birdsAboveRated > 0
-                            ? `Using extra allowance · ${birdsAboveRated.toLocaleString()} birds above standard`
-                            : `${Math.max(0, block.capacity - block.current_chickens).toLocaleString()} standard spaces available`;
+                          birdsAboveMaximum > 0
+                            ? `${formatChickenCount(birdsAboveMaximum, "bird")} above maximum`
+                            : isAtMaximum
+                              ? "At maximum · no spaces left"
+                                : block.capacity <= 0 && maximum <= 0
+                                  ? "Capacity not set"
+                                : birdsAboveRated > 0
+                                  ? `Using extra allowance · ${formatChickenCount(birdsAboveRated, "bird")} above standard`
+                                : isNearRatedCapacity
+                                    ? block.capacity > 0
+                                      ? `${standardSpacesLeft.toLocaleString()} standard ${standardSpacesLeft === 1 ? "space" : "spaces"} left · nearly full`
+                                      : `${Math.max(0, maximum - block.current_chickens).toLocaleString()} maximum spaces left · nearly full`
+                                    : block.capacity > 0
+                                      ? `${standardSpacesLeft.toLocaleString()} standard ${standardSpacesLeft === 1 ? "space" : "spaces"} available`
+                                      : `${Math.max(0, maximum - block.current_chickens).toLocaleString()} maximum spaces available`;
                       return (
                         <Pressable
                           key={block.id}
                           accessibilityRole="button"
-                          accessibilityLabel={`${block.name}, ${block.current_chickens} chickens, view block details`}
+                          accessibilityLabel={`${block.name}, ${formatChickenCount(block.current_chickens)}, view block details`}
                           onPress={() =>
                             router.push(`/(tabs)/blocks/${block.id}` as Href)
                           }
@@ -476,13 +714,15 @@ function FlockContent() {
                               />
                             </View>
                             <View style={styles.inventoryItemCopy}>
-                              <AppText weight="semibold" numberOfLines={1}>
+                              <AppText weight="semibold">
                                 {block.name}
                               </AppText>
-                              <AppText size="small" tone="secondary" numberOfLines={1}>
+                              <AppText size="small" tone="secondary">
                                 {maximum
-                                  ? `${Math.round(occupancy)}% of maximum`
-                                  : "Maximum not set"}
+                                  ? `${formatPercent(occupancy)} of maximum`
+                                  : block.capacity > 0
+                                    ? `${formatPercent(occupancy)} of standard capacity`
+                                    : "Capacity not set"}
                               </AppText>
                             </View>
                             <AppText
@@ -512,7 +752,7 @@ function FlockContent() {
                                 },
                               ]}
                             />
-                            {maximum > 0 ? (
+                            {maximum > 0 && block.capacity > 0 ? (
                               <View
                                 style={[
                                   styles.ratedCapacityMarker,
@@ -540,37 +780,16 @@ function FlockContent() {
                             </AppText>
                           </View>
                           <View style={styles.batchPreview}>
-                            {blockBatches.length ? (
-                              blockBatches.slice(0, 3).map(({ batch, quantity }) => (
-                                <View
-                                  key={batch.id}
-                                  style={[
-                                    styles.batchChip,
-                                    { backgroundColor: theme.backgroundSelected },
-                                  ]}
-                                >
-                                  <AppText size="small" numberOfLines={1}>
-                                    {batch.name}
-                                  </AppText>
-                                  <AppText
-                                    size="small"
-                                    weight="semibold"
-                                    style={{ color: theme.primary }}
-                                  >
-                                    {quantity.toLocaleString()}
-                                  </AppText>
-                                </View>
-                              ))
-                            ) : (
-                              <AppText size="small" tone="secondary" numberOfLines={1}>
-                                No active batches in this block
-                              </AppText>
-                            )}
-                            {blockBatches.length > 3 ? (
-                              <AppText size="small" tone="secondary">
-                                +{blockBatches.length - 3} more
-                              </AppText>
-                            ) : null}
+                            <Ionicons
+                              name="layers-outline"
+                              size={15}
+                              color={theme.textSecondary}
+                            />
+                            <AppText size="small" tone="secondary">
+                              {blockBatches.length
+                                ? `${blockBatches.length} ${blockBatches.length === 1 ? "active batch" : "active batches"} · Open block to see the breakdown`
+                                : "No active batches in this block"}
+                            </AppText>
                           </View>
                         </Pressable>
                       );
@@ -586,21 +805,26 @@ function FlockContent() {
                 )
               ) : batches.length ? (
                 <View style={styles.inventoryList}>
-                  {batches.map((batch) => {
+                      {batches.map((batch, index) => {
                     const total = batch.stocks.reduce(
                       (sum, stock) => sum + stock.quantity,
                       0,
                     );
                     return (
-                      <BatchInventoryCard
+                          <Animated.View
                         key={batch.id}
-                        batch={batch}
-                        total={total}
-                        flockTotal={totalBirds}
-                        theme={theme}
-                      />
-                    );
-                  })}
+                            entering={FadeInDown.duration(220).delay(
+                              Math.min(index, 5) * 35,
+                            )}
+                          >
+                          <BatchInventoryCard
+                            batch={batch}
+                            total={total}
+                            theme={theme}
+                          />
+                          </Animated.View>
+                        );
+                      })}
                 </View>
               ) : (
                 <EmptyInventory
@@ -611,15 +835,17 @@ function FlockContent() {
                 />
               )}
             </Card>
+            </Animated.View>
           </>
         ) : null}
 
+        <Animated.View entering={FadeInDown.duration(250).delay(180)}>
         <Card style={styles.activityCard}>
           <View style={styles.sectionHeading}>
             <View style={styles.headingCopy}>
-              <AppText weight="semibold">Recent flock activity</AppText>
+              <AppText weight="semibold">Recent activity</AppText>
               <AppText size="small" tone="secondary">
-                Moves and losses
+                Latest flock changes
               </AppText>
             </View>
             <Pressable
@@ -637,60 +863,6 @@ function FlockContent() {
               <Ionicons name="chevron-forward" size={15} color={theme.primary} />
             </Pressable>
           </View>
-
-          {!activity.isLoading && !activity.isError && recentActivities.length ? (
-            <View
-              style={[
-                styles.activityInsight,
-                {
-                  backgroundColor: theme.background,
-                  borderColor: theme.border,
-                },
-              ]}
-            >
-              <View style={styles.activityInsightStats}>
-                <View
-                  style={[
-                    styles.activityMetric,
-                    { backgroundColor: theme.backgroundElement },
-                  ]}
-                >
-                  <AppText
-                    weight="semibold"
-                    style={[styles.activityMetricValue, { color: theme.text }]}
-                  >
-                    {recentMovements.toLocaleString()}
-                  </AppText>
-                  <AppText size="small" tone="secondary">
-                    Move records
-                  </AppText>
-                </View>
-                <View
-                  style={[
-                    styles.activityMetric,
-                    { backgroundColor: theme.backgroundElement },
-                  ]}
-                >
-                  <AppText
-                    weight="semibold"
-                    style={[
-                      styles.activityMetricValue,
-                      { color: recentLossBirds > 0 ? theme.danger : theme.text },
-                    ]}
-                  >
-                    {recentLossBirds.toLocaleString()}
-                  </AppText>
-                  <AppText size="small" tone="secondary">
-                    Birds lost
-                  </AppText>
-                </View>
-              </View>
-              <AppText size="small" tone="secondary">
-                Across {recentActivities.length} loaded flock records; this is
-                not a date-range total.
-              </AppText>
-            </View>
-          ) : null}
 
           {activity.isLoading ? (
             <View style={styles.activityLoading}>
@@ -717,24 +889,28 @@ function FlockContent() {
           ) : null}
           {!activity.isLoading && !activity.isError && recentActivities.length ? (
             <View style={styles.activityList}>
-              {recentActivities.slice(0, 8).map((entry) => (
-                <ActivityRow
+              {recentActivities.slice(0, 4).map((entry, index) => (
+                <Animated.View
                   key={entry.id}
-                  entry={entry}
-                  batchName={activityBatchName(entry, batchNames)}
-                  fromBlockName={activityBlockName(
-                    entry,
-                    "from_block_id",
-                    blockNames,
-                  )}
-                  toBlockName={activityBlockName(
-                    entry,
-                    "to_block_id",
-                    blockNames,
-                  )}
-                  onPress={() => openActivityHistory("flock", entry)}
-                  theme={theme}
-                />
+                  entering={FadeInDown.duration(200).delay(index * 40)}
+                >
+                  <ActivityRow
+                    entry={entry}
+                    batchName={activityBatchName(entry, batchNames)}
+                    fromBlockName={activityBlockName(
+                      entry,
+                      "from_block_id",
+                      blockNames,
+                    )}
+                    toBlockName={activityBlockName(
+                      entry,
+                      "to_block_id",
+                      blockNames,
+                    )}
+                    onPress={() => openActivityHistory("flock", entry)}
+                    theme={theme}
+                  />
+                </Animated.View>
               ))}
             </View>
           ) : null}
@@ -757,6 +933,7 @@ function FlockContent() {
             </View>
           ) : null}
         </Card>
+        </Animated.View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -784,13 +961,12 @@ function SummaryStat({
           color={theme.mode === "dark" ? theme.onPrimary : accent}
         />
       </View>
-      <AppText size="small" tone="secondary" numberOfLines={1} style={styles.summaryStatLabel}>
+      <AppText size="small" tone="secondary" style={styles.summaryStatLabel}>
         {label}
       </AppText>
       <AppText
         size="small"
         weight="semibold"
-        numberOfLines={1}
         style={[styles.summaryStatValue, { color: theme.text }]}
       >
         {value}
@@ -805,12 +981,16 @@ function ActionButton({
   color,
   onPress,
   theme,
+  prominent = false,
+  inGrid = false,
 }: {
   label: string;
   icon: keyof typeof Ionicons.glyphMap;
   color: string;
   onPress: () => void;
   theme: ReturnType<typeof useTheme>["theme"];
+  prominent?: boolean;
+  inGrid?: boolean;
 }) {
   return (
     <Pressable
@@ -818,18 +998,35 @@ function ActionButton({
       onPress={onPress}
       style={({ pressed }) => [
         styles.actionButton,
+        inGrid ? styles.actionGridButton : styles.actionButtonFull,
         {
-          borderColor: theme.border,
-          backgroundColor: pressed
-            ? theme.backgroundSelected
-            : theme.backgroundElement,
+          borderColor: prominent ? theme.primary : theme.border,
+          backgroundColor: prominent
+            ? theme.primary
+            : pressed
+              ? theme.backgroundSelected
+              : theme.backgroundElement,
+          opacity: prominent && pressed ? 0.88 : 1,
         },
       ]}
     >
-      <View style={[styles.actionIcon, { backgroundColor: `${color}1A` }]}>
-        <Ionicons name={icon} size={18} color={color} />
+      <View
+        style={[
+          styles.actionIcon,
+          {
+            backgroundColor: prominent
+              ? `${theme.onPrimary}20`
+              : `${color}1A`,
+          },
+        ]}
+      >
+        <Ionicons name={icon} size={18} color={prominent ? theme.onPrimary : color} />
       </View>
-      <AppText size="small" weight="semibold" numberOfLines={1}>
+      <AppText
+        size="small"
+        weight="semibold"
+        style={prominent ? { color: theme.onPrimary } : undefined}
+      >
         {label}
       </AppText>
     </Pressable>
@@ -880,16 +1077,12 @@ function SegmentButton({
 function BatchInventoryCard({
   batch,
   total,
-  flockTotal,
   theme,
 }: {
   batch: ChickenSaleBatch;
   total: number;
-  flockTotal: number;
   theme: ReturnType<typeof useTheme>["theme"];
 }) {
-  const flockShare =
-    flockTotal > 0 ? Math.min(100, (total / flockTotal) * 100) : 0;
   return (
     <View
       style={[
@@ -902,7 +1095,7 @@ function BatchInventoryCard({
           <Ionicons name="layers-outline" size={18} color={theme.primary} />
         </View>
         <View style={styles.batchHeaderCopy}>
-          <AppText weight="semibold" numberOfLines={1}>
+          <AppText weight="semibold">
             {batch.name}
           </AppText>
           <AppText size="small" tone="secondary">
@@ -912,38 +1105,12 @@ function BatchInventoryCard({
         </View>
         <View style={styles.batchTotal}>
           <AppText weight="semibold" style={{ color: theme.text }}>
-            {total.toLocaleString()}
-          </AppText>
-          <AppText size="small" tone="secondary">
-            birds
+            {formatChickenCount(total, "bird")}
           </AppText>
         </View>
-      </View>
-      <View style={styles.batchShare}>
-        <View
-          style={[
-            styles.batchShareTrack,
-            styles.capacityTrack,
-            { backgroundColor: theme.backgroundSelected },
-          ]}
-        >
-          <View
-            style={[
-              styles.capacityFill,
-              {
-                width: `${flockShare}%`,
-                backgroundColor:
-                  theme.mode === "dark" ? "#FFFFFF" : theme.primary,
-              },
-            ]}
-          />
-        </View>
-        <AppText size="small" tone="secondary" numberOfLines={1}>
-          {flockShare.toFixed(0)}% of current flock
-        </AppText>
       </View>
       <View style={[styles.batchAllocationDivider, { borderTopColor: theme.border }]} />
-      <AppText size="small" weight="semibold" numberOfLines={1}>
+      <AppText size="small" weight="semibold">
         Housing allocation · {batch.stocks.length}{" "}
         {batch.stocks.length === 1 ? "block" : "blocks"}
       </AppText>
@@ -955,12 +1122,12 @@ function BatchInventoryCard({
               size={14}
               color={theme.textSecondary}
             />
-            <AppText size="small" tone="secondary" numberOfLines={1}>
+            <AppText size="small" tone="secondary">
               {stock.block_name}
             </AppText>
           </View>
           <AppText size="small" weight="semibold" style={{ color: theme.text }}>
-            {stock.quantity.toLocaleString()} birds
+            {formatChickenCount(stock.quantity, "bird")}
           </AppText>
         </View>
       ))}
@@ -1023,6 +1190,7 @@ function ActivityRow({
         .filter(Boolean)
         .join(" · ");
   const accent = isLoss ? theme.danger : theme.primary;
+  const formattedQuantity = formatActivityQuantity(quantity);
 
   return (
     <Pressable
@@ -1052,16 +1220,14 @@ function ActivityRow({
       <View style={styles.activityCopy}>
         <AppText size="small" weight="semibold">
           {activityLabels[entry.type] ?? "Flock activity"}
-          {typeof quantity === "number"
-            ? ` · ${quantity.toLocaleString()} birds`
-            : ""}
+          {formattedQuantity ? ` · ${formatChickenCount(formattedQuantity, "bird")}` : ""}
         </AppText>
         {subtitle ? (
-          <AppText size="small" tone="secondary" numberOfLines={1}>
+          <AppText size="small" tone="secondary">
             {subtitle}
           </AppText>
         ) : null}
-        <AppText size="small" tone="secondary" numberOfLines={1}>
+        <AppText size="small" tone="secondary">
           {formatRelativeDate(entry.created_at)}
         </AppText>
       </View>
@@ -1073,6 +1239,14 @@ function ActivityRow({
       />
     </Pressable>
   );
+}
+
+function formatActivityQuantity(quantity: unknown): number | undefined {
+  if (typeof quantity !== "number" && typeof quantity !== "string") {
+    return undefined;
+  }
+  const parsed = Number(quantity);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function openActivityHistory(category: "flock", entry?: FarmActivity) {
@@ -1117,11 +1291,18 @@ function lossSubtitle(details: Record<string, unknown>): string {
     typeof reasons === "object" &&
     !Array.isArray(reasons)
   ) {
-    return Object.entries(reasons as Record<string, unknown>)
-      .map(([reason, quantity]) =>
-        `${labelize(reason)} ${typeof quantity === "number" ? quantity : ""}`.trim(),
+    const descriptions = Object.entries(reasons as Record<string, unknown>)
+      .flatMap(([reason, quantity]) => {
+        const parsed = formatActivityQuantity(quantity);
+        return parsed
+          ? [
+              `${labelize(reason.replace(/_/g, " "))}: ${formatChickenCount(parsed, "bird")}`,
+            ]
+          : [];
+      },
       )
       .join(" · ");
+    if (descriptions) return descriptions;
   }
   return "Recorded flock loss";
 }
@@ -1142,6 +1323,13 @@ function formatAge(hatchDate: string): string {
   const months = Math.floor(days / 30.4375);
   const remainingWeeks = Math.floor((days % 30.4375) / 7);
   return `${months}mo${remainingWeeks ? ` ${remainingWeeks}w` : ""} old`;
+}
+
+function formatPercent(value: number): string {
+  if (value >= 100) return "100%";
+  if (value > 0 && value < 1) return "<1%";
+  if (value > 99) return `${value.toFixed(1)}%`;
+  return `${Math.round(value)}%`;
 }
 
 function labelize(value: string): string {
@@ -1275,9 +1463,6 @@ const styles = StyleSheet.create({
     gap: 9,
   },
   actionButton: {
-    flexGrow: 1,
-    flexBasis: "22%",
-    minWidth: 145,
     minHeight: 48,
     flexDirection: "row",
     alignItems: "center",
@@ -1287,6 +1472,9 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingHorizontal: 12,
   },
+  actionButtonFull: { alignSelf: "stretch" },
+  actionGridButton: { flexGrow: 1, flexBasis: "22%", minWidth: 145 },
+  actionSection: { gap: 9, marginTop: 8 },
   actionIcon: {
     width: 30,
     height: 30,
@@ -1369,15 +1557,7 @@ const styles = StyleSheet.create({
     width: 2,
   },
   batchPreview: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
-  batchChip: {
-    maxWidth: "100%",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    borderRadius: 7,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-  },
+  batchPreviewText: { flex: 1, minWidth: 0 },
   batchCard: {
     gap: 10,
     borderWidth: 1,
@@ -1394,12 +1574,40 @@ const styles = StyleSheet.create({
   },
   batchHeaderCopy: { flex: 1, gap: 2 },
   batchTotal: { alignItems: "flex-end", gap: 1 },
-  batchShare: {
+  deliveryError: {
+    gap: 10,
+    borderRadius: 12,
+    flexDirection: "column",
+  },
+  deliveryErrorCopy: { flex: 1, gap: 4 },
+  deliveryCard: {
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 14,
+  },
+  deliverySummary: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  deliveryIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  deliveryCopy: { flex: 1, gap: 3 },
+  deliveryAction: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 9,
+    justifyContent: "flex-end",
+    gap: 3,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#80808040",
+    paddingTop: 9,
   },
-  batchShareTrack: { flex: 1 },
   batchAllocationDivider: {
     borderTopWidth: StyleSheet.hairlineWidth,
     marginVertical: 1,
@@ -1423,37 +1631,6 @@ const styles = StyleSheet.create({
   },
   emptyCopy: { maxWidth: 380, textAlign: "center" },
   activityCard: { gap: 12, borderRadius: 14 },
-  activityInsight: {
-    gap: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 10,
-    padding: 10,
-  },
-  activityInsightStats: {
-    flexDirection: "row",
-    gap: 8,
-  },
-  activityMetric: {
-    flex: 1,
-    minHeight: 74,
-    justifyContent: "center",
-    gap: 4,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-  },
-  activityMetricValue: {
-    fontSize: 23,
-    lineHeight: 29,
-    fontVariant: ["tabular-nums"],
-  },
-  activityIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-  },
   activityLoading: {
     flexDirection: "row",
     alignItems: "center",

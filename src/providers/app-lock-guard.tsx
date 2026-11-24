@@ -1,11 +1,13 @@
 import * as LocalAuthentication from "expo-local-authentication";
 import { AppState, Modal, Platform, StyleSheet, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import {
+  useCallback,
   createContext,
-  useContext,
   useEffect,
   useRef,
   useState,
+  useContext,
   type ReactNode,
 } from "react";
 
@@ -27,6 +29,7 @@ export function AppLockGuard({ children }: { children: ReactNode }) {
   const { theme } = useTheme();
   const security = useSecuritySettings(auth.user?.id);
   const [unlocking, setUnlocking] = useState(false);
+  const [showUnlockButton, setShowUnlockButton] = useState(false);
   const [unlockError, setUnlockError] = useState<string | null>(null);
   const [lockState, setLockState] = useState({
     authStatus: auth.status,
@@ -35,6 +38,8 @@ export function AppLockGuard({ children }: { children: ReactNode }) {
   });
   const appState = useRef(AppState.currentState);
   const backgroundedAt = useRef<number | null>(null);
+  const autoPromptStarted = useRef(false);
+  const unlockingRef = useRef(false);
   const appLockEnabled =
     Platform.OS !== "web" &&
     security.data?.auto_lock_enabled === true &&
@@ -87,9 +92,12 @@ export function AppLockGuard({ children }: { children: ReactNode }) {
     return () => subscription.remove();
   }, [auth.status, appLockEnabled, lockDelayMs]);
 
-  async function unlock() {
-    if (unlocking) return;
+  const unlock = useCallback(async () => {
+    if (unlockingRef.current) return;
+    unlockingRef.current = true;
+    let authenticated = false;
     setUnlocking(true);
+    setShowUnlockButton(false);
     setUnlockError(null);
     try {
       const securityLevel = await LocalAuthentication.getEnrolledLevelAsync();
@@ -111,6 +119,8 @@ export function AppLockGuard({ children }: { children: ReactNode }) {
         return;
       }
 
+      authenticated = true;
+      setShowUnlockButton(false);
       setLockState((current) => ({
         ...current,
         shouldLockRestoredSession: false,
@@ -119,9 +129,23 @@ export function AppLockGuard({ children }: { children: ReactNode }) {
     } catch {
       setUnlockError("Device authentication is unavailable. Try again.");
     } finally {
+      unlockingRef.current = false;
       setUnlocking(false);
+      if (!authenticated) setShowUnlockButton(true);
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    if (!lockVisible) {
+      autoPromptStarted.current = false;
+      return;
+    }
+    if (autoPromptStarted.current) return;
+
+    autoPromptStarted.current = true;
+    const timer = setTimeout(() => void unlock(), 250);
+    return () => clearTimeout(timer);
+  }, [lockVisible, unlock]);
 
   return (
     <AppLockContext.Provider
@@ -129,11 +153,7 @@ export function AppLockGuard({ children }: { children: ReactNode }) {
     >
       {children}
       <Modal
-        visible={
-          lockState.locked &&
-          appLockEnabled &&
-          auth.status === "authenticated"
-        }
+        visible={lockVisible}
         animationType="fade"
         presentationStyle="fullScreen"
         onRequestClose={() => undefined}
@@ -141,34 +161,123 @@ export function AppLockGuard({ children }: { children: ReactNode }) {
         <View
           style={[styles.lockScreen, { backgroundColor: theme.background }]}
         >
-          <View
-            style={[
-              styles.lockMark,
-              { backgroundColor: theme.backgroundElement },
-            ]}
-          >
-            <FarmTrackMark size={48} />
-          </View>
-          <AppText size="heading" weight="semibold" style={styles.title}>
-            FarmTrack is locked
-          </AppText>
-          <AppText tone="secondary" style={styles.description}>
-            Confirm it’s you with your fingerprint, face, or device screen lock.
-            Farm data will sync when the server is available.
-          </AppText>
-          {unlockError ? (
-            <AppText
-              size="small"
-              style={{ color: theme.danger, textAlign: "center" }}
+          <View style={styles.lockContent}>
+            <View
+              style={[
+                styles.lockCard,
+                {
+                  backgroundColor: theme.backgroundElement,
+                  borderColor: theme.border,
+                },
+              ]}
             >
-              {unlockError}
+              <View
+                style={[
+                  styles.lockMark,
+                  { backgroundColor: theme.backgroundSelected },
+                ]}
+              >
+                <FarmTrackMark size={54} />
+                <View
+                  style={[
+                    styles.lockBadge,
+                    {
+                      backgroundColor: theme.primary,
+                      borderColor: theme.backgroundElement,
+                    },
+                  ]}
+                >
+                  <Ionicons
+                    name="lock-closed"
+                    size={14}
+                    color={theme.onPrimary}
+                  />
+                </View>
+              </View>
+              <View
+                style={[
+                  styles.secureLabel,
+                  { backgroundColor: theme.backgroundSelected },
+                ]}
+              >
+                <Ionicons
+                  name="shield-checkmark"
+                  size={15}
+                  color={theme.primary}
+                />
+                <AppText
+                  size="small"
+                  weight="semibold"
+                  style={{ color: theme.primary }}
+                >
+                  PRIVATE FARM SESSION
+                </AppText>
+              </View>
+              <AppText size="heading" weight="semibold" style={styles.title}>
+                FarmTrack is locked
+              </AppText>
+              <AppText tone="secondary" style={styles.description}>
+                Your farm data is hidden. Verify with your device passcode,
+                fingerprint, or face to continue.
+              </AppText>
+
+              <View
+                style={[styles.verificationRow, { borderColor: theme.border }]}
+              >
+                <View
+                  style={[
+                    styles.verificationIcon,
+                    { backgroundColor: theme.backgroundSelected },
+                  ]}
+                >
+                  <Ionicons
+                    name={unlocking ? "scan-outline" : "keypad-outline"}
+                    size={19}
+                    color={theme.primary}
+                  />
+                </View>
+                <View style={styles.verificationCopy}>
+                  <AppText weight="semibold">
+                    {unlocking
+                      ? "Waiting for verification"
+                      : "Device verification"}
+                  </AppText>
+                  <AppText size="small" tone="secondary">
+                    {unlocking
+                      ? "Follow the prompt on your device"
+                      : "Only you can unlock this session"}
+                  </AppText>
+                </View>
+                <Ionicons
+                  name="checkmark-circle"
+                  size={20}
+                  color={theme.success}
+                />
+              </View>
+
+              {unlockError ? (
+                <AppText
+                  size="small"
+                  style={{ color: theme.danger, textAlign: "center" }}
+                  accessibilityLiveRegion="polite"
+                >
+                  {unlockError}
+                </AppText>
+              ) : null}
+
+              {showUnlockButton ? (
+                <Button
+                  label="Unlock FarmTrack"
+                  loading={unlocking}
+                  onPress={() => void unlock()}
+                  style={styles.unlockButton}
+                />
+              ) : null}
+            </View>
+            <AppText size="small" tone="secondary" style={styles.footer}>
+              FarmTrack · Secure access
             </AppText>
-          ) : null}
-          <Button
-            label="Unlock FarmTrack"
-            loading={unlocking}
-            onPress={() => void unlock()}
-          />
+          </View>
         </View>
       </Modal>
     </AppLockContext.Provider>
@@ -180,16 +289,78 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 14,
-    padding: 26,
+    paddingHorizontal: 22,
+    paddingVertical: 28,
+  },
+  lockContent: {
+    width: "100%",
+    maxWidth: 430,
+    alignItems: "center",
+    gap: 18,
+  },
+  lockCard: {
+    width: "100%",
+    alignItems: "center",
+    gap: 16,
+    borderWidth: 1,
+    borderRadius: 24,
+    paddingHorizontal: 22,
+    paddingTop: 26,
+    paddingBottom: 22,
   },
   lockMark: {
-    width: 58,
-    height: 58,
+    width: 92,
+    height: 92,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 10,
+    borderRadius: 28,
+    position: "relative",
+  },
+  lockBadge: {
+    position: "absolute",
+    right: -5,
+    bottom: -5,
+    width: 30,
+    height: 30,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 3,
+    borderRadius: 15,
+  },
+  secureLabel: {
+    minHeight: 30,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    borderRadius: 16,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
   },
   title: { textAlign: "center" },
-  description: { maxWidth: 360, textAlign: "center", marginBottom: 4 },
+  description: {
+    maxWidth: 340,
+    textAlign: "center",
+    lineHeight: 22,
+    marginTop: -7,
+  },
+  verificationRow: {
+    width: "100%",
+    minHeight: 70,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 10,
+  },
+  verificationIcon: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+  },
+  verificationCopy: { flex: 1, gap: 2 },
+  unlockButton: { width: "100%", borderRadius: 14 },
+  footer: { textAlign: "center" },
 });

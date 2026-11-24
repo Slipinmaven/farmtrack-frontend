@@ -1,18 +1,23 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import * as Clipboard from "expo-clipboard";
+import * as SecureStore from "expo-secure-store";
+import { router, usePreventRemove } from "expo-router";
+import { z } from "zod";
 import { useEffect, useRef, useState } from "react";
 import {
+  ActivityIndicator,
+  AppState,
   KeyboardAvoidingView,
-  Linking,
   Modal,
   Pressable,
   Platform,
   ScrollView,
   StyleSheet,
   Switch,
-  TextInput,
+  type TextInputInstance,
   View,
 } from "react-native";
+import Animated, { FadeInDown } from "react-native-reanimated";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { useAppDialog } from "@/components/ui/app-dialog";
@@ -26,11 +31,15 @@ import { DatePickerField } from "@/components/ui/date-picker-field";
 import { TimePickerField } from "@/components/ui/time-picker-field";
 import { TextField } from "@/components/ui/text-field";
 import type { Product, ProductUnit } from "@/features/management/api";
-import { useCreateContact } from "@/features/management/hooks";
+import {
+  useCreateContact,
+  useUpdateContact,
+} from "@/features/management/hooks";
 import {
   useChickenPurchaseOptions,
   useCreateChickenPurchase,
   useCreateChickenPurchaseReceipt,
+  useRecordChickenPurchasePayment,
 } from "@/features/chickens/hooks";
 import type {
   ChickenAgeUnit,
@@ -49,7 +58,11 @@ import {
   requiresPurchaseDiscountConfirmation,
   type PurchaseDiscountType,
 } from "@/features/chickens/purchase-pricing";
-import { useCreateReminder } from "@/features/reminders/hooks";
+import {
+  useCancelReminder,
+  useCreateReminder,
+  useRescheduleReminder,
+} from "@/features/reminders/hooks";
 import { registerForReminderPush } from "@/features/reminders/push-notifications";
 import type { Reminder } from "@/features/reminders/api";
 import { FarmSelector } from "@/features/farms/components/farm-selector";
@@ -57,6 +70,24 @@ import { normalizeApiError } from "@/lib/api/errors";
 import { useAuth } from "@/providers/auth-provider";
 import { useFarm } from "@/providers/farm-provider";
 import { useTheme } from "@/providers/theme-provider";
+import { PaymentMessageReview } from "@/features/payment-message-import/components/PaymentMessageReview";
+import {
+  assessImportedPayment,
+} from "@/features/payment-message-import/validation";
+import type {
+  PaymentMessageEdits,
+} from "@/features/payment-message-import/components/PaymentMessageReview";
+import { parsePaymentMessage } from "@/features/payment-message-import/parser";
+import {
+  usePaymentMessageImport,
+} from "@/features/payment-message-import/PaymentMessageImportProvider";
+import {
+  SmsPaymentPicker,
+  type SelectedSmsPayment,
+} from "@/features/payment-message-import/components/SmsPaymentPicker";
+import type {
+  NormalizedPaymentMessage,
+} from "@/features/payment-message-import/types";
 
 const steps = [
   "Purchase details",
@@ -64,6 +95,7 @@ const steps = [
   "Payment",
   "Review & confirm",
 ];
+const FIRST_PAYMENT_TARGET = "first-payment";
 
 const chickenTypes: { label: string; value: ChickenType }[] = [
   { label: "Layers", value: "layers" },
@@ -88,13 +120,21 @@ const ageUnits: { label: string; value: ChickenAgeUnit }[] = [
   { label: "Years", value: "years" },
 ];
 
+type PurchaseUnitEntryDraft = {
+  id: string;
+  unitId: string;
+  quantity: string;
+  unitPrice: string;
+};
+
 type PurchaseItemDraft = {
   id: string;
   productId: string;
   chickenType: ChickenType;
-  quantity: string;
-  unitId: string;
-  unitPrice: string;
+  unitEntries: PurchaseUnitEntryDraft[];
+  quantity?: string;
+  unitId?: string;
+  unitPrice?: string;
   notes: string;
 };
 
@@ -119,19 +159,81 @@ type InlineFieldIssue = {
 
 type AdditionalPaymentDraft = {
   id: string;
+  smsMessageId?: string;
   amount: string;
   method: ChickenPaymentMethod;
   reference: string;
+  date: string;
+  time: string | null;
 };
+
+const purchaseDraftSchema = z.object({
+  version: z.literal(1),
+  savedAt: z.number(),
+  step: z.number().int().min(0).max(3),
+  purchaseDate: z.string().nullable(),
+  supplierId: z.string(),
+  supplierFormOpen: z.boolean(),
+  newSupplierName: z.string(),
+  newSupplierPhone: z.string(),
+  newSupplierEmail: z.string(),
+  purchaseNotes: z.string(),
+  itemDrafts: z.array(
+    z.object({
+      id: z.string(),
+      productId: z.string(),
+      chickenType: z.enum(["layers", "broiler", "kienyeji", "breeder", "other"]),
+      unitEntries: z
+        .array(
+          z.object({
+            id: z.string(),
+            unitId: z.string(),
+            quantity: z.string(),
+            unitPrice: z.string(),
+          }),
+        )
+        .optional(),
+      quantity: z.string().optional(),
+      unitId: z.string().optional(),
+      unitPrice: z.string().optional(),
+      notes: z.string(),
+    }),
+  ),
+  recordPayment: z.boolean(),
+  fullyPaid: z.boolean(),
+  paymentAmount: z.string(),
+  paymentMethod: z.enum(["cash", "mpesa", "bank_transfer", "card", "other"]),
+  paymentReference: z.string(),
+  paymentSmsMessageId: z.string().nullable().optional(),
+  paymentDate: z.string().nullable(),
+  paymentTime: z.string().nullable(),
+  additionalPayments: z.array(
+    z.object({
+      id: z.string(),
+      smsMessageId: z.string().optional(),
+      amount: z.string(),
+      method: z.enum(["cash", "mpesa", "bank_transfer", "card", "other"]),
+      reference: z.string(),
+      date: z.string().optional(),
+      time: z.string().nullable().optional(),
+    }),
+  ),
+  remindForSettlement: z.boolean(),
+  reminderDueDate: z.string(),
+  reminderDueTime: z.string(),
+  discountType: z.enum(["fixed", "percentage"]).nullable(),
+  discountValue: z.string(),
+  discountReason: z.string(),
+  discountConfirmed: z.boolean(),
+  overpaymentConfirmed: z.boolean(),
+});
 
 function createItemDraft(): PurchaseItemDraft {
   return {
     id: `${Date.now()}-${Math.random()}`,
     productId: "",
     chickenType: "layers",
-    quantity: "",
-    unitId: "",
-    unitPrice: "",
+    unitEntries: [],
     notes: "",
   };
 }
@@ -219,6 +321,19 @@ function formatDateForDisplay(value: string): string {
     : value;
 }
 
+function formatReminderDateTime(
+  value: string,
+  timezone: string | null | undefined,
+): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: timezone || "UTC",
+  }).format(date);
+}
+
 function formatChickenCount(quantity: number | string): string {
   const numericQuantity = Number(quantity);
   return Number.isFinite(numericQuantity)
@@ -226,6 +341,17 @@ function formatChickenCount(quantity: number | string): string {
         numericQuantity,
       )
     : String(quantity);
+}
+
+function chickenPurchaseUnitLabel(unitName: string, quantity: number): string {
+  const normalized = unitName.trim().toLocaleLowerCase();
+  if (/^(bird|birds|bd|bds)$/.test(normalized)) {
+    return quantity === 1 ? "bird" : "birds";
+  }
+  if (quantity === 1) {
+    return normalized.endsWith("s") ? normalized.slice(0, -1) : normalized;
+  }
+  return normalized.endsWith("s") ? normalized : `${normalized}s`;
 }
 
 export default function ChickenPurchaseScreen() {
@@ -240,6 +366,11 @@ function ChickenPurchaseContent() {
   const auth = useAuth();
   const farm = useFarm();
   const { theme } = useTheme();
+  const {
+    sharedMessage,
+    nativeError: shareNativeError,
+    clearSharedMessage,
+  } = usePaymentMessageImport();
   const dialog = useAppDialog();
   const farmId = farm.selectedFarm?.id;
   const farmToday = farmLocalDate(farm.selectedFarm?.settings?.timezone);
@@ -253,6 +384,7 @@ function ChickenPurchaseContent() {
     farmId ?? "",
   );
   const createContact = useCreateContact(auth.user?.id ?? "", farmId ?? "");
+  const updateContact = useUpdateContact(auth.user?.id ?? "", farmId ?? "");
   const createReminder = useCreateReminder(auth.user?.id ?? "", farmId ?? "");
 
   const [step, setStep] = useState(0);
@@ -273,6 +405,15 @@ function ChickenPurchaseContent() {
   const [paymentMethod, setPaymentMethod] =
     useState<ChickenPaymentMethod>("cash");
   const [paymentReference, setPaymentReference] = useState("");
+  const [paymentSmsMessageId, setPaymentSmsMessageId] = useState<string | null>(
+    null,
+  );
+  const [paymentDate, setPaymentDate] = useState<string | null>(null);
+  const [paymentTime, setPaymentTime] = useState<string | null>(null);
+  const [smsPickerOpen, setSmsPickerOpen] = useState(false);
+  const [smsTargetPaymentId, setSmsTargetPaymentId] = useState<string | null>(
+    null,
+  );
   const [additionalPayments, setAdditionalPayments] = useState<
     AdditionalPaymentDraft[]
   >([]);
@@ -297,29 +438,120 @@ function ChickenPurchaseContent() {
   const [error, setError] = useState<string | null>(null);
   const [arrivalFieldError, setArrivalFieldError] =
     useState<InlineFieldIssue | null>(null);
-  const fieldRefs = useRef(new Map<string, TextInput>());
+  const fieldRefs = useRef(new Map<string, TextInputInstance>());
   const fieldFocusRequest = useRef(0);
   const [result, setResult] = useState<ChickenPurchaseResult | null>(null);
+  const recordPurchasePayment = useRecordChickenPurchasePayment(
+    auth.user?.id ?? "",
+    farmId ?? "",
+    result?.id ?? "",
+  );
+  const reschedulePurchaseReminder = useRescheduleReminder(
+    auth.user?.id ?? "",
+    farmId ?? "",
+    savedBalanceReminder?.id ?? "",
+  );
+  const cancelPurchaseReminder = useCancelReminder(
+    auth.user?.id ?? "",
+    farmId ?? "",
+    savedBalanceReminder?.id ?? "",
+  );
+  const [paymentFormOpen, setPaymentFormOpen] = useState(false);
+  const [balancePaymentAmount, setBalancePaymentAmount] = useState("");
+  const [balancePaymentMethod, setBalancePaymentMethod] =
+    useState<ChickenPaymentMethod>("mpesa");
+  const [balancePaymentReference, setBalancePaymentReference] = useState("");
+  const [balancePaymentSmsMessageId, setBalancePaymentSmsMessageId] =
+    useState<string | null>(null);
+  const [balancePaymentDate, setBalancePaymentDate] = useState<string | null>(
+    null,
+  );
+  const [balancePaymentTime, setBalancePaymentTime] = useState<string | null>(
+    null,
+  );
+  const [balanceSmsPickerOpen, setBalanceSmsPickerOpen] = useState(false);
+  const [recordedBalanceSmsMessageIds, setRecordedBalanceSmsMessageIds] =
+    useState<string[]>([]);
+  const [balancePaymentError, setBalancePaymentError] = useState<string | null>(null);
+  const [reminderEditorOpen, setReminderEditorOpen] = useState(false);
+  const [reminderEditError, setReminderEditError] = useState<string | null>(null);
+  const [reminderCancelError, setReminderCancelError] = useState<string | null>(null);
+  const [copiedReference, setCopiedReference] = useState<string | null>(null);
   const [arrivalOpen, setArrivalOpen] = useState(false);
   const [arrivalDate, setArrivalDate] = useState(farmToday);
   const [arrivalNotes, setArrivalNotes] = useState("");
   const [arrivalDrafts, setArrivalDrafts] = useState<ArrivalBatchDraft[]>([]);
   const [arrivalError, setArrivalError] = useState<string | null>(null);
+  const [messageReview, setMessageReview] = useState<{
+    id: string;
+    payment: NormalizedPaymentMessage;
+  } | null>(null);
+  const [messageImportError, setMessageImportError] = useState<string | null>(
+    null,
+  );
+  const [draftStorageError, setDraftStorageError] = useState<string | null>(
+    null,
+  );
+  const [loadedDraftKey, setLoadedDraftKey] = useState<string | null>(null);
+  const [leavePromptVisible, setLeavePromptVisible] = useState(false);
+  const [leaveDraftError, setLeaveDraftError] = useState<string | null>(null);
+  const [leaveActionPending, setLeaveActionPending] = useState(false);
+  const parsedShareId = useRef<string | null>(null);
+  const draftWriteChain = useRef<Promise<void>>(Promise.resolve());
+  const leaveActionRef = useRef<(() => void) | null>(null);
+  const discardDraftWritesRef = useRef(false);
+  const draftKey =
+    Platform.OS === "android" && auth.user?.id && farmId
+      ? `farmtrack.chicken-purchase-draft.${auth.user.id}.${farmId}`
+      : null;
   const selectedPurchaseDate = purchaseDate ?? farmToday;
   const defaultChickenProduct = options.data?.products[0];
   const items = itemDrafts.map((item) => {
-    if (item.productId || !defaultChickenProduct) return item;
-    const defaultUnit =
-      defaultChickenProduct.product_units.find((unit) => unit.is_base_unit) ??
-      defaultChickenProduct.product_units[0];
+    const product =
+      options.data?.products.find((candidate) => candidate.id === item.productId) ??
+      (!item.productId ? defaultChickenProduct : undefined);
+    const defaultUnit = product?.product_units.find((unit) => unit.is_base_unit) ??
+      product?.product_units[0];
+    const legacyUnitEntry =
+      item.unitEntries.length === 0 &&
+      item.unitId &&
+      item.quantity !== undefined &&
+      item.unitPrice !== undefined
+        ? [
+            {
+              id: `${item.id}-unit-legacy`,
+              unitId: item.unitId,
+              quantity: item.quantity,
+              unitPrice: item.unitPrice,
+            },
+          ]
+        : [];
+    const unitEntries =
+      item.unitEntries.length > 0
+        ? item.unitEntries
+        : legacyUnitEntry.length > 0
+          ? legacyUnitEntry
+          : defaultUnit
+            ? [
+                {
+                  id: `${item.id}-unit-default`,
+                  unitId: defaultUnit.unit_id,
+                  quantity: "",
+                  unitPrice: "",
+                },
+              ]
+            : [];
+    if (item.productId || !product) {
+      return { ...item, unitEntries };
+    }
     return {
       ...item,
-      productId: defaultChickenProduct.id,
-      unitId: defaultUnit?.unit_id ?? "",
+      productId: product.id,
+      unitEntries,
     };
   });
 
-  function bindFieldRef(key: string, input: TextInput | null) {
+  function bindFieldRef(key: string, input: TextInputInstance | null) {
     if (input) fieldRefs.current.set(key, input);
     else fieldRefs.current.delete(key);
   }
@@ -371,15 +603,17 @@ function ChickenPurchaseContent() {
   }
 
   const purchasePricing = calculateChickenPurchasePricing(
-    items.map((item) => ({
-      quantity: item.quantity,
-      unitPrice: item.unitPrice,
-      conversionFactor:
-        options.data?.products
-          .find((product) => product.id === item.productId)
-          ?.product_units.find((unit) => unit.unit_id === item.unitId)
-          ?.conversion_factor ?? 1,
-    })),
+    items.flatMap((item) =>
+      item.unitEntries.map((entry) => ({
+        quantity: entry.quantity,
+        unitPrice: entry.unitPrice,
+        conversionFactor:
+          options.data?.products
+            .find((product) => product.id === item.productId)
+            ?.product_units.find((unit) => unit.unit_id === entry.unitId)
+            ?.conversion_factor ?? 1,
+      })),
+    ),
     discountType,
     discountValue,
   );
@@ -400,10 +634,728 @@ function ChickenPurchaseContent() {
   const paidNowCents = recordPayment
     ? enteredPaymentCents + additionalPaymentCents
     : 0n;
+  const existingSmsMessageIds = [
+    ...(paymentSmsMessageId ? [paymentSmsMessageId] : []),
+    ...additionalPayments
+      .map((payment) => payment.smsMessageId)
+      .filter((messageId): messageId is string => Boolean(messageId)),
+  ];
   const balanceDueCents =
     purchaseTotalCents > paidNowCents ? purchaseTotalCents - paidNowCents : 0n;
   const creditBalanceCents =
     paidNowCents > purchaseTotalCents ? paidNowCents - purchaseTotalCents : 0n;
+  const importExpectedAmount = fullyPaid
+    ? centsToDecimal(purchaseTotalCents)
+    : paymentAmount.trim() ||
+      (purchaseTotalCents > 0n ? centsToDecimal(purchaseTotalCents) : null);
+  const importAssessment = messageReview
+    ? assessImportedPayment(
+        messageReview.payment,
+        importExpectedAmount,
+        [
+          paymentReference,
+          ...additionalPayments.map((payment) => payment.reference),
+        ].filter(Boolean),
+      )
+    : null;
+  const importWarnings = messageReview
+    ? [...messageReview.payment.warnings]
+    : [];
+  const selectedSupplier = options.data?.suppliers.find(
+    (supplier) => supplier.id === supplierId,
+  );
+  const draftSupplier =
+    supplierFormOpen &&
+    (newSupplierName.trim() ||
+      newSupplierPhone.trim() ||
+      newSupplierEmail.trim())
+      ? {
+          name: newSupplierName.trim(),
+          phone: newSupplierPhone.trim(),
+          email: newSupplierEmail.trim(),
+        }
+      : null;
+  const reviewSupplier = selectedSupplier ?? draftSupplier;
+  if (
+    messageReview?.payment.recipientName &&
+    selectedSupplier &&
+    messageReview.payment.recipientName.trim().toLowerCase() !==
+      selectedSupplier.name.trim().toLowerCase()
+  ) {
+    importWarnings.push(
+      `The message recipient “${messageReview.payment.recipientName}” differs from the selected supplier “${selectedSupplier.name}”. Check the recipient; FarmTrack will not change the supplier.`,
+    );
+  }
+  const importCurrencyMismatch = Boolean(
+    messageReview?.payment.currency &&
+      messageReview.payment.currency.toUpperCase() !== theme.currency.toUpperCase(),
+  );
+  const importBlockReason = messageReview
+    ? messageReview.payment.transactionStatus !== "SUCCESS"
+      ? "Only a message classified as a successful payment can be imported. You can enter payment details manually instead."
+      : importCurrencyMismatch
+        ? `The message currency (${messageReview.payment.currency}) differs from the farm currency (${theme.currency}). Convert and enter the payment manually.`
+        : importAssessment?.duplicateReference
+          ? "This transaction reference is already present in the current purchase form."
+          : undefined
+    : undefined;
+  const draftSnapshot = JSON.stringify({
+    version: 1,
+    savedAt: 0,
+    step,
+    purchaseDate,
+    supplierId,
+    supplierFormOpen,
+    newSupplierName,
+    newSupplierPhone,
+    newSupplierEmail,
+    purchaseNotes,
+    itemDrafts,
+    recordPayment,
+    fullyPaid,
+    paymentAmount,
+    paymentMethod,
+    paymentReference,
+    paymentSmsMessageId,
+    paymentDate,
+    paymentTime,
+    additionalPayments,
+    remindForSettlement,
+    reminderDueDate,
+    reminderDueTime,
+    discountType,
+    discountValue,
+    discountReason,
+    discountConfirmed,
+    overpaymentConfirmed,
+  });
+  const hasUnsavedPurchase = Boolean(
+    purchaseDate ||
+      supplierId ||
+      newSupplierName.trim() ||
+      newSupplierPhone.trim() ||
+      newSupplierEmail.trim() ||
+      purchaseNotes.trim() ||
+      itemDrafts.some(
+        (item) =>
+          item.productId ||
+          item.chickenType !== "layers" ||
+          item.unitEntries.some(
+            (entry) =>
+              entry.quantity.trim() ||
+              entry.unitId ||
+              entry.unitPrice.trim(),
+          ) ||
+          item.notes.trim(),
+      ) ||
+      recordPayment ||
+      paymentAmount.trim() ||
+      paymentReference.trim() ||
+      paymentSmsMessageId ||
+      additionalPayments.length > 0 ||
+      remindForSettlement ||
+      discountType !== null ||
+      discountValue.trim() ||
+      discountReason.trim(),
+  );
+
+  async function dismissPaymentMessageImport(id: string) {
+    try {
+      await clearSharedMessage(id);
+      setMessageReview(null);
+      setMessageImportError(null);
+    } catch {
+      setMessageImportError(
+        "FarmTrack could not clear the shared message. It remains available for review.",
+      );
+    }
+  }
+
+  async function applySelectedSmsPayments(
+    selectedPayments: SelectedSmsPayment[],
+    mode: "add" | "replace",
+  ) {
+    if (selectedPayments.length === 0) return;
+    if (!draftKey || loadedDraftKey !== draftKey) {
+      setMessageImportError(
+        "FarmTrack is still restoring the purchase draft. Please try again.",
+      );
+      return;
+    }
+
+    const hasExistingPayment =
+      fullyPaid ||
+      paymentAmount.trim() ||
+      additionalPayments.length > 0;
+    if (mode === "replace" && hasExistingPayment) {
+      const replace = await dialog.confirmDialog({
+        title: "Replace current payment details?",
+        message:
+          "The selected SMS payments will replace all payment amounts and references currently entered. Your purchase details will stay unchanged.",
+        tone: "warning",
+        cancelLabel: "Keep current details",
+        confirmLabel: "Use selected messages",
+      });
+      if (!replace) return;
+    }
+
+    const paymentSelections =
+      mode === "add"
+        ? selectedPayments.filter(
+            ({ messageId }) => !existingSmsMessageIds.includes(messageId),
+          )
+        : selectedPayments;
+    if (paymentSelections.length === 0) {
+      setMessageImportError(
+        mode === "add"
+          ? "Those messages are already in the payment list. Select a new payment or use Replace list."
+          : "Select at least one payment message to replace the current list.",
+      );
+      return;
+    }
+
+    if (
+      smsTargetPaymentId === FIRST_PAYMENT_TARGET &&
+      (fullyPaid || paymentAmount.trim() || paymentReference.trim())
+    ) {
+      const replaceFirstPayment = await dialog.confirmDialog({
+        title: "Replace payment 1?",
+        message:
+          "The first selected M-Pesa message will fill payment 1. Any other selected messages will become separate payments.",
+        tone: "warning",
+        details: [
+          {
+            label: "Current payment 1",
+            value: fullyPaid
+              ? formatCents(purchaseTotalCents, theme.currency)
+              : formatCents(
+                  parseMoneyToCents(paymentAmount) ?? 0n,
+                  theme.currency,
+                ),
+          },
+        ],
+        cancelLabel: "Keep current payment",
+        confirmLabel: "Use selected message",
+      });
+      if (!replaceFirstPayment) return;
+    }
+
+    if (
+      paymentSelections.some(
+        ({ payment }) => !payment.amount || !payment.transactionDate,
+      )
+    ) {
+      setMessageImportError(
+        "A selected message is missing a usable amount or date. Choose another message or enter the payment manually.",
+      );
+      return;
+    }
+
+    const incomingRecipients = paymentSelections
+      .map(({ payment }) => ({
+        name: payment.recipientName?.trim() ?? "",
+        phone: payment.recipientPhone?.trim() ?? "",
+      }))
+      .filter((recipient) => recipient.name || recipient.phone);
+    const uniqueNames = [
+      ...new Set(
+        incomingRecipients
+          .map(({ name }) => name.toLocaleLowerCase())
+          .filter(Boolean),
+      ),
+    ];
+    const uniquePhones = [
+      ...new Set(
+        incomingRecipients
+          .map(({ phone }) => phone.replace(/\D/g, ""))
+          .filter(Boolean),
+      ),
+    ];
+    if (uniqueNames.length > 1 || uniquePhones.length > 1) {
+      await dialog.showDialog({
+        title: "Different recipients in selected messages",
+        message:
+          "The selected payments name different recipients. Payment entries will be added, but FarmTrack will not change supplier details.",
+        tone: "info",
+      });
+    } else if (incomingRecipients.length > 0) {
+      const smsRecipient = {
+        name: incomingRecipients.find(({ name }) => name)?.name ?? "",
+        phone: incomingRecipients.find(({ phone }) => phone)?.phone ?? "",
+      };
+      const selectedSupplier = options.data?.suppliers.find(
+        (supplier) => supplier.id === supplierId,
+      );
+      const currentName = selectedSupplier?.name.trim() ?? newSupplierName.trim();
+      const currentPhone = selectedSupplier?.phone?.trim() ?? newSupplierPhone.trim();
+      const differs =
+        (smsRecipient.name &&
+          smsRecipient.name.toLocaleLowerCase() !== currentName.toLocaleLowerCase()) ||
+        (smsRecipient.phone &&
+          smsRecipient.phone.replace(/\D/g, "") !==
+            currentPhone.replace(/\D/g, ""));
+      const hasSupplierDetails = Boolean(currentName || currentPhone);
+
+      if (!selectedSupplier && !hasSupplierDetails) {
+        setSupplierFormOpen(true);
+        if (smsRecipient.name) setNewSupplierName(smsRecipient.name);
+        if (smsRecipient.phone) setNewSupplierPhone(smsRecipient.phone);
+      } else if (hasSupplierDetails && differs) {
+        const useSmsRecipient = await dialog.confirmDialog({
+          title: "Recipient differs from supplier",
+          message: selectedSupplier
+            ? `The payment is addressed to ${smsRecipient.name || smsRecipient.phone}, while the selected supplier is ${selectedSupplier.name}. Use which details?`
+            : `The payment is addressed to ${smsRecipient.name || smsRecipient.phone}, which differs from the supplier details you entered. Use which details?`,
+          tone: "info",
+          details: [
+            ...(smsRecipient.name
+              ? [{ label: "SMS name", value: smsRecipient.name }]
+              : []),
+            ...(smsRecipient.phone
+              ? [{ label: "SMS phone", value: smsRecipient.phone }]
+              : []),
+          ],
+          cancelLabel: selectedSupplier
+            ? "Keep supplier details"
+            : "Keep entered details",
+          confirmLabel: "Use SMS details",
+        });
+        if (useSmsRecipient) {
+          if (selectedSupplier) {
+            try {
+              await updateContact.mutateAsync({
+                contactId: selectedSupplier.id,
+                payload: {
+                  name: smsRecipient.name || selectedSupplier.name,
+                  phone: smsRecipient.phone || selectedSupplier.phone,
+                  roles: selectedSupplier.roles,
+                },
+              });
+            } catch (contactError: unknown) {
+              await dialog.showDialog({
+                title: "Supplier details were not updated",
+                message: normalizeApiError(contactError).message,
+                tone: "error",
+              });
+              return;
+            }
+          } else {
+            setSupplierFormOpen(true);
+            if (smsRecipient.name) setNewSupplierName(smsRecipient.name);
+            if (smsRecipient.phone) setNewSupplierPhone(smsRecipient.phone);
+          }
+        }
+      }
+    }
+
+    const toDraft = (payment: SelectedSmsPayment): AdditionalPaymentDraft => ({
+      id: `sms-${payment.messageId}`,
+      smsMessageId: payment.messageId,
+      amount: payment.payment.amount ?? "",
+      method: "mpesa",
+      reference: payment.payment.transactionReference ?? "",
+      date: payment.payment.transactionDate ?? selectedPurchaseDate,
+      time: payment.payment.transactionTime,
+    });
+    const nextEntries = paymentSelections.map(toDraft);
+    const [first, ...rest] = nextEntries;
+    if (smsTargetPaymentId) {
+      if (mode !== "add") {
+        setMessageImportError(
+          "This payment changed while messages were open. Close the picker and try again.",
+        );
+        return;
+      }
+      setRecordPayment(true);
+      setFullyPaid(false);
+      if (smsTargetPaymentId === FIRST_PAYMENT_TARGET) {
+        setPaymentAmount(first.amount);
+        setPaymentMethod(first.method);
+        setPaymentReference(first.reference);
+        setPaymentSmsMessageId(first.smsMessageId ?? null);
+        setPaymentDate(first.date);
+        setPaymentTime(first.time);
+        setAdditionalPayments((current) => [...current, ...rest]);
+      } else {
+        setAdditionalPayments((current) => [
+          ...current.map((payment) =>
+            payment.id === smsTargetPaymentId ? first : payment,
+          ),
+          ...rest,
+        ]);
+      }
+    } else if (mode === "add" && hasExistingPayment) {
+      setRecordPayment(true);
+      setFullyPaid(false);
+      const firstPaymentIsEmpty =
+        !fullyPaid &&
+        !paymentAmount.trim() &&
+        !paymentReference.trim() &&
+        !paymentSmsMessageId;
+      if (firstPaymentIsEmpty) {
+        setPaymentAmount(first.amount);
+        setPaymentMethod(first.method);
+        setPaymentReference(first.reference);
+        setPaymentSmsMessageId(first.smsMessageId ?? null);
+        setPaymentDate(first.date);
+        setPaymentTime(first.time);
+        setAdditionalPayments((current) => [...current, ...rest]);
+      } else {
+        setAdditionalPayments((current) => [...current, ...nextEntries]);
+      }
+    } else {
+      setRecordPayment(true);
+      setFullyPaid(false);
+      setPaymentAmount(first.amount);
+      setPaymentMethod(first.method);
+      setPaymentReference(first.reference);
+      setPaymentSmsMessageId(first.smsMessageId ?? null);
+      setPaymentDate(first.date);
+      setPaymentTime(first.time);
+      setAdditionalPayments(rest);
+    }
+
+    setOverpaymentConfirmed(false);
+    setMessageImportError(null);
+    setSmsTargetPaymentId(null);
+    setSmsPickerOpen(false);
+  }
+
+  async function applyImportedPayment(edits: PaymentMessageEdits) {
+    if (!messageReview) return;
+    setMessageImportError(null);
+    const amountCents = parseMoneyToCents(edits.amount);
+    if (amountCents === null || amountCents <= 0n) {
+      setMessageImportError("Enter a valid payment amount before importing.");
+      return;
+    }
+    if (!parseDate(edits.date)) {
+      setMessageImportError(
+        "Enter a valid transaction date. FarmTrack will not substitute the import date.",
+      );
+      return;
+    }
+    if (
+      edits.time &&
+      !/^([01]\d|2[0-3]):[0-5]\d$/.test(edits.time)
+    ) {
+      setMessageImportError("Enter the transaction time in 24-hour HH:mm format.");
+      return;
+    }
+    if (edits.reference.length > 100) {
+      setMessageImportError("The transaction reference is too long.");
+      return;
+    }
+    const reference = edits.reference.trim();
+    const duplicate = reference
+      ? [
+          paymentReference,
+          ...additionalPayments.map((payment) => payment.reference),
+        ].some(
+          (existing) =>
+            existing.trim().toUpperCase() === reference.toUpperCase(),
+        )
+      : false;
+    if (duplicate) {
+      setMessageImportError(
+        "This transaction reference is already present in the current purchase form.",
+      );
+      return;
+    }
+    if (
+      paymentAmount.trim() &&
+      parseMoneyToCents(paymentAmount) !== amountCents
+    ) {
+      const replace = await dialog.confirmDialog({
+        title: "Replace the entered payment?",
+        message:
+          "The imported amount differs from the amount already entered. Use the reviewed message amount and reference instead?",
+        tone: "warning",
+        cancelLabel: "Keep my amount",
+        confirmLabel: "Use imported amount",
+      });
+      if (!replace) return;
+    }
+    const isOverpayment =
+      purchaseTotalCents > 0n &&
+      amountCents + additionalPaymentCents > purchaseTotalCents;
+    if (isOverpayment) {
+      const confirmed = await dialog.confirmDialog({
+        title: "Payments exceed the purchase",
+        message:
+          "The purchase total will not change. If you continue, any amount above it will be recorded as supplier credit using the existing purchase rules.",
+        tone: "warning",
+        details: [
+          {
+            label: "Purchase total",
+            value: formatCents(purchaseTotalCents, theme.currency),
+          },
+          {
+            label: "Payments including this message",
+            value: formatCents(amountCents + additionalPaymentCents, theme.currency),
+          },
+        ],
+        cancelLabel: "Review amount",
+        confirmLabel: "Use amount",
+      });
+      if (!confirmed) return;
+    }
+    if (!draftKey || loadedDraftKey !== draftKey) {
+      setMessageImportError(
+        "FarmTrack is still restoring the purchase draft. Please try again.",
+      );
+      return;
+    }
+
+    const updatedDraft = {
+      ...JSON.parse(draftSnapshot),
+      step: 2,
+      recordPayment: true,
+      fullyPaid: false,
+      paymentAmount: centsToDecimal(amountCents),
+      paymentMethod: "mpesa",
+      paymentReference: reference,
+      paymentSmsMessageId: null,
+      paymentDate: edits.date,
+      paymentTime: edits.time || null,
+      overpaymentConfirmed: isOverpayment,
+    };
+    try {
+      await persistDraftSnapshot(draftKey, JSON.stringify(updatedDraft));
+      await clearSharedMessage(messageReview.id);
+    } catch {
+      setMessageImportError(
+        "FarmTrack could not safely save the reviewed payment details or clear the share. The message remains available; try again.",
+      );
+      return;
+    }
+
+    setRecordPayment(true);
+    setFullyPaid(false);
+    setPaymentAmount(centsToDecimal(amountCents));
+    setPaymentMethod("mpesa");
+    setPaymentReference(reference);
+    setPaymentSmsMessageId(null);
+    setPaymentDate(edits.date);
+    setPaymentTime(edits.time || null);
+    setOverpaymentConfirmed(isOverpayment);
+    setMessageReview(null);
+  }
+
+  function persistDraftSnapshot(key: string, serialized: string) {
+    draftWriteChain.current = draftWriteChain.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (discardDraftWritesRef.current) return;
+        const draft = purchaseDraftSchema.parse(JSON.parse(serialized));
+        await SecureStore.setItemAsync(
+          key,
+          JSON.stringify({ ...draft, savedAt: Date.now() }),
+        );
+      });
+    return draftWriteChain.current;
+  }
+
+  useEffect(() => {
+    if (!draftKey) return;
+    let active = true;
+    const timer = setTimeout(() => {
+      discardDraftWritesRef.current = false;
+      setLoadedDraftKey(null);
+      setStep(0);
+      setPurchaseDate(null);
+      setSupplierId("");
+      setSupplierFormOpen(false);
+      setNewSupplierName("");
+      setNewSupplierPhone("");
+      setNewSupplierEmail("");
+      setPurchaseNotes("");
+      setItemDrafts([createItemDraft()]);
+      setRecordPayment(false);
+      setFullyPaid(false);
+      setPaymentAmount("");
+      setPaymentMethod("cash");
+      setPaymentReference("");
+      setPaymentSmsMessageId(null);
+      setPaymentDate(null);
+      setPaymentTime(null);
+      setSmsPickerOpen(false);
+      setSmsTargetPaymentId(null);
+      setAdditionalPayments([]);
+      setRemindForSettlement(false);
+      setReminderDueDate(addDaysToDate(farmToday, 1));
+      setReminderDueTime("09:00");
+      setDiscountType(null);
+      setDiscountValue("");
+      setDiscountReason("");
+      setDiscountConfirmed(false);
+      setOverpaymentConfirmed(false);
+      setSavedBalanceReminder(null);
+      setResult(null);
+      setPaymentFormOpen(false);
+      setBalancePaymentAmount("");
+      setBalancePaymentMethod("mpesa");
+      setBalancePaymentReference("");
+      setBalancePaymentSmsMessageId(null);
+      setBalancePaymentDate(null);
+      setBalancePaymentTime(null);
+      setBalanceSmsPickerOpen(false);
+      setRecordedBalanceSmsMessageIds([]);
+      setBalancePaymentError(null);
+      setMessageReview(null);
+      setMessageImportError(null);
+      void SecureStore.getItemAsync(draftKey)
+        .then(async (value) => {
+          if (!active) return;
+          if (!value) {
+            setLoadedDraftKey(draftKey);
+            setDraftStorageError(null);
+            return;
+          }
+          let parsed: ReturnType<typeof purchaseDraftSchema.safeParse>;
+          try {
+            parsed = purchaseDraftSchema.safeParse(JSON.parse(value));
+          } catch {
+            parsed = purchaseDraftSchema.safeParse(null);
+          }
+          if (!parsed.success) {
+            setDraftStorageError(
+              "The saved chicken purchase draft could not be read. You can continue with a new entry.",
+            );
+            setLoadedDraftKey(draftKey);
+            return;
+          }
+          if (Date.now() - parsed.data.savedAt > 14 * 24 * 60 * 60 * 1000) {
+            await SecureStore.deleteItemAsync(draftKey);
+            if (!active) return;
+            setDraftStorageError(
+              "An old chicken purchase draft was cleared. Start a new purchase to continue.",
+            );
+            setLoadedDraftKey(draftKey);
+            return;
+          }
+          const draft = parsed.data;
+          setStep(draft.step);
+          setPurchaseDate(draft.purchaseDate);
+          setSupplierId(draft.supplierId);
+          setSupplierFormOpen(draft.supplierFormOpen);
+          setNewSupplierName(draft.newSupplierName);
+          setNewSupplierPhone(draft.newSupplierPhone);
+          setNewSupplierEmail(draft.newSupplierEmail);
+          setPurchaseNotes(draft.purchaseNotes);
+          setItemDrafts(
+            draft.itemDrafts.map((item) => ({
+              id: item.id,
+              productId: item.productId,
+              chickenType: item.chickenType,
+              unitEntries:
+                item.unitEntries ??
+                (item.unitId
+                  ? [
+                      {
+                        id: `${item.id}-unit-legacy`,
+                        unitId: item.unitId,
+                        quantity: item.quantity ?? "",
+                        unitPrice: item.unitPrice ?? "",
+                      },
+                    ]
+                  : []),
+              notes: item.notes,
+            })),
+          );
+          setRecordPayment(draft.recordPayment);
+          setFullyPaid(draft.fullyPaid);
+          setPaymentAmount(draft.paymentAmount);
+          setPaymentMethod(draft.paymentMethod);
+          setPaymentReference(draft.paymentReference);
+          setPaymentSmsMessageId(draft.paymentSmsMessageId ?? null);
+          setPaymentDate(draft.paymentDate);
+          setPaymentTime(draft.paymentTime);
+          setAdditionalPayments(
+            draft.additionalPayments.map((payment) => ({
+              ...payment,
+              date: payment.date ?? draft.paymentDate ?? farmToday,
+              time: payment.time ?? null,
+            })),
+          );
+          setRemindForSettlement(draft.remindForSettlement);
+          setReminderDueDate(draft.reminderDueDate);
+          setReminderDueTime(draft.reminderDueTime);
+          setDiscountType(draft.discountType);
+          setDiscountValue(draft.discountValue);
+          setDiscountReason(draft.discountReason);
+          setDiscountConfirmed(draft.discountConfirmed);
+          setOverpaymentConfirmed(draft.overpaymentConfirmed);
+          setDraftStorageError(null);
+          setLoadedDraftKey(draftKey);
+        })
+        .catch(() => {
+          if (!active) return;
+          setDraftStorageError(
+            "FarmTrack could not access the saved purchase draft. Your current entry will remain on screen.",
+          );
+        });
+    }, 0);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [draftKey, farmToday]);
+
+  useEffect(() => {
+    if (!draftKey || loadedDraftKey !== draftKey) return;
+    const timer = setTimeout(() => {
+      void persistDraftSnapshot(draftKey, draftSnapshot).catch(() => {
+        setDraftStorageError(
+          "FarmTrack could not save this purchase draft securely.",
+        );
+      });
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [draftKey, draftSnapshot, loadedDraftKey]);
+
+  const shouldPreventRemove = Boolean(
+    draftKey && loadedDraftKey === draftKey && hasUnsavedPurchase && !result,
+  );
+  const [navigationAllowed, setNavigationAllowed] = useState(false);
+  usePreventRemove(
+    shouldPreventRemove && !navigationAllowed,
+    ({ repeat }) => {
+      leaveActionRef.current = repeat;
+      setLeaveDraftError(null);
+      setLeavePromptVisible(true);
+    },
+  );
+
+  useEffect(() => {
+    if (!draftKey || loadedDraftKey !== draftKey) return;
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state !== "background") return;
+      void persistDraftSnapshot(draftKey, draftSnapshot).catch(() => {
+        setDraftStorageError(
+          "FarmTrack could not save this purchase draft securely.",
+        );
+      });
+    });
+    return () => subscription.remove();
+  }, [draftKey, draftSnapshot, loadedDraftKey]);
+
+  useEffect(() => {
+    if (!sharedMessage || parsedShareId.current === sharedMessage.id) return;
+    const timer = setTimeout(() => {
+      parsedShareId.current = sharedMessage.id;
+      setMessageImportError(null);
+      try {
+        setMessageReview({
+          id: sharedMessage.id,
+          payment: parsePaymentMessage(sharedMessage.text),
+        });
+      } catch {
+        setMessageImportError("FarmTrack could not read this shared message.");
+      }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [sharedMessage]);
 
   useEffect(() => {
     if (step !== 1 || !focusDiscountAfterReview) return;
@@ -425,10 +1377,8 @@ function ChickenPurchaseContent() {
 
   function updateItem(id: string, changes: Partial<PurchaseItemDraft>) {
     if (
-      changes.quantity !== undefined ||
-      changes.unitPrice !== undefined ||
       changes.productId !== undefined ||
-      changes.unitId !== undefined
+      changes.unitEntries !== undefined
     ) {
       setDiscountConfirmed(false);
       setOverpaymentConfirmed(false);
@@ -448,7 +1398,47 @@ function ChickenPurchaseContent() {
       product.product_units[0];
     updateItem(item.id, {
       productId: product.id,
-      unitId: defaultUnit?.unit_id ?? "",
+      unitEntries: defaultUnit
+        ? [
+            {
+              id: `${item.id}-${defaultUnit.unit_id}`,
+              unitId: defaultUnit.unit_id,
+              quantity: "",
+              unitPrice: "",
+            },
+          ]
+        : [],
+    });
+  }
+
+  function toggleItemUnit(item: PurchaseItemDraft, unit: ProductUnit) {
+    const currentEntries = item.unitEntries;
+    const selected = currentEntries.some(
+      (entry) => entry.unitId === unit.unit_id,
+    );
+    const unitEntries = selected
+      ? currentEntries.filter((entry) => entry.unitId !== unit.unit_id)
+      : [
+          ...currentEntries,
+          {
+            id: `${item.id}-${unit.unit_id}`,
+            unitId: unit.unit_id,
+            quantity: "",
+            unitPrice: "",
+          },
+        ];
+    updateItem(item.id, { unitEntries });
+  }
+
+  function updateItemUnit(
+    item: PurchaseItemDraft,
+    unitEntryId: string,
+    changes: Partial<PurchaseUnitEntryDraft>,
+  ) {
+    updateItem(item.id, {
+      unitEntries: item.unitEntries.map((entry) =>
+        entry.id === unitEntryId ? { ...entry, ...changes } : entry,
+      ),
     });
   }
 
@@ -489,26 +1479,36 @@ function ChickenPurchaseContent() {
             `batch:${item.id}:type`,
           );
         }
-        if (
-          !product.product_units.some((unit) => unit.unit_id === item.unitId)
-        ) {
+        if (item.unitEntries.length === 0) {
           return reportFieldError(
-            `Choose a valid unit for item ${index + 1}.`,
+            `Choose at least one purchase unit for item ${index + 1}.`,
             `batch:${item.id}:unit`,
           );
         }
-        const quantity = Number(item.quantity);
-        if (!Number.isSafeInteger(quantity) || quantity < 1) {
-          return reportFieldError(
-            `Enter a whole-number quantity above zero for item ${index + 1}.`,
-            `batch:${item.id}:quantity`,
-          );
-        }
-        if (parseMoneyToCents(item.unitPrice) === null) {
-          return reportFieldError(
-            `Enter a unit price with up to two decimal places for item ${index + 1}. Use 0 if the chickens are free.`,
-            `batch:${item.id}:unit-price`,
-          );
+        for (const entry of item.unitEntries) {
+          if (
+            !product.product_units.some(
+              (unit) => unit.unit_id === entry.unitId,
+            )
+          ) {
+            return reportFieldError(
+              `Choose a valid unit for item ${index + 1}.`,
+              `batch:${item.id}:unit`,
+            );
+          }
+          const quantity = Number(entry.quantity);
+          if (!Number.isSafeInteger(quantity) || quantity < 1) {
+            return reportFieldError(
+              `Enter a whole-number quantity above zero for each selected unit in item ${index + 1}.`,
+              `batch:${item.id}:quantity:${entry.id}`,
+            );
+          }
+          if (parseMoneyToCents(entry.unitPrice) === null) {
+            return reportFieldError(
+              `Enter a price with up to two decimal places for each selected unit in item ${index + 1}. Use 0 if the chickens are free.`,
+              `batch:${item.id}:unit-price:${entry.id}`,
+            );
+          }
         }
       }
       if (discountType && purchasePricing.error) {
@@ -516,6 +1516,38 @@ function ChickenPurchaseContent() {
       }
     }
     if (step === 2 && recordPayment) {
+      if (paymentDate && !parseDate(paymentDate)) {
+        return reportFieldError(
+          "Choose a valid payment date.",
+          "payment:date",
+        );
+      }
+      if (
+        paymentTime &&
+        !/^([01]\d|2[0-3]):[0-5]\d$/.test(paymentTime)
+      ) {
+        return reportFieldError(
+          "Choose a valid payment time.",
+          "payment:time",
+        );
+      }
+      for (const payment of additionalPayments) {
+        if (payment.date && !parseDate(payment.date)) {
+          return reportFieldError(
+            "Choose a valid date for each additional payment.",
+            `payment:${payment.id}:date`,
+          );
+        }
+        if (
+          payment.time &&
+          !/^([01]\d|2[0-3]):[0-5]\d$/.test(payment.time)
+        ) {
+          return reportFieldError(
+            "Choose a valid time for each additional payment.",
+            `payment:${payment.id}:time`,
+          );
+        }
+      }
       const amounts = [
         {
           key: "payment:amount",
@@ -642,6 +1674,173 @@ function ChickenPurchaseContent() {
     }
   }
 
+  async function copyPurchaseValue(value: string) {
+    try {
+      await Clipboard.setStringAsync(value);
+      setCopiedReference(value);
+    } catch (copyError: unknown) {
+      await dialog.showDialog({
+        title: "Couldn’t copy",
+        message: normalizeApiError(copyError).message,
+        tone: "error",
+      });
+    }
+  }
+
+  async function submitBalancePayment() {
+    if (!farmId || !result) return;
+    setBalancePaymentError(null);
+    const balanceCents = parseMoneyToCents(String(result.balance_due)) ?? 0n;
+    const amountCents = parseMoneyToCents(balancePaymentAmount);
+    if (amountCents === null || amountCents <= 0n) {
+      setBalancePaymentError("Enter a payment amount greater than zero.");
+      return;
+    }
+    if (amountCents > balanceCents) {
+      setBalancePaymentError("Payment cannot be more than the balance due.");
+      return;
+    }
+    const reference = balancePaymentReference.trim();
+    if (balancePaymentMethod !== "cash" && !reference) {
+      setBalancePaymentError("Enter a reference for M-Pesa or bank payments.");
+      return;
+    }
+    if (
+      balancePaymentMethod === "mpesa" &&
+      reference &&
+      result.payments.some(
+        (payment) =>
+          payment.reference_number?.trim().toUpperCase() ===
+          reference.toUpperCase(),
+      )
+    ) {
+      setBalancePaymentError(
+        "That M-Pesa reference is already recorded for this purchase.",
+      );
+      return;
+    }
+
+    try {
+      const recorded = await recordPurchasePayment.mutateAsync({
+        amount: centsToDecimal(amountCents),
+        payment_date: balancePaymentDate ?? farmToday,
+        payment_time:
+          balancePaymentTime ??
+          farmLocalTime(farm.selectedFarm?.settings?.timezone),
+        payment_method: balancePaymentMethod,
+        reference_number: reference || undefined,
+      });
+      setResult((current) => current && current.id === result.id
+        ? {
+            ...current,
+            amount_paid: recorded.amount_paid,
+            balance_due: recorded.balance_due,
+            credit_balance: recorded.credit_balance,
+            payments: [...current.payments, recorded.payment],
+          }
+        : current);
+      if (balancePaymentSmsMessageId) {
+        setRecordedBalanceSmsMessageIds((current) =>
+          current.includes(balancePaymentSmsMessageId)
+            ? current
+            : [...current, balancePaymentSmsMessageId],
+        );
+      }
+      if (
+        (parseMoneyToCents(String(recorded.balance_due)) ?? 0n) === 0n &&
+        savedBalanceReminder
+      ) {
+        try {
+          await cancelPurchaseReminder.mutateAsync();
+          setSavedBalanceReminder(null);
+          setReminderCancelError(null);
+        } catch (cancelError: unknown) {
+          setReminderCancelError(
+            `Payment was recorded, but the reminder could not be cancelled: ${normalizeApiError(cancelError).message}`,
+          );
+        }
+      }
+      setPaymentFormOpen(false);
+      setSmsPickerOpen(false);
+      setSmsTargetPaymentId(null);
+      setMessageReview(null);
+      setMessageImportError(null);
+      setBalancePaymentAmount("");
+      setBalancePaymentReference("");
+      setBalancePaymentSmsMessageId(null);
+      setBalancePaymentDate(null);
+      setBalancePaymentTime(null);
+    } catch (paymentError: unknown) {
+      setBalancePaymentError(normalizeApiError(paymentError).message);
+    }
+  }
+
+  function applyBalanceSmsPayment(selectedPayments: SelectedSmsPayment[]) {
+    const selected = selectedPayments[0];
+    if (!selected) return;
+    const { payment } = selected;
+    if (!payment.amount || !payment.transactionDate) {
+      setBalancePaymentError(
+        "This message is missing a usable amount or date. Enter the payment manually or choose another message.",
+      );
+      return;
+    }
+    setBalancePaymentAmount(payment.amount);
+    setBalancePaymentMethod("mpesa");
+    setBalancePaymentReference(payment.transactionReference ?? "");
+    setBalancePaymentSmsMessageId(selected.messageId);
+    setBalancePaymentDate(payment.transactionDate);
+    setBalancePaymentTime(payment.transactionTime ?? null);
+    setBalancePaymentError(null);
+    setBalanceSmsPickerOpen(false);
+  }
+
+  function openReminderEditor(reminder: Reminder) {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: farm.selectedFarm?.settings?.timezone ?? "UTC",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(new Date(reminder.due_at));
+    const value = (type: Intl.DateTimeFormatPartTypes) =>
+      parts.find((part) => part.type === type)?.value ?? "";
+    setReminderDueDate(`${value("year")}-${value("month")}-${value("day")}`);
+    setReminderDueTime(`${value("hour")}:${value("minute")}`);
+    setReminderEditError(null);
+    setReminderEditorOpen(true);
+  }
+
+  async function saveReminderChanges() {
+    if (!savedBalanceReminder) return;
+    setReminderEditError(null);
+    if (
+      !parseDate(reminderDueDate) ||
+      !/^([01]\d|2[0-3]):[0-5]\d$/.test(reminderDueTime)
+    ) {
+      setReminderEditError("Choose a valid reminder date and time.");
+      return;
+    }
+    if (
+      `${reminderDueDate}T${reminderDueTime}` <=
+      `${farmToday}T${farmLocalTime(farm.selectedFarm?.settings?.timezone)}`
+    ) {
+      setReminderEditError("Choose a reminder time in the future for this farm.");
+      return;
+    }
+    try {
+      const updated = await reschedulePurchaseReminder.mutateAsync(
+        `${reminderDueDate}T${reminderDueTime}:00`,
+      );
+      setSavedBalanceReminder(updated);
+      setReminderEditorOpen(false);
+    } catch (rescheduleError: unknown) {
+      setReminderEditError(normalizeApiError(rescheduleError).message);
+    }
+  }
+
   async function submitPurchase() {
     if (!farmId || !validateStep()) return;
     setError(null);
@@ -679,14 +1878,35 @@ function ChickenPurchaseContent() {
           ? paidNowCents / purchaseTotalCents
           : 0n;
       const likelyExtraZero = [10n, 100n, 1000n].includes(amountMultiple)
-        ? ` The amount is exactly ${amountMultiple} times the purchase cost. Did you mean ${formatCents(purchaseTotalCents, theme.currency)}?`
+        ? `This is exactly ${amountMultiple} times the purchase cost. Check whether you meant ${formatCents(purchaseTotalCents, theme.currency)}.`
         : "";
       const confirmed = await dialog.confirmDialog({
-        title: "Payment exceeds purchase cost",
-        message: `The purchase cost is ${formatCents(purchaseTotalCents, theme.currency)}, but the amount entered is ${formatCents(paidNowCents, theme.currency)}. The difference will be recorded as a credit balance, not as a confirmed refund.${likelyExtraZero}`,
-        tone: "info",
-        cancelLabel: "Review amount",
-        confirmLabel: "Confirm amount",
+        title: "Payment is higher than the purchase",
+        message:
+          "Check the amount before continuing. If correct, the extra payment will be saved as credit with this supplier.",
+        tone: "warning",
+        details: [
+          {
+            label: "Purchase total",
+            value: formatCents(purchaseTotalCents, theme.currency),
+          },
+          {
+            label: "Payment entered",
+            value: formatCents(paidNowCents, theme.currency),
+          },
+          {
+            label: "Supplier credit",
+            value: formatCents(
+              paidNowCents - purchaseTotalCents,
+              theme.currency,
+            ),
+          },
+        ],
+        note: likelyExtraZero
+          ? `${likelyExtraZero} This is a supplier credit, not a confirmed cash refund.`
+          : "This is a supplier credit, not a confirmed cash refund.",
+        cancelLabel: "Go back and edit",
+        confirmLabel: "Record supplier credit",
       });
       if (!confirmed) {
         setStep(2);
@@ -696,10 +1916,55 @@ function ChickenPurchaseContent() {
       paymentConfirmed = true;
       setOverpaymentConfirmed(true);
     }
+    let purchaseSupplierId = supplierId;
+    const supplierName = newSupplierName.trim();
+    const supplierPhone = newSupplierPhone.trim();
+    const supplierEmail = newSupplierEmail.trim();
+    const hasSupplierDraft =
+      supplierFormOpen && Boolean(supplierName || supplierPhone || supplierEmail);
+    if (hasSupplierDraft && !supplierName) {
+      setSupplierError("Enter a supplier name to save these contact details.");
+      setStep(0);
+      return;
+    }
     try {
+      if (hasSupplierDraft) {
+        const refreshedOptions = await options.refetch();
+        if (refreshedOptions.isError) {
+          throw refreshedOptions.error;
+        }
+        if (!refreshedOptions.data) {
+          throw new Error("Could not check existing suppliers before saving.");
+        }
+        const normalizedSupplierName = supplierName.toLocaleLowerCase();
+        const existingSupplier = refreshedOptions.data.suppliers.find(
+          (supplier) =>
+            supplier.name.trim().toLocaleLowerCase() ===
+              normalizedSupplierName &&
+            (supplier.phone ?? "").trim() === supplierPhone &&
+            (supplier.email ?? "").trim().toLocaleLowerCase() ===
+              supplierEmail.toLocaleLowerCase(),
+        );
+        const supplier =
+          existingSupplier ??
+          (await createContact.mutateAsync({
+            name: supplierName,
+            roles: ["supplier"],
+            phone: supplierPhone || undefined,
+            email: supplierEmail || undefined,
+          }));
+        purchaseSupplierId = supplier.id;
+        setSupplierId(supplier.id);
+        setSupplierFormOpen(false);
+        setNewSupplierName("");
+        setNewSupplierPhone("");
+        setNewSupplierEmail("");
+        setSupplierError(null);
+        if (!existingSupplier) await options.refetch();
+      }
       const created = await createPurchase.mutateAsync({
         transaction_date: selectedPurchaseDate,
-        supplier_id: supplierId || undefined,
+        supplier_id: purchaseSupplierId || undefined,
         notes: purchaseNotes.trim() || undefined,
         discount_type: discountType ?? undefined,
         discount_value: discountType ? discountValue.trim() : "0.00",
@@ -708,32 +1973,49 @@ function ChickenPurchaseContent() {
             ? discountReason.trim()
             : undefined,
         overpayment_confirmed: paymentConfirmed,
-        items: items.map((item) => ({
-          product_id: item.productId,
-          chicken_type: item.chickenType as ChickenType,
-          quantity: Number(item.quantity),
-          unit_id: item.unitId,
-          unit_price: item.unitPrice.trim(),
-          notes: item.notes.trim() || undefined,
-        })),
+        items: items.flatMap((item) =>
+          item.unitEntries.map((entry) => ({
+            product_id: item.productId,
+            chicken_type: item.chickenType as ChickenType,
+            quantity: Number(entry.quantity),
+            unit_id: entry.unitId,
+            unit_price: entry.unitPrice.trim(),
+            notes: item.notes.trim() || undefined,
+          })),
+        ),
         payments: recordPayment
           ? [
               {
                 amount: centsToDecimal(enteredPaymentCents),
-                payment_date: selectedPurchaseDate,
+                payment_date: paymentDate ?? selectedPurchaseDate,
+                payment_time: paymentTime,
                 payment_method: paymentMethod,
                 reference_number: paymentReference.trim() || undefined,
               },
               ...additionalPayments.map((payment) => ({
                 amount: centsToDecimal(parseMoneyToCents(payment.amount) ?? 0n),
-                payment_date: selectedPurchaseDate,
+                payment_date: payment.date || selectedPurchaseDate,
+                payment_time: payment.time,
                 payment_method: payment.method,
                 reference_number: payment.reference.trim() || undefined,
               })),
             ]
           : [],
       });
+      discardDraftWritesRef.current = true;
       setResult(created);
+      if (draftKey) {
+        try {
+          await draftWriteChain.current.catch(() => undefined);
+          await SecureStore.deleteItemAsync(draftKey);
+          setLoadedDraftKey(null);
+          setDraftStorageError(null);
+        } catch {
+          setDraftStorageError(
+            "The purchase was recorded, but its local draft could not be cleared.",
+          );
+        }
+      }
       if (
         remindForSettlement &&
         ((parseMoneyToCents(String(created.balance_due)) ?? 0n) > 0n ||
@@ -743,19 +2025,6 @@ function ChickenPurchaseContent() {
       }
     } catch (saveError: unknown) {
       setError(normalizeApiError(saveError).message);
-    }
-  }
-
-  async function openContactLink(url: string, target: string) {
-    try {
-      if (!(await Linking.canOpenURL(url))) throw new Error("Unsupported URL");
-      await Linking.openURL(url);
-    } catch {
-      await dialog.showDialog({
-        title: `Unable to open ${target}`,
-        message: `No compatible app could open this ${target}.`,
-        tone: "error",
-      });
     }
   }
 
@@ -1191,46 +2460,135 @@ function ChickenPurchaseContent() {
     }, 0n);
     const resultCreditBalanceCents =
       parseMoneyToCents(String(result.credit_balance)) ?? 0n;
+    const resultDiscountCents =
+      parseMoneyToCents(String(result.discount_amount)) ?? 0n;
     const resultBalanceDueCents =
       parseMoneyToCents(String(result.balance_due)) ?? 0n;
+    const balanceColor = theme.mode === "dark" ? "#F0A35E" : "#A85A12";
     return (
-      <ScreenShell>
-        <FarmPageHeader
-          title="Purchase recorded"
-          showBack
-          fallbackHref="/(tabs)/flock"
-        />
-        <View style={styles.successContent}>
-          <View style={[styles.resultMark, { backgroundColor: theme.success }]}>
+      <PurchaseSuccessShell
+        footer={
+          <>
+            <Button
+              label="Back to chickens"
+              variant="secondary"
+              style={styles.successFooterButton}
+              onPress={() => router.replace("/(tabs)/flock")}
+            />
+            {result.items.some((item) => item.quantity_remaining > 0) ? (
+              <Button
+                label="Receive chickens"
+                style={styles.successFooterButton}
+                onPress={() =>
+                  router.push({
+                    pathname: "/purchases/[purchaseId]/receive",
+                    params: { purchaseId: result.id },
+                  })
+                }
+              />
+            ) : null}
+          </>
+        }
+      >
+        <Animated.View
+          entering={FadeInDown.duration(320)}
+          style={styles.successContent}
+        >
+          <View style={styles.successHeading}>
+            <View style={[styles.resultMark, { backgroundColor: theme.success }]}>
             <Ionicons name="checkmark" size={24} color="#FFFFFF" />
+            </View>
+            <AppText size="heading" weight="semibold">
+              Purchase recorded
+            </AppText>
           </View>
-          <AppText size="heading" weight="semibold">
-            Chicken purchase recorded
-          </AppText>
-          <AppText size="small" tone="secondary">
-            The purchase records what you bought. Record each delivery
-            separately so partial arrivals update flock stock accurately.
-          </AppText>
-          <SummaryRow
-            label="Transaction reference"
-            value={result.reference_number ?? "Not available"}
-            emphasized
-          />
-          <SummaryRow
-            label="Purchase date"
-            value={formatDateForDisplay(result.transaction_date)}
-          />
-          <SummaryRow
-            label="Supplier"
-            value={
-              options.data.suppliers.find(
+          <View style={styles.successMeta}>
+            {result.reference_number ? (
+              <>
+                <AppText size="small" weight="semibold">{result.reference_number}</AppText>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Copy transaction reference"
+                  onPress={() => void copyPurchaseValue(result.reference_number!)}
+                >
+                  <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+                    {copiedReference === result.reference_number ? "Copied" : "Copy"}
+                  </AppText>
+                </Pressable>
+                <AppText size="small" tone="secondary">·</AppText>
+              </>
+            ) : null}
+            <AppText size="small" tone="secondary">
+              {formatDateForDisplay(result.transaction_date)}
+            </AppText>
+            <AppText size="small" tone="secondary">·</AppText>
+            <AppText size="small" tone="secondary">
+              {options.data.suppliers.find(
                 (supplier) => supplier.id === result.contact_id,
-              )?.name ?? "No supplier"
-            }
-          />
-          <View style={styles.successBatchList}>
-            <AppText weight="semibold">Purchased batches</AppText>
-            {result.items.map((purchasedItem, index) => {
+              )?.name ?? "No supplier"}
+            </AppText>
+          </View>
+
+          <View style={[styles.successSection, { borderTopColor: theme.border }]}>
+            <View style={styles.deliveryHeading}>
+              <AppText weight="semibold">Receive chickens next</AppText>
+              <AppText size="small" tone="secondary">
+                {result.items.some((item) => item.quantity_remaining > 0)
+                  ? "Not received"
+                  : "All received"}
+              </AppText>
+            </View>
+            {result.items.map((purchasedItem) => {
+              const product = options.data.products.find(
+                (candidate) => candidate.id === purchasedItem.product_id,
+              );
+              const unit = product?.product_units.find(
+                (candidate) => candidate.unit_id === purchasedItem.unit_id,
+              );
+              const ordered = purchasedItem.quantity_received + purchasedItem.quantity_remaining;
+              const progress = ordered > 0
+                ? (purchasedItem.quantity_received / ordered) * 100
+                : 0;
+              const unitLabel = chickenPurchaseUnitLabel(
+                unit?.unit_abbreviation || unit?.unit_name || "unit",
+                ordered,
+              );
+              return (
+                <View key={purchasedItem.id} style={styles.deliveryItem}>
+                  <View style={styles.deliveryHeading}>
+                    <AppText size="small" weight="semibold">
+                      {formatChickenCount(purchasedItem.quantity_received)} of{" "}
+                      {formatChickenCount(ordered)} {unitLabel} received
+                    </AppText>
+                    <AppText size="small" weight="semibold" style={{
+                      color: purchasedItem.quantity_remaining === 0 ? theme.success : theme.secondary,
+                    }}>
+                      {purchasedItem.quantity_remaining === 0
+                        ? "Received"
+                        : purchasedItem.quantity_received > 0
+                          ? "Partly received"
+                          : "Awaiting"}
+                    </AppText>
+                  </View>
+                  <View style={[styles.successProgressTrack, { backgroundColor: theme.backgroundSelected }]}>
+                    <View style={[styles.successProgressFill, { width: `${Math.min(progress, 100)}%`, backgroundColor: theme.primary }]} />
+                  </View>
+                  {purchasedItem.quantity_remaining > 0 ? (
+                    <AppText size="small" tone="secondary">
+                      {formatChickenCount(purchasedItem.quantity_remaining)} {unitLabel} outstanding
+                    </AppText>
+                  ) : null}
+                </View>
+              );
+            })}
+            <AppText size="small" tone="secondary">
+              Flock counts update as you record each delivery.
+            </AppText>
+          </View>
+
+          <View style={[styles.successSection, { borderTopColor: theme.border }]}>
+            <AppText weight="semibold">What you bought</AppText>
+            {result.items.map((purchasedItem) => {
               const product = options.data.products.find(
                 (candidate) => candidate.id === purchasedItem.product_id,
               );
@@ -1240,119 +2598,309 @@ function ChickenPurchaseContent() {
               const chickenType = chickenTypes.find(
                 (type) => type.value === purchasedItem.chicken_type,
               )?.label;
+              const unitLabel = chickenPurchaseUnitLabel(
+                unit?.unit_abbreviation || unit?.unit_name || "unit",
+                purchasedItem.quantity,
+              );
               return (
-                <View key={purchasedItem.id} style={styles.successBatch}>
-                  <AppText weight="semibold">
-                    {chickenType ?? "Chicken"} ·{" "}
-                    {formatChickenCount(purchasedItem.quantity)} purchased
-                  </AppText>
+                <View key={purchasedItem.id} style={styles.purchasedItem}>
+                  <View style={styles.purchasedItemHeading}>
+                    <View style={styles.flexCopy}>
+                      <AppText weight="semibold">
+                        {chickenType ?? "Chicken"} · {formatChickenCount(purchasedItem.quantity)} {unitLabel}
+                      </AppText>
+                      <AppText size="small" tone="secondary">
+                        {product?.name ?? "Chicken product"}
+                      </AppText>
+                    </View>
+                  </View>
                   <AppText size="small" tone="secondary">
-                    {product?.name ?? "Chicken product"} ·{" "}
-                    {unit?.unit_abbreviation ?? "units"} ·{" "}
-                    {formatMoney(purchasedItem.total_amount, theme.currency)}
+                    {formatChickenCount(purchasedItem.quantity)} × {formatMoney(purchasedItem.unit_price, theme.currency)} each
                   </AppText>
-                  <AppText size="small" tone="secondary">
-                    {formatChickenCount(purchasedItem.quantity_received)}{" "}
-                    received ·{" "}
-                    {formatChickenCount(purchasedItem.quantity_remaining)}{" "}
-                    outstanding
+                </View>
+              );
+            })}
+            <SummaryRow
+              label="Subtotal"
+              value={formatCents(resultSubtotalCents, theme.currency)}
+            />
+            {resultDiscountCents > 0n ? (
+              <SummaryRow
+                label="Discount"
+                value={`− ${formatMoney(result.discount_amount, theme.currency)}`}
+              />
+            ) : null}
+            <View style={[styles.purchaseTotalRow, { borderTopColor: theme.border }]}>
+              <AppText weight="semibold">Total cost</AppText>
+              <AppText weight="semibold">{formatMoney(result.transaction_total, theme.currency)}</AppText>
+            </View>
+          </View>
+
+          <View style={[styles.successSection, { borderTopColor: theme.border }]}>
+            <AppText weight="semibold">Payment</AppText>
+            {resultBalanceDueCents > 0n ? (
+              <>
+                <AppText size="small" tone="secondary">Balance due</AppText>
+                <AppText size="title" weight="semibold" style={{ color: balanceColor }}>
+                  {formatCents(resultBalanceDueCents, theme.currency)}
+                </AppText>
+              </>
+            ) : (
+              <AppText size="body" weight="semibold" style={{ color: theme.success }}>
+                {resultCreditBalanceCents > 0n
+                  ? `Supplier credit · ${formatCents(resultCreditBalanceCents, theme.currency)}`
+                  : "Paid in full"}
+              </AppText>
+            )}
+            {Number(result.transaction_total) > 0 ? (
+              <>
+                <View style={[styles.successProgressTrack, { backgroundColor: theme.backgroundSelected }]}>
+                  <View style={[styles.successProgressFill, {
+                    width: `${Math.min((Number(result.amount_paid) / Number(result.transaction_total)) * 100, 100)}%`,
+                    backgroundColor: theme.primary,
+                  }]} />
+                </View>
+                <AppText size="small" tone="secondary">
+                  {formatMoney(result.amount_paid, theme.currency)} paid of {formatMoney(result.transaction_total, theme.currency)}
+                </AppText>
+              </>
+            ) : null}
+            {result.payments.map((payment, index) => {
+              const methodName = paymentMethods.find(
+                (method) => method.value === payment.payment_method,
+              )?.label ?? "Payment";
+              return (
+                <View key={payment.id ?? `${payment.payment_date}-${index}`} style={styles.paymentLine}>
+                  <AppText size="small" style={styles.flexCopy}>
+                    {formatMoney(payment.amount, theme.currency)} via {methodName}
+                    {payment.reference_number ? ` · ${payment.reference_number}` : ""}
                   </AppText>
-                  {purchasedItem.notes ? (
-                    <AppText size="small" tone="secondary">
-                      {purchasedItem.notes}
-                    </AppText>
+                  {payment.reference_number ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Copy payment reference"
+                      onPress={() => void copyPurchaseValue(payment.reference_number!)}
+                    >
+                      <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+                        {copiedReference === payment.reference_number ? "Copied" : "Copy"}
+                      </AppText>
+                    </Pressable>
                   ) : null}
                 </View>
               );
             })}
-          </View>
-          <SummaryRow
-            label="Calculated subtotal"
-            value={formatCents(resultSubtotalCents, theme.currency)}
-          />
-          <SummaryRow
-            label="Discount"
-            value={formatMoney(-result.discount_amount, theme.currency)}
-            labelColor={theme.secondary}
-            valueColor={theme.secondary}
-          />
-          <SummaryRow
-            label="Final purchase cost"
-            value={formatMoney(result.transaction_total, theme.currency)}
-            emphasized
-            labelColor={theme.primary}
-            valueColor={theme.primary}
-          />
-          <SummaryRow
-            label="Paid now"
-            value={`${formatMoney(result.amount_paid, theme.currency)}${result.payments[0] ? ` · ${paymentMethods.find((method) => method.value === result.payments[0].payment_method)?.label ?? "Payment"}` : ""}`}
-            labelColor={theme.success}
-            valueColor={theme.success}
-          />
-          {result.payments[0]?.reference_number ? (
-            <SummaryRow
-              label="Payment reference"
-              value={result.payments[0].reference_number}
-            />
-          ) : null}
-          <SummaryRow
-            label={
-              resultCreditBalanceCents > 0n ? "Credit balance" : "Balance due"
-            }
-            value={formatCents(
-              resultCreditBalanceCents > 0n
-                ? resultCreditBalanceCents
-                : resultBalanceDueCents,
-              theme.currency,
-            )}
-            emphasized
-            labelColor={
-              resultBalanceDueCents === 0n || resultCreditBalanceCents > 0n
-                ? theme.success
-                : theme.danger
-            }
-            valueColor={
-              resultBalanceDueCents === 0n || resultCreditBalanceCents > 0n
-                ? theme.success
-                : theme.danger
-            }
-          />
-          {purchaseNotes.trim() ? (
-            <SummaryRow label="Notes" value={purchaseNotes.trim()} />
-          ) : null}
-          {savedBalanceReminder ? (
-            <Card style={styles.reminderSaved}>
-              <Ionicons
-                name="notifications-outline"
-                size={19}
-                color={theme.primary}
-              />
-              <View style={styles.flexCopy}>
-                <AppText weight="semibold">
-                  {savedBalanceReminder.delivery_channel === "push"
-                    ? "Settlement reminder set"
-                    : "In-app settlement reminder set"}
-                </AppText>
-                <AppText size="small" tone="secondary">
-                  {formatDateForDisplay(
-                    savedBalanceReminder.due_at.slice(0, 10),
-                  )}{" "}
-                  at {savedBalanceReminder.due_at.slice(11, 16)} farm time
-                </AppText>
-                {savedBalanceReminder.delivery_channel === "in_app" ? (
-                  <AppText size="small" tone="secondary">
-                    Push wasn’t available, so the reminder was saved to
-                    FarmTrack and will appear in your in-app notifications.
+            {paymentFormOpen && resultBalanceDueCents > 0n ? (
+              <View style={[styles.inlinePaymentForm, { borderTopColor: theme.border }]}>
+                <TextField
+                  label="Amount"
+                  value={balancePaymentAmount}
+                  onChangeText={setBalancePaymentAmount}
+                  placeholder="Enter amount"
+                  keyboardType="decimal-pad"
+                  leadingIcon="cash-outline"
+                />
+                <AppText size="small" weight="semibold">Payment method</AppText>
+                <View style={styles.paymentMethodChoices}>
+                  {([
+                    ["mpesa", "M-Pesa"],
+                    ["cash", "Cash"],
+                    ["bank_transfer", "Bank"],
+                  ] as const).map(([method, label]) => (
+                    <Pressable
+                      key={method}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: balancePaymentMethod === method }}
+                      onPress={() => setBalancePaymentMethod(method)}
+                      style={[
+                        styles.paymentMethodChoice,
+                        {
+                          backgroundColor: balancePaymentMethod === method
+                            ? theme.backgroundSelected
+                            : theme.backgroundElement,
+                          borderColor: balancePaymentMethod === method
+                            ? theme.primary
+                            : theme.border,
+                        },
+                      ]}
+                    >
+                      <AppText
+                        size="small"
+                        weight={balancePaymentMethod === method ? "semibold" : undefined}
+                        style={{ color: balancePaymentMethod === method ? theme.primary : theme.text }}
+                      >
+                        {label}
+                      </AppText>
+                    </Pressable>
+                  ))}
+                </View>
+                {balancePaymentMethod !== "cash" ? (
+                  <TextField
+                    label="Payment reference"
+                    value={balancePaymentReference}
+                    onChangeText={setBalancePaymentReference}
+                    placeholder={balancePaymentMethod === "mpesa" ? "M-Pesa code" : "Bank reference"}
+                    autoCapitalize="characters"
+                  />
+                ) : null}
+                {balancePaymentMethod === "mpesa" ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                      setBalancePaymentError(null);
+                      setBalanceSmsPickerOpen(true);
+                    }}
+                    style={[
+                      styles.balanceSmsAction,
+                      {
+                        backgroundColor: theme.backgroundSelected,
+                        borderColor: `${theme.primary}66`,
+                      },
+                    ]}
+                  >
+                    <Ionicons name="phone-portrait-outline" size={18} color={theme.primary} />
+                    <AppText
+                      size="small"
+                      weight="semibold"
+                      style={styles.flexCopy}
+                    >
+                      Find payment on this phone
+                    </AppText>
+                    <Ionicons name="chevron-forward" size={18} color={theme.primary} />
+                  </Pressable>
+                ) : null}
+                {balancePaymentError ? (
+                  <AppText size="small" style={{ color: theme.danger }}>
+                    {balancePaymentError}
                   </AppText>
                 ) : null}
+                <View style={styles.paymentFormActions}>
+                  <Button
+                    label="Cancel"
+                    variant="secondary"
+                    disabled={recordPurchasePayment.isPending}
+                    onPress={() => {
+                      setPaymentFormOpen(false);
+                      setBalancePaymentError(null);
+                    }}
+                  />
+                  <Button
+                    label="Record payment"
+                    loading={recordPurchasePayment.isPending}
+                    onPress={() => void submitBalancePayment()}
+                  />
+                </View>
               </View>
-            </Card>
+            ) : null}
+            {resultBalanceDueCents > 0n && !paymentFormOpen ? (
+              <Button
+                label="Pay balance"
+                variant="secondary"
+                onPress={() => {
+                  setBalancePaymentAmount(String(result.balance_due));
+                  setBalancePaymentReference("");
+                  setBalancePaymentSmsMessageId(null);
+                  setBalancePaymentDate(null);
+                  setBalancePaymentTime(null);
+                  setBalancePaymentError(null);
+                  setPaymentFormOpen(true);
+                }}
+              />
+            ) : null}
+          </View>
+
+          {savedBalanceReminder && resultBalanceDueCents > 0n ? (
+            <View style={[styles.successSection, { borderTopColor: theme.border }]}>
+              <View style={styles.deliveryHeading}>
+                <View style={styles.flexCopy}>
+                  <AppText weight="semibold">Reminder to settle the balance</AppText>
+                  <AppText size="small" tone="secondary">
+                    {formatReminderDateTime(
+                      savedBalanceReminder.due_at,
+                      farm.selectedFarm?.settings?.timezone,
+                    )}
+                  </AppText>
+                  <AppText size="small" tone="secondary">
+                    {savedBalanceReminder.delivery_channel === "push"
+                      ? "In-app and push reminder"
+                      : "In-app reminder"}
+                  </AppText>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => openReminderEditor(savedBalanceReminder)}
+                  style={styles.linkButton}
+                >
+                  <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+                    Change reminder
+                  </AppText>
+                </Pressable>
+              </View>
+              {reminderEditorOpen ? (
+                <View style={styles.reminderEditor}>
+                  <DatePickerField
+                    label="Reminder date"
+                    value={reminderDueDate}
+                    onChange={setReminderDueDate}
+                    minimumDate={parseDate(farmToday) ?? new Date()}
+                  />
+                  <TimePickerField
+                    label="Reminder time"
+                    value={reminderDueTime}
+                    minimumTime={reminderDueDate === farmToday
+                      ? nextFarmLocalTime(farm.selectedFarm?.settings?.timezone)
+                      : undefined}
+                    onChange={setReminderDueTime}
+                  />
+                  {reminderEditError ? (
+                    <AppText size="small" style={{ color: theme.danger }}>
+                      {reminderEditError}
+                    </AppText>
+                  ) : null}
+                  <View style={styles.paymentFormActions}>
+                    <Button
+                      label="Cancel"
+                      variant="secondary"
+                      disabled={reschedulePurchaseReminder.isPending}
+                      onPress={() => setReminderEditorOpen(false)}
+                    />
+                    <Button
+                      label="Save reminder"
+                      loading={reschedulePurchaseReminder.isPending}
+                      onPress={() => void saveReminderChanges()}
+                    />
+                  </View>
+                </View>
+              ) : null}
+              {reminderCancelError ? (
+                <View style={styles.reminderErrorCard}>
+                  <AppText size="small" style={{ color: theme.danger }}>
+                    {reminderCancelError}
+                  </AppText>
+                  <Button
+                    label="Cancel reminder"
+                    variant="secondary"
+                    loading={cancelPurchaseReminder.isPending}
+                    onPress={() => {
+                      void cancelPurchaseReminder.mutateAsync()
+                        .then(() => {
+                          setSavedBalanceReminder(null);
+                          setReminderCancelError(null);
+                        })
+                        .catch((cancelError: unknown) => {
+                          setReminderCancelError(
+                            `The reminder could not be cancelled: ${normalizeApiError(cancelError).message}`,
+                          );
+                        });
+                    }}
+                  />
+                </View>
+              ) : null}
+            </View>
           ) : null}
           {reminderError ? (
-            <Card style={styles.reminderErrorCard}>
+            <View style={styles.reminderErrorCard}>
               <AppText size="small" style={{ color: theme.danger }}>
-                The purchase was recorded, but the settlement reminder wasn’t
-                saved: {reminderError}
+                The purchase was recorded, but the settlement reminder wasn’t saved: {reminderError}
               </AppText>
               <Button
                 label="Retry reminder"
@@ -1360,8 +2908,17 @@ function ChickenPurchaseContent() {
                 loading={createReminder.isPending}
                 onPress={() => void saveSettlementReminder(result)}
               />
-            </Card>
+            </View>
           ) : null}
+          {purchaseNotes.trim() ? (
+            <View style={[styles.successSection, { borderTopColor: theme.border }]}>
+              <AppText weight="semibold">Notes</AppText>
+              <AppText size="small" style={styles.purchaseNotes}>
+                {purchaseNotes.trim()}
+              </AppText>
+            </View>
+          ) : null}
+
           {arrivalOpen ? (
             <Card style={styles.arrivalCard}>
               <View style={styles.sectionIntro}>
@@ -1805,32 +3362,90 @@ function ChickenPurchaseContent() {
               </View>
             </Card>
           ) : null}
-          {result.items.some((item) => item.quantity_remaining > 0) ? (
-            <Button
-              label="Record receipt"
-              onPress={() =>
-                router.push({
-                  pathname: "/purchases/[purchaseId]/receive",
-                  params: { purchaseId: result.id },
-                })
-              }
-            />
-          ) : null}
-          <Card style={styles.inventoryNote}>
-            <Ionicons
-              name="information-circle-outline"
-              size={20}
-              color={theme.primary}
-            />
-            <AppText size="small" tone="secondary" style={styles.flexCopy}>
-              Flock numbers change when these chickens are received and assigned
-              to housing.
-            </AppText>
-          </Card>
-          <Button label="Back to chickens" onPress={() => router.back()} />
-        </View>
-      </ScreenShell>
+        </Animated.View>
+        {balanceSmsPickerOpen ? (
+          <SmsPaymentPicker
+            key={`balance-${result.id}`}
+            visible
+            fromDate={result.transaction_date}
+            currency={theme.currency}
+            existingReferences={result.payments
+              .map((payment) => payment.reference_number ?? "")
+              .filter(Boolean)}
+            existingSmsMessageIds={[]}
+            excludedSmsMessageIds={[
+              paymentSmsMessageId,
+              ...additionalPayments.map((payment) => payment.smsMessageId),
+              ...recordedBalanceSmsMessageIds,
+            ].filter((messageId): messageId is string => Boolean(messageId))}
+            maxSelections={1}
+            hasExistingPayments={result.payments.length > 0}
+            selectIntoExistingPayment
+            purchaseTotalCents={
+              parseMoneyToCents(String(result.transaction_total))?.toString() ??
+              "0"
+            }
+            currentPaidCents={
+              parseMoneyToCents(String(result.amount_paid))?.toString() ?? "0"
+            }
+            onClose={() => setBalanceSmsPickerOpen(false)}
+            onSelect={(selected) => applyBalanceSmsPayment(selected)}
+          />
+        ) : null}
+      </PurchaseSuccessShell>
     );
+  }
+
+  function continuePendingNavigation() {
+    const action = leaveActionRef.current;
+    if (!action) {
+      setLeaveDraftError("Could not continue leaving. Your purchase is still open.");
+      return;
+    }
+    leaveActionRef.current = null;
+    setNavigationAllowed(true);
+    setLeaveActionPending(false);
+    setLeavePromptVisible(false);
+    action();
+  }
+
+  async function saveDraftAndLeave() {
+    if (!draftKey || loadedDraftKey !== draftKey) {
+      setLeaveDraftError("Draft storage is not ready yet. Your purchase is still open.");
+      return;
+    }
+    setLeaveActionPending(true);
+    try {
+      await persistDraftSnapshot(draftKey, draftSnapshot);
+      setDraftStorageError(null);
+      continuePendingNavigation();
+    } catch {
+      setLeaveActionPending(false);
+      setLeaveDraftError(
+        "FarmTrack could not save this draft. Your purchase is still open; try again.",
+      );
+    }
+  }
+
+  async function discardDraftAndLeave() {
+    if (!draftKey || loadedDraftKey !== draftKey) {
+      setLeaveDraftError("Draft storage is not ready yet. Your purchase is still open.");
+      return;
+    }
+    setLeaveActionPending(true);
+    discardDraftWritesRef.current = true;
+    try {
+      await draftWriteChain.current.catch(() => undefined);
+      await SecureStore.deleteItemAsync(draftKey);
+      setDraftStorageError(null);
+      continuePendingNavigation();
+    } catch {
+      setLeaveActionPending(false);
+      discardDraftWritesRef.current = false;
+      setLeaveDraftError(
+        "FarmTrack could not discard the saved draft. Your purchase is still open; try again.",
+      );
+    }
   }
 
   return (
@@ -1840,13 +3455,22 @@ function ChickenPurchaseContent() {
         showBack
         fallbackHref="/(tabs)/flock"
       />
-      <View style={styles.progressSection}>
+      <View
+        style={[
+          styles.progressSection,
+          {
+            backgroundColor: theme.backgroundElement,
+            borderColor: theme.border,
+          },
+        ]}
+      >
         <View style={styles.progressLabels}>
           <AppText size="small" weight="semibold" tone="secondary">
-            STEP {step + 1} OF {steps.length}
+            CHICKEN PURCHASE
           </AppText>
           <AppText size="small" weight="semibold">
-            {steps[step]}
+            {String(step + 1).padStart(2, "0")} /{" "}
+            {String(steps.length).padStart(2, "0")}
           </AppText>
         </View>
         <View style={styles.progressTrack}>
@@ -1865,13 +3489,14 @@ function ChickenPurchaseContent() {
       </View>
 
       {step === 0 ? (
-        <View style={styles.stepContent}>
+        <Animated.View
+          key={step}
+          entering={FadeInDown.duration(220)}
+          style={styles.stepContent}
+        >
           <View style={styles.sectionIntro}>
             <AppText size="heading" weight="semibold">
               Purchase details
-            </AppText>
-            <AppText size="small" tone="secondary">
-              Add the supplier and the date this purchase was agreed.
             </AppText>
           </View>
           <DatePickerField
@@ -1896,20 +3521,32 @@ function ChickenPurchaseContent() {
               ]}
               onSelect={setSupplierId}
             />
-            {options.data.suppliers.length === 0 ? (
-              <AppText size="small" tone="secondary">
-                No suppliers yet. Add one here or continue without a supplier.
-              </AppText>
-            ) : null}
             {!supplierFormOpen ? (
-              <Button
-                label="Add a new supplier"
-                variant="secondary"
+              <Pressable
+                accessibilityRole="button"
+                style={({ pressed }) => [
+                  styles.inlineAddButton,
+                  {
+                    borderColor: `${theme.primary}55`,
+                    backgroundColor: pressed
+                      ? theme.backgroundSelected
+                      : theme.backgroundElement,
+                  },
+                ]}
                 onPress={() => {
                   setSupplierError(null);
                   setSupplierFormOpen(true);
                 }}
-              />
+              >
+                <Ionicons
+                  name="add-circle-outline"
+                  size={20}
+                  color={theme.primary}
+                />
+                <AppText weight="semibold" style={{ color: theme.primary }}>
+                  Add supplier
+                </AppText>
+              </Pressable>
             ) : (
               <Card style={styles.newSupplierCard}>
                 <AppText weight="semibold">New supplier</AppText>
@@ -1971,26 +3608,49 @@ function ChickenPurchaseContent() {
             textAlignVertical="top"
             style={styles.multilineInput}
           />
-        </View>
+        </Animated.View>
       ) : null}
 
       {step === 1 ? (
-        <View style={styles.stepContent}>
+        <Animated.View
+          key={step}
+          entering={FadeInDown.duration(220)}
+          style={styles.stepContent}
+        >
           <View style={styles.sectionIntro}>
             <AppText size="heading" weight="semibold">
-              Purchase quantities
+              Purchase items
             </AppText>
             <AppText size="small" tone="secondary">
-              Enter the amount you bought here. Actual deliveries are recorded
-              separately so you can receive part now and the remainder later.
+              Add multiple units under one product, or add another product.
             </AppText>
           </View>
           {items.map((item, index) => (
-            <Card key={item.id} style={styles.itemCard}>
+            <Card
+              key={item.id}
+              style={[
+                styles.itemCard,
+                { borderLeftColor: theme.primary, borderColor: theme.border },
+              ]}
+            >
               <View style={styles.itemHeading}>
-                <AppText weight="semibold">
-                  Purchase item {index + 1}
-                </AppText>
+                <View style={styles.itemHeadingTitle}>
+                  <View
+                    style={[
+                      styles.itemNumber,
+                      { backgroundColor: theme.backgroundSelected },
+                    ]}
+                  >
+                    <AppText
+                      size="small"
+                      weight="semibold"
+                      style={{ color: theme.primary }}
+                    >
+                      {String(index + 1).padStart(2, "0")}
+                    </AppText>
+                  </View>
+                  <AppText weight="semibold">Purchase line</AppText>
+                </View>
                 {items.length > 1 ? (
                   <Pressable
                     accessibilityRole="button"
@@ -2002,16 +3662,16 @@ function ChickenPurchaseContent() {
                         current.filter((candidate) => candidate.id !== item.id),
                       );
                     }}
-                    style={styles.removeItemButton}
+                    style={[
+                      styles.removeItemButton,
+                      { backgroundColor: `${theme.danger}12` },
+                    ]}
                   >
                     <Ionicons
                       name="trash-outline"
-                      size={18}
+                      size={17}
                       color={theme.danger}
                     />
-                    <AppText size="small" style={{ color: theme.danger }}>
-                      Remove
-                    </AppText>
                   </Pressable>
                 ) : null}
               </View>
@@ -2044,7 +3704,7 @@ function ChickenPurchaseContent() {
               />
               {options.data.products.length === 0 ? (
                 <AppText size="small" tone="secondary">
-                  Add an active chicken product in Product management first.
+                  No active chicken products. Add one in Product management.
                 </AppText>
               ) : null}
               <SearchableSelectField
@@ -2081,60 +3741,134 @@ function ChickenPurchaseContent() {
                       (product) => product.id === item.productId,
                     )!
                   }
-                  selectedUnitId={item.unitId}
+                  selectedUnitIds={item.unitEntries.map(
+                    (entry) => entry.unitId,
+                  )}
                   error={
                     arrivalFieldError?.key === `batch:${item.id}:unit`
                       ? arrivalFieldError.message
                       : undefined
                   }
-                  onSelect={(unit) => {
+                  onToggle={(unit) => {
                     clearFieldError(`batch:${item.id}:unit`);
-                    updateItem(item.id, { unitId: unit.unit_id });
+                    toggleItemUnit(item, unit);
                   }}
                 />
               ) : null}
-              <View style={styles.numberFields}>
-                <View style={styles.numberField}>
-                  <TextField
-                    label="Quantity purchased"
-                    value={item.quantity}
-                    ref={(input) =>
-                      bindFieldRef(`batch:${item.id}:quantity`, input)
-                    }
-                    error={
-                      arrivalFieldError?.key === `batch:${item.id}:quantity`
-                        ? arrivalFieldError.message
-                        : undefined
-                    }
-                    onChangeText={(value) => {
-                      clearFieldError(`batch:${item.id}:quantity`);
-                      updateItem(item.id, { quantity: value });
-                    }}
-                    keyboardType="number-pad"
-                    placeholder="e.g. 50"
-                  />
-                </View>
-                <View style={styles.numberField}>
-                  <TextField
-                    label={`Unit price (${theme.currency})`}
-                    value={item.unitPrice}
-                    ref={(input) =>
-                      bindFieldRef(`batch:${item.id}:unit-price`, input)
-                    }
-                    error={
-                      arrivalFieldError?.key === `batch:${item.id}:unit-price`
-                        ? arrivalFieldError.message
-                        : undefined
-                    }
-                    onChangeText={(value) => {
-                      clearFieldError(`batch:${item.id}:unit-price`);
-                      updateItem(item.id, { unitPrice: value });
-                    }}
-                    keyboardType="decimal-pad"
-                    placeholder="0.00"
-                  />
-                </View>
-              </View>
+              {item.unitEntries.map((entry) => {
+                const unit = options.data.products
+                  .find((product) => product.id === item.productId)
+                  ?.product_units.find(
+                    (candidate) => candidate.unit_id === entry.unitId,
+                  );
+                return (
+                  <View
+                    key={entry.id}
+                    style={[
+                      styles.unitQuantityCard,
+                      {
+                        backgroundColor: theme.backgroundElement,
+                        borderColor: theme.border,
+                      },
+                    ]}
+                  >
+                    <View style={styles.unitQuantityHeading}>
+                      <View
+                        style={[
+                          styles.unitQuantityIcon,
+                          { backgroundColor: `${theme.primary}18` },
+                        ]}
+                      >
+                        <Ionicons
+                          name="layers-outline"
+                          size={16}
+                          color={theme.primary}
+                        />
+                      </View>
+                      <View style={styles.flexCopy}>
+                        <AppText weight="semibold">
+                          {unit?.unit_name ?? "Selected unit"}
+                        </AppText>
+                        <AppText size="small" tone="secondary">
+                          {unit?.is_base_unit
+                            ? "Base unit"
+                            : unit
+                              ? `1 ${unit.unit_name.toLocaleLowerCase()} = ${formatChickenCount(Number(unit.conversion_factor))} ${chickenPurchaseUnitLabel(
+                                  options.data.products
+                                    .find(
+                                      (product) =>
+                                        product.id === item.productId,
+                                    )
+                                    ?.product_units.find(
+                                      (candidate) => candidate.is_base_unit,
+                                    )?.unit_name ?? "birds",
+                                  Number(unit.conversion_factor),
+                                )}`
+                              : "Unit conversion unavailable"}
+                        </AppText>
+                      </View>
+                    </View>
+                    <View style={styles.unitQuantityFields}>
+                      <View style={styles.unitQuantityInput}>
+                        <TextField
+                          label="Quantity"
+                          value={entry.quantity}
+                          ref={(input) =>
+                            bindFieldRef(
+                              `batch:${item.id}:quantity:${entry.id}`,
+                              input,
+                            )
+                          }
+                          error={
+                            arrivalFieldError?.key ===
+                            `batch:${item.id}:quantity:${entry.id}`
+                              ? arrivalFieldError.message
+                              : undefined
+                          }
+                          onChangeText={(value) => {
+                            clearFieldError(
+                              `batch:${item.id}:quantity:${entry.id}`,
+                            );
+                            updateItemUnit(item, entry.id, {
+                              quantity: value,
+                            });
+                          }}
+                          keyboardType="number-pad"
+                          placeholder="e.g. 3"
+                        />
+                      </View>
+                      <View style={styles.unitQuantityInput}>
+                        <TextField
+                          label={`Price per ${unit?.unit_name.toLocaleLowerCase() ?? "unit"} (${theme.currency})`}
+                          value={entry.unitPrice}
+                          ref={(input) =>
+                            bindFieldRef(
+                              `batch:${item.id}:unit-price:${entry.id}`,
+                              input,
+                            )
+                          }
+                          error={
+                            arrivalFieldError?.key ===
+                            `batch:${item.id}:unit-price:${entry.id}`
+                              ? arrivalFieldError.message
+                              : undefined
+                          }
+                          onChangeText={(value) => {
+                            clearFieldError(
+                              `batch:${item.id}:unit-price:${entry.id}`,
+                            );
+                            updateItemUnit(item, entry.id, {
+                              unitPrice: value,
+                            });
+                          }}
+                          keyboardType="decimal-pad"
+                          placeholder="0.00"
+                        />
+                      </View>
+                    </View>
+                  </View>
+                );
+              })}
               <TextField
                 label="Purchase item notes (optional)"
                 value={item.notes}
@@ -2147,59 +3881,192 @@ function ChickenPurchaseContent() {
               </AppText>
             </Card>
           ))}
-          <Button
-            label="Add another item"
-            variant="secondary"
+          <Pressable
+            accessibilityRole="button"
+            style={({ pressed }) => [
+              styles.addPurchaseLine,
+              {
+                borderColor: `${theme.primary}55`,
+                backgroundColor: pressed
+                  ? theme.backgroundSelected
+                  : theme.backgroundElement,
+              },
+            ]}
             onPress={() => {
               setDiscountConfirmed(false);
               setOverpaymentConfirmed(false);
               setItemDrafts((current) => [...current, createItemDraft()]);
             }}
-          />
-          <Card style={styles.pricingCard}>
-            <View style={styles.sectionIntro}>
-              <AppText weight="semibold">Purchase pricing</AppText>
+          >
+            <View
+              style={[
+                styles.addPurchaseLineIcon,
+                { backgroundColor: `${theme.primary}18` },
+              ]}
+            >
+              <Ionicons
+                name="add"
+                size={21}
+                color={theme.primary}
+              />
+            </View>
+            <View style={styles.flexCopy}>
+              <AppText weight="semibold" style={{ color: theme.primary }}>
+                Add another product
+              </AppText>
               <AppText size="small" tone="secondary">
-                Discounts reduce the purchase cost; they are not payments.
+                Start a separate product entry
               </AppText>
             </View>
-            <View style={styles.choiceWrap}>
-              <ChoiceButton
-                label="No discount"
-                selected={discountType === null}
-                onPress={() => {
-                  clearFieldError("discount:value");
+            <Ionicons
+              name="chevron-forward"
+              size={18}
+              color={theme.primary}
+            />
+          </Pressable>
+          <Card
+            style={[
+              styles.pricingCard,
+              { borderColor: `${theme.primary}55` },
+            ]}
+          >
+            <View style={styles.discountHeader}>
+              <View
+                style={[
+                  styles.discountIcon,
+                  { backgroundColor: theme.backgroundSelected },
+                ]}
+              >
+                <Ionicons
+                  name="pricetag-outline"
+                  size={19}
+                  color={theme.primary}
+                />
+              </View>
+              <View style={styles.flexCopy}>
+                <AppText weight="semibold">Discount</AppText>
+                <AppText size="small" tone="secondary">
+                  {discountType === null
+                    ? "Optional price adjustment"
+                    : discountType === "fixed"
+                      ? "Fixed amount discount"
+                      : "Percentage discount"}
+                </AppText>
+              </View>
+            </View>
+            <Pressable
+              accessibilityRole="checkbox"
+              accessibilityLabel="Apply discount"
+              accessibilityState={{ checked: discountType !== null }}
+              onPress={() => {
+                clearFieldError("discount:value");
+                if (discountType === null) {
+                  setDiscountType("fixed");
+                } else {
                   setDiscountType(null);
                   setDiscountValue("");
-                  setDiscountConfirmed(false);
-                  setOverpaymentConfirmed(false);
-                }}
-              />
-              <ChoiceButton
-                label="Fixed amount"
-                selected={discountType === "fixed"}
-                onPress={() => {
-                  clearFieldError("discount:value");
-                  setDiscountType("fixed");
-                  setDiscountValue("");
-                  setDiscountConfirmed(false);
-                  setOverpaymentConfirmed(false);
-                }}
-              />
-              <ChoiceButton
-                label="Percentage"
-                selected={discountType === "percentage"}
-                onPress={() => {
-                  clearFieldError("discount:value");
-                  setDiscountType("percentage");
-                  setDiscountValue("");
-                  setDiscountConfirmed(false);
-                  setOverpaymentConfirmed(false);
-                }}
-              />
-            </View>
-            {discountType ? (
-              <>
+                  setDiscountReason("");
+                }
+                setDiscountConfirmed(false);
+                setOverpaymentConfirmed(false);
+              }}
+              style={[
+                styles.discountToggle,
+                {
+                  backgroundColor:
+                    discountType !== null
+                      ? theme.backgroundSelected
+                      : theme.backgroundElement,
+                  borderColor:
+                    discountType !== null ? `${theme.primary}70` : theme.border,
+                },
+              ]}
+            >
+              <View
+                style={[
+                  styles.discountToggleIcon,
+                  {
+                    backgroundColor:
+                      discountType !== null
+                        ? theme.primary
+                        : theme.backgroundSelected,
+                  },
+                ]}
+              >
+                <Ionicons
+                  name="pricetag-outline"
+                  size={18}
+                  color={
+                    discountType !== null ? theme.onPrimary : theme.primary
+                  }
+                />
+              </View>
+              <View style={styles.flexCopy}>
+                <AppText weight="semibold">Apply discount</AppText>
+                {discountType !== null ? (
+                  <AppText size="small" tone="secondary">
+                    Choose how to calculate it below
+                  </AppText>
+                ) : null}
+              </View>
+              <View
+                style={[
+                  styles.checkboxMark,
+                  {
+                    backgroundColor:
+                      discountType !== null
+                        ? theme.primary
+                        : theme.backgroundElement,
+                    borderColor:
+                      discountType !== null ? theme.primary : theme.border,
+                  },
+                ]}
+              >
+                {discountType !== null ? (
+                  <Ionicons name="checkmark" size={15} color={theme.onPrimary} />
+                ) : null}
+              </View>
+            </Pressable>
+            {discountType !== null ? (
+              <View
+                style={[
+                  styles.discountEditor,
+                  { backgroundColor: theme.background },
+                ]}
+              >
+                <View
+                  style={[
+                    styles.discountModes,
+                    { backgroundColor: theme.backgroundElement },
+                  ]}
+                >
+                  <DiscountModeChoice
+                    label="%"
+                    description="Percent"
+                    selected={discountType === "percentage"}
+                    theme={theme}
+                    onPress={() => {
+                      clearFieldError("discount:value");
+                      setDiscountType("percentage");
+                      setDiscountValue("");
+                      setDiscountConfirmed(false);
+                      setOverpaymentConfirmed(false);
+                    }}
+                  />
+                  <DiscountModeChoice
+                    label={theme.currency}
+                    description="Fixed amount"
+                    selected={discountType === "fixed"}
+                    theme={theme}
+                    onPress={() => {
+                      clearFieldError("discount:value");
+                      setDiscountType("fixed");
+                      setDiscountValue("");
+                      setDiscountConfirmed(false);
+                      setOverpaymentConfirmed(false);
+                    }}
+                  />
+                </View>
                 <TextField
                   label={
                     discountType === "percentage"
@@ -2221,70 +4088,97 @@ function ChickenPurchaseContent() {
                   }
                 />
                 <TextField
-                  label="Discount reason (optional)"
+                  label="Reason · optional"
                   value={discountReason}
                   onChangeText={(value) => setDiscountReason(value)}
-                  placeholder="Negotiated price, bulk purchase, etc."
+                  placeholder="e.g. Bulk order"
                   maxLength={200}
                 />
-              </>
+              </View>
             ) : null}
             <View
-              style={[styles.pricingSummary, { borderTopColor: theme.border }]}
+              style={[
+                styles.discountTotals,
+                { backgroundColor: theme.backgroundSelected },
+              ]}
             >
-              <SummaryRow
-                label="Calculated subtotal"
-                value={formatCents(
-                  purchasePricing.subtotalCents,
-                  theme.currency,
-                )}
-              />
-              <SummaryRow
-                label="Discount"
-                value={formatCents(
-                  -purchasePricing.discountCents,
-                  theme.currency,
-                )}
-                labelColor={theme.secondary}
-                valueColor={theme.secondary}
-              />
-              <SummaryRow
-                label="Final purchase cost"
-                value={formatCents(purchasePricing.totalCents, theme.currency)}
-                emphasized
-                labelColor={theme.primary}
-                valueColor={theme.primary}
-              />
+              <View
+                style={[
+                  styles.discountSubtotal,
+                  { borderBottomColor: theme.border },
+                ]}
+              >
+                <AppText size="small" tone="secondary">
+                  Subtotal
+                </AppText>
+                <AppText size="small" weight="semibold">
+                  {formatCents(purchasePricing.subtotalCents, theme.currency)}
+                </AppText>
+              </View>
+              <View style={styles.discountTotal}>
+                <View style={styles.flexCopy}>
+                  <AppText size="small" weight="semibold">
+                    Final cost
+                  </AppText>
+                  {purchasePricing.discountCents > 0n ? (
+                    <AppText size="small" style={{ color: theme.success }}>
+                      Saving{" "}
+                      {formatCents(
+                        purchasePricing.discountCents,
+                        theme.currency,
+                      )}
+                    </AppText>
+                  ) : null}
+                </View>
+                <AppText
+                  size="heading"
+                  weight="semibold"
+                  style={{ color: theme.primary }}
+                >
+                  {formatCents(purchasePricing.totalCents, theme.currency)}
+                </AppText>
+              </View>
               {purchasePricing.effectiveCostPerChickenCents !== null ? (
-                <SummaryRow
-                  label="Effective cost per chicken"
-                  value={formatCents(
+                <AppText size="small" tone="secondary">
+                  {formatCents(
                     purchasePricing.effectiveCostPerChickenCents,
                     theme.currency,
-                  )}
-                />
+                  )}{" "}
+                  per chicken
+                </AppText>
               ) : null}
             </View>
           </Card>
-        </View>
+        </Animated.View>
       ) : null}
 
       {step === 2 ? (
-        <View style={styles.stepContent}>
+        <Animated.View
+          entering={FadeInDown.duration(220)}
+          style={styles.stepContent}
+        >
           <View style={styles.sectionIntro}>
             <AppText size="heading" weight="semibold">
               Payment
             </AppText>
-            <AppText size="small" tone="secondary">
-              Record one payment or split the amount across payment methods.
-            </AppText>
           </View>
+          {shareNativeError || draftStorageError ? (
+            <Card style={styles.paymentEntry}>
+              {shareNativeError ? (
+                <AppText size="small" style={{ color: theme.danger }}>
+                  {shareNativeError}
+                </AppText>
+              ) : null}
+              {draftStorageError ? (
+                <AppText size="small" style={{ color: theme.danger }}>
+                  {draftStorageError}
+                </AppText>
+              ) : null}
+            </Card>
+          ) : null}
           <Card style={styles.paymentToggle}>
             <View style={styles.flexCopy}>
               <AppText weight="semibold">Record payment now</AppText>
-              <AppText size="small" tone="secondary">
-                You can record later payments separately.
-              </AppText>
             </View>
             <Switch
               value={recordPayment}
@@ -2299,6 +4193,23 @@ function ChickenPurchaseContent() {
           </Card>
           {recordPayment ? (
             <>
+              <View
+                style={[
+                  styles.paymentCard,
+                  {
+                    backgroundColor: theme.backgroundElement,
+                    borderColor: theme.border,
+                  },
+                ]}
+              >
+                <PaymentCardHeader
+                  number={1}
+                  method={
+                    paymentMethods.find(
+                      (method) => method.value === paymentMethod,
+                    )?.label ?? "Payment"
+                  }
+                />
               <Pressable
                 accessibilityRole="checkbox"
                 accessibilityLabel="Fully paid"
@@ -2343,13 +4254,10 @@ function ChickenPurchaseContent() {
                 </View>
                 <View style={styles.flexCopy}>
                   <AppText weight="semibold">Fully paid</AppText>
-                  <AppText size="small" tone="secondary">
-                    Set this payment to the final purchase cost.
-                  </AppText>
                 </View>
               </Pressable>
               <TextField
-                label={`First payment amount (${theme.currency})`}
+                label={`Amount (${theme.currency})`}
                 value={
                   fullyPaid ? centsToDecimal(purchaseTotalCents) : paymentAmount
                 }
@@ -2371,7 +4279,7 @@ function ChickenPurchaseContent() {
               />
               <View style={styles.inputSection}>
                 <AppText size="small" weight="semibold">
-                  First payment method
+                  Payment method
                 </AppText>
                 <View style={styles.choiceWrap}>
                   {paymentMethods.map((method) => (
@@ -2382,6 +4290,16 @@ function ChickenPurchaseContent() {
                       onPress={() => {
                         setPaymentMethod(method.value);
                         if (method.value === "cash") setPaymentReference("");
+                        if (
+                          paymentMethod === "mpesa" &&
+                          method.value !== "mpesa"
+                        ) {
+                          setPaymentReference("");
+                        }
+                        if (method.value !== "mpesa") {
+                          setPaymentDate(null);
+                          setPaymentTime(null);
+                        }
                       }}
                     />
                   ))}
@@ -2396,39 +4314,62 @@ function ChickenPurchaseContent() {
                   maxLength={100}
                 />
               ) : null}
+              {Platform.OS === "android" && paymentMethod === "mpesa" ? (
+                <SmsPaymentImportButton
+                  onPress={() => {
+                    setSmsTargetPaymentId(FIRST_PAYMENT_TARGET);
+                    setSmsPickerOpen(true);
+                  }}
+                />
+              ) : null}
+              {paymentMethod === "mpesa" ? (
+                <>
+                  <DatePickerField
+                    label="Date"
+                    value={paymentDate ?? selectedPurchaseDate}
+                    onChange={setPaymentDate}
+                  />
+                  {paymentTime ? (
+                    <TimePickerField
+                      label="Time (Nairobi)"
+                      value={paymentTime}
+                      onChange={setPaymentTime}
+                    />
+                  ) : null}
+                </>
+              ) : null}
+              </View>
               {additionalPayments.map((payment, index) => (
                 <View
                   key={payment.id}
                   style={[
-                    styles.paymentEntry,
-                    { borderTopColor: theme.border },
+                    styles.paymentCard,
+                    {
+                      backgroundColor: theme.backgroundElement,
+                      borderColor:
+                        smsTargetPaymentId === payment.id
+                          ? theme.primary
+                          : theme.border,
+                    },
                   ]}
                 >
-                  <View style={styles.itemHeading}>
-                    <AppText weight="semibold">Payment {index + 2}</AppText>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`Remove payment ${index + 2}`}
-                      onPress={() => {
-                        setAdditionalPayments((current) =>
-                          current.filter(
-                            (candidate) => candidate.id !== payment.id,
-                          ),
-                        );
-                        setOverpaymentConfirmed(false);
-                      }}
-                      style={styles.removeAllocation}
-                    >
-                      <Ionicons
-                        name="trash-outline"
-                        size={17}
-                        color={theme.danger}
-                      />
-                      <AppText size="small" style={{ color: theme.danger }}>
-                        Remove
-                      </AppText>
-                    </Pressable>
-                  </View>
+                  <PaymentCardHeader
+                    number={index + 2}
+                    method={
+                      paymentMethods.find(
+                        (method) => method.value === payment.method,
+                      )?.label ?? "Payment"
+                    }
+                    onRemove={() => {
+                      setAdditionalPayments((current) =>
+                        current.filter(
+                          (candidate) => candidate.id !== payment.id,
+                        ),
+                      );
+                      setOverpaymentConfirmed(false);
+                    }}
+                    removeLabel={`Remove payment ${index + 2}`}
+                  />
                   <TextField
                     label={`Amount (${theme.currency})`}
                     value={payment.amount}
@@ -2501,11 +4442,60 @@ function ChickenPurchaseContent() {
                       maxLength={100}
                     />
                   ) : null}
+                  {Platform.OS === "android" &&
+                  payment.method === "mpesa" ? (
+                    <SmsPaymentImportButton
+                      onPress={() => {
+                        setSmsTargetPaymentId(payment.id);
+                        setSmsPickerOpen(true);
+                      }}
+                    />
+                  ) : null}
+                  {payment.method === "mpesa" ? (
+                    <>
+                      <DatePickerField
+                        label="Date"
+                        value={payment.date || selectedPurchaseDate}
+                        onChange={(date) =>
+                          setAdditionalPayments((current) =>
+                            current.map((candidate) =>
+                              candidate.id === payment.id
+                                ? { ...candidate, date }
+                                : candidate,
+                            ),
+                          )
+                        }
+                      />
+                      {payment.time ? (
+                        <TimePickerField
+                          label="Time (Nairobi)"
+                          value={payment.time}
+                          onChange={(time) =>
+                            setAdditionalPayments((current) =>
+                              current.map((candidate) =>
+                                candidate.id === payment.id
+                                  ? { ...candidate, time }
+                                  : candidate,
+                              ),
+                            )
+                          }
+                        />
+                      ) : null}
+                    </>
+                  ) : null}
                 </View>
               ))}
-              <Button
-                label="Add another payment"
-                variant="secondary"
+              <Pressable
+                accessibilityRole="button"
+                style={({ pressed }) => [
+                  styles.inlineAddButton,
+                  {
+                    borderColor: `${theme.primary}55`,
+                    backgroundColor: pressed
+                      ? theme.backgroundSelected
+                      : theme.backgroundElement,
+                  },
+                ]}
                 onPress={() => {
                   setAdditionalPayments((current) => [
                     ...current,
@@ -2514,66 +4504,76 @@ function ChickenPurchaseContent() {
                       amount: "",
                       method: "cash",
                       reference: "",
+                      date: selectedPurchaseDate,
+                      time: null,
                     },
                   ]);
                   setOverpaymentConfirmed(false);
                 }}
-              />
+              >
+                <Ionicons name="add-circle-outline" size={20} color={theme.primary} />
+                <AppText weight="semibold" style={{ color: theme.primary }}>
+                  Add payment
+                </AppText>
+              </Pressable>
             </>
           ) : null}
-          <Card style={styles.paymentSummary}>
-            <SummaryRow
-              label="Purchase total"
-              value={formatCents(purchaseTotalCents, theme.currency)}
-              emphasized
-              labelColor={theme.primary}
-              valueColor={theme.primary}
-            />
-            <SummaryRow
-              label="Paid now"
-              value={formatCents(paidNowCents, theme.currency)}
-              labelColor={theme.success}
-              valueColor={theme.success}
-            />
-            <SummaryRow
-              label={creditBalanceCents > 0n ? "Credit balance" : "Balance due"}
-              value={formatCents(
-                creditBalanceCents > 0n ? creditBalanceCents : balanceDueCents,
-                theme.currency,
-              )}
-              emphasized
-              labelColor={
-                balanceDueCents === 0n || creditBalanceCents > 0n
-                  ? theme.success
-                  : theme.danger
-              }
-              valueColor={
-                balanceDueCents === 0n || creditBalanceCents > 0n
-                  ? theme.success
-                  : theme.danger
-              }
-            />
-            <AppText size="small" tone="secondary">
-              {recordPayment && paymentAmount
-                ? "Balance updates as you enter the amount paid."
-                : "Enter an amount paid to preview the remaining balance."}
-            </AppText>
+          <Card
+            style={[
+              styles.paymentSummary,
+              { borderColor: `${theme.primary}55` },
+            ]}
+          >
+            <View
+              style={[
+                styles.purchaseTotalHero,
+                { backgroundColor: theme.backgroundSelected },
+              ]}
+            >
+              <View style={styles.flexCopy}>
+                <AppText size="small" weight="semibold" tone="secondary">
+                  FINAL PURCHASE TOTAL
+                </AppText>
+                <AppText
+                  size="heading"
+                  weight="semibold"
+                  style={[styles.purchaseTotalAmount, { color: theme.primary }]}
+                >
+                  {formatCents(purchaseTotalCents, theme.currency)}
+                </AppText>
+              </View>
+              <View
+                style={[
+                  styles.purchaseTotalIcon,
+                  { backgroundColor: theme.backgroundElement },
+                ]}
+              >
+                <Ionicons
+                  name="receipt-outline"
+                  size={21}
+                  color={theme.primary}
+                />
+              </View>
+            </View>
+            <View style={[styles.paymentPaidRow, { borderTopColor: theme.border }]}>
+              <AppText size="small" tone="secondary">
+                Paid now
+              </AppText>
+              <AppText size="small" weight="semibold" style={{ color: theme.success }}>
+                {formatCents(paidNowCents, theme.currency)}
+              </AppText>
+            </View>
             <View
               style={[
                 styles.paymentOutcome,
                 {
-                  borderColor:
-                    creditBalanceCents > 0n
-                      ? theme.secondary
-                      : balanceDueCents > 0n
-                        ? theme.danger
-                        : theme.success,
+                  borderColor: `${creditBalanceCents > 0n ? theme.secondary : balanceDueCents > 0n ? theme.danger : theme.success}45`,
                   backgroundColor:
                     creditBalanceCents > 0n
-                      ? `${theme.secondary}10`
+                      ? `${theme.secondary}12`
                       : balanceDueCents > 0n
-                        ? `${theme.danger}0A`
-                        : `${theme.success}10`,
+                        ? `${theme.danger}0C`
+                        : `${theme.success}12`,
                 },
               ]}
             >
@@ -2596,7 +4596,6 @@ function ChickenPurchaseContent() {
               />
               <View style={styles.flexCopy}>
                 <AppText
-                  size="small"
                   weight="semibold"
                   style={{
                     color:
@@ -2608,23 +4607,44 @@ function ChickenPurchaseContent() {
                   }}
                 >
                   {creditBalanceCents > 0n
-                    ? "Supplier owes you"
+                    ? "Supplier credit"
                     : balanceDueCents > 0n
-                      ? "You still owe the supplier"
+                      ? "Balance due"
                       : "Paid in full"}
                 </AppText>
-                <AppText size="small" tone="secondary">
-                  {creditBalanceCents > 0n
-                    ? `${formatCents(creditBalanceCents, theme.currency)} will be recorded as supplier credit; no refund has been received.`
-                    : balanceDueCents > 0n
-                      ? `${formatCents(balanceDueCents, theme.currency)} remains to pay.`
-                      : "The payments entered match the discounted purchase total."}
-                </AppText>
               </View>
+              <AppText
+                weight="semibold"
+                style={{
+                  color:
+                    creditBalanceCents > 0n
+                      ? theme.secondary
+                      : balanceDueCents > 0n
+                        ? theme.danger
+                        : theme.success,
+                }}
+              >
+                {formatCents(
+                  creditBalanceCents > 0n
+                    ? creditBalanceCents
+                    : balanceDueCents,
+                  theme.currency,
+                )}
+              </AppText>
             </View>
           </Card>
           {balanceDueCents > 0n || creditBalanceCents > 0n ? (
-            <View style={styles.reminderSection}>
+            <View
+              style={[
+                styles.reminderCard,
+                {
+                  backgroundColor: theme.backgroundElement,
+                  borderColor: remindForSettlement
+                    ? `${theme.primary}70`
+                    : theme.border,
+                },
+              ]}
+            >
               <Pressable
                 accessibilityRole="checkbox"
                 accessibilityLabel={
@@ -2653,13 +4673,39 @@ function ChickenPurchaseContent() {
                   {
                     backgroundColor: pressed
                       ? theme.backgroundSelected
-                      : theme.backgroundElement,
-                    borderColor: remindForSettlement
-                      ? theme.primary
-                      : theme.border,
+                      : "transparent",
+                    borderBottomColor: remindForSettlement
+                      ? theme.border
+                      : "transparent",
                   },
                 ]}
               >
+                <View
+                  style={[
+                    styles.reminderIcon,
+                    {
+                      backgroundColor: remindForSettlement
+                        ? theme.primary
+                        : theme.backgroundSelected,
+                    },
+                  ]}
+                >
+                  <Ionicons
+                    name="alarm-outline"
+                    size={19}
+                    color={
+                      remindForSettlement ? theme.onPrimary : theme.primary
+                    }
+                  />
+                </View>
+                <View style={styles.flexCopy}>
+                  <AppText weight="semibold">Payment reminder</AppText>
+                  {remindForSettlement ? (
+                    <AppText size="small" tone="secondary">
+                      {formatDateForDisplay(reminderDueDate)} · {reminderDueTime}
+                    </AppText>
+                  ) : null}
+                </View>
                 <View
                   style={[
                     styles.checkboxMark,
@@ -2676,16 +4722,6 @@ function ChickenPurchaseContent() {
                   {remindForSettlement ? (
                     <Ionicons name="checkmark" size={15} color="#FFFFFF" />
                   ) : null}
-                </View>
-                <View style={styles.flexCopy}>
-                  <AppText weight="semibold">
-                    {creditBalanceCents > 0n
-                      ? "Remind me to settle supplier credit"
-                      : "Remind me to pay the balance"}
-                  </AppText>
-                  <AppText size="small" tone="secondary">
-                    We’ll notify you when the reminder is due.
-                  </AppText>
                 </View>
               </Pressable>
               {remindForSettlement ? (
@@ -2718,221 +4754,429 @@ function ChickenPurchaseContent() {
                         : undefined
                     }
                   />
-                  <View style={styles.inputSection}>
-                    <AppText size="small" weight="semibold">
-                      Reminder delivery
+                  {reminderError ? (
+                    <AppText size="small" style={{ color: theme.danger }}>
+                      {reminderError}
                     </AppText>
-                    <AppText size="small" tone="secondary">
-                      We’ll use a device push when available. If push setup
-                      fails, the reminder will still be saved in FarmTrack.
-                    </AppText>
-                    {reminderError ? (
-                      <AppText size="small" style={{ color: theme.danger }}>
-                        {reminderError}
-                      </AppText>
-                    ) : null}
-                  </View>
+                  ) : null}
                 </View>
               ) : null}
             </View>
           ) : null}
-        </View>
+        </Animated.View>
       ) : null}
 
       {step === 3 ? (
-        <View style={styles.stepContent}>
+        <Animated.View
+          key={step}
+          entering={FadeInDown.duration(220)}
+          style={styles.stepContent}
+        >
           <View style={styles.sectionIntro}>
             <AppText size="heading" weight="semibold">
               Review purchase
             </AppText>
-            <AppText size="small" tone="secondary">
-              Check the details before recording this purchase.
-            </AppText>
           </View>
-          <Card style={styles.reviewCard}>
-            <AppText weight="semibold">Purchase overview</AppText>
-            <AppText size="small" tone="secondary">
-              Recording {Number(purchasePricing.chickenCount).toLocaleString()}{" "}
-              chickens from{" "}
-              {options.data.suppliers.find(
-                (supplier) => supplier.id === supplierId,
-              )?.name ?? "a supplier not specified"}
-              .
-            </AppText>
-            <SummaryRow
-              label="Purchase date"
-              value={formatDateForDisplay(selectedPurchaseDate)}
+          <View
+            style={[
+              styles.reviewHero,
+              { backgroundColor: theme.primary },
+            ]}
+          >
+            <View style={styles.reviewHeroTop}>
+              <View
+                style={[
+                  styles.reviewHeroIcon,
+                  { backgroundColor: `${theme.onPrimary}20` },
+                ]}
+              >
+                <Ionicons
+                  name="receipt-outline"
+                  size={21}
+                  color={theme.onPrimary}
+                />
+              </View>
+              <View style={styles.flexCopy}>
+                <AppText
+                  size="small"
+                  weight="semibold"
+                  style={{ color: theme.onPrimary, opacity: 0.8 }}
+                >
+                  PURCHASE TOTAL
+                </AppText>
+                <AppText
+                  size="heading"
+                  weight="semibold"
+                  style={[
+                    styles.reviewHeroAmount,
+                    { color: theme.onPrimary },
+                  ]}
+                >
+                  {formatCents(purchaseTotalCents, theme.currency)}
+                </AppText>
+              </View>
+              <View
+                style={[
+                  styles.reviewDateBadge,
+                  { backgroundColor: `${theme.onPrimary}18` },
+                ]}
+              >
+                <AppText
+                  size="small"
+                  weight="semibold"
+                  style={{ color: theme.onPrimary }}
+                >
+                  {formatDateForDisplay(selectedPurchaseDate)}
+                </AppText>
+              </View>
+            </View>
+            <View
+              style={[
+                styles.reviewHeroDivider,
+                { backgroundColor: `${theme.onPrimary}30` },
+              ]}
             />
-            {(() => {
-              const supplier = options.data.suppliers.find(
-                (candidate) => candidate.id === supplierId,
-              );
-              if (!supplier) return null;
-              return (
-                <View style={styles.contactDetails}>
-                  <AppText size="small" weight="semibold">
-                    {supplier.name}
+            <View style={styles.reviewSupplierLine}>
+              <Ionicons
+                name="person-outline"
+                size={17}
+                color={theme.onPrimary}
+              />
+              <AppText
+                size="small"
+                weight="semibold"
+                style={{ color: theme.onPrimary, flex: 1 }}
+                numberOfLines={1}
+              >
+                {reviewSupplier?.name || "Supplier details"}
+              </AppText>
+              <AppText
+                size="small"
+                style={{ color: theme.onPrimary, opacity: 0.82 }}
+              >
+                {Number(purchasePricing.chickenCount).toLocaleString()} birds
+              </AppText>
+            </View>
+          </View>
+
+          {reviewSupplier ? (
+            <Card style={styles.reviewSupplierCard}>
+              <View style={styles.reviewSectionHeading}>
+                <View
+                  style={[
+                    styles.reviewSectionIcon,
+                    { backgroundColor: theme.backgroundSelected },
+                  ]}
+                >
+                  <Ionicons
+                    name="person-outline"
+                    size={18}
+                    color={theme.primary}
+                  />
+                </View>
+                <View style={styles.flexCopy}>
+                  <AppText weight="semibold">
+                    {reviewSupplier.name || "New supplier"}
                   </AppText>
-                  {supplier.phone ? (
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`Call ${supplier.name}`}
-                      onPress={() =>
-                        void openContactLink(
-                          `tel:${supplier.phone?.replace(/[^\d+]/g, "")}`,
-                          "phone app",
-                        )
-                      }
-                      style={styles.contactLink}
-                    >
-                      <Ionicons
-                        name="call-outline"
-                        size={17}
-                        color={theme.primary}
-                      />
-                      <AppText size="small" style={{ color: theme.primary }}>
-                        {supplier.phone}
-                      </AppText>
-                    </Pressable>
+                  {reviewSupplier.phone ? (
+                    <AppText size="small" tone="secondary">
+                      {reviewSupplier.phone}
+                    </AppText>
                   ) : null}
-                  {supplier.email ? (
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`Email ${supplier.name}`}
-                      onPress={() =>
-                        void openContactLink(
-                          `mailto:${supplier.email}`,
-                          "email app",
-                        )
-                      }
-                      style={styles.contactLink}
-                    >
-                      <Ionicons
-                        name="mail-outline"
-                        size={17}
-                        color={theme.primary}
-                      />
-                      <AppText size="small" style={{ color: theme.primary }}>
-                        {supplier.email}
-                      </AppText>
-                    </Pressable>
+                  {reviewSupplier.email ? (
+                    <AppText size="small" tone="secondary">
+                      {reviewSupplier.email}
+                    </AppText>
                   ) : null}
                 </View>
-              );
-            })()}
+                <View
+                  style={[
+                    styles.supplierStatusBadge,
+                    {
+                      backgroundColor: draftSupplier
+                        ? `${theme.secondary}18`
+                        : `${theme.success}18`,
+                    },
+                  ]}
+                >
+                  <AppText
+                    size="small"
+                    weight="semibold"
+                    style={{
+                      color: draftSupplier ? theme.secondary : theme.success,
+                    }}
+                  >
+                    {draftSupplier ? "Not saved" : "Saved"}
+                  </AppText>
+                </View>
+              </View>
+              {draftSupplier ? (
+                <AppText size="small" style={{ color: theme.secondary }}>
+                  Save supplier in Purchase details to link it to this purchase.
+                </AppText>
+              ) : null}
+            </Card>
+          ) : null}
+
+          <Card style={styles.reviewCard}>
+            <View style={styles.reviewSectionHeading}>
+              <View
+                style={[
+                  styles.reviewSectionIcon,
+                  { backgroundColor: theme.backgroundSelected },
+                ]}
+              >
+                <Ionicons name="leaf-outline" size={18} color={theme.primary} />
+              </View>
+              <AppText weight="semibold" style={styles.flexCopy}>
+                Items
+              </AppText>
+              <AppText size="small" tone="secondary">
+                {items.length} {items.length === 1 ? "line" : "lines"}
+              </AppText>
+            </View>
             {items.map((item, index) => {
               const product = options.data.products.find(
                 (candidate) => candidate.id === item.productId,
               );
-              const unit = product?.product_units.find(
-                (candidate) => candidate.unit_id === item.unitId,
+              const lineSubtotalCents = item.unitEntries.reduce(
+                (total, entry) =>
+                  total +
+                  BigInt(entry.quantity || "0") *
+                    (parseMoneyToCents(entry.unitPrice) ?? 0n),
+                0n,
               );
-              const unitPriceCents = parseMoneyToCents(item.unitPrice) ?? 0n;
-              const lineSubtotalCents =
-                BigInt(item.quantity || "0") * unitPriceCents;
+              const unitBreakdown = item.unitEntries
+                .map((entry) => {
+                  const unit = product?.product_units.find(
+                    (candidate) => candidate.unit_id === entry.unitId,
+                  );
+                  return unit
+                    ? `${entry.quantity || "0"} ${chickenPurchaseUnitLabel(
+                        unit.unit_name,
+                        Number(entry.quantity) || 0,
+                      )}`
+                    : null;
+                })
+                .filter(Boolean)
+                .join(" + ");
+              const baseUnit =
+                product?.product_units.find((unit) => unit.is_base_unit);
+              const totalBaseQuantity = item.unitEntries.reduce(
+                (total, entry) => {
+                  const unit = product?.product_units.find(
+                    (candidate) => candidate.unit_id === entry.unitId,
+                  );
+                  return (
+                    total +
+                    (Number(entry.quantity) || 0) *
+                      (Number(unit?.conversion_factor) || 0)
+                  );
+                },
+                0,
+              );
               return (
                 <View
                   key={item.id}
-                  style={[styles.reviewItem, { borderTopColor: theme.border }]}
+                  style={[
+                    styles.reviewLine,
+                    { borderTopColor: theme.border },
+                  ]}
                 >
+                  <View style={styles.flexCopy}>
+                    <AppText weight="semibold">
+                      {product?.name ?? "Chicken product"}
+                    </AppText>
+                    <AppText size="small" tone="secondary">
+                      {chickenTypes.find(
+                        (type) => type.value === item.chickenType,
+                      )?.label ?? "Chicken"}{" "}
+                      · {unitBreakdown || "No units selected"}
+                      {baseUnit && totalBaseQuantity > 0
+                        ? ` · ${formatChickenCount(totalBaseQuantity)} ${chickenPurchaseUnitLabel(
+                            baseUnit.unit_name,
+                            totalBaseQuantity,
+                          )} total`
+                        : ""}
+                    </AppText>
+                  </View>
                   <AppText weight="semibold">
-                    Purchase item {index + 1}:{" "}
-                    {product?.name ?? "Chicken product"}
-                  </AppText>
-                  <AppText size="small" tone="secondary">
-                    {chickenTypes.find(
-                      (type) => type.value === item.chickenType,
-                    )?.label ?? "Chicken"}
-                    {" · "}
-                    {item.quantity} {unit?.unit_abbreviation ?? "units"}
-                    {" · "}
-                    {formatCents(lineSubtotalCents, theme.currency)} subtotal
+                    {formatCents(lineSubtotalCents, theme.currency)}
                   </AppText>
                 </View>
               );
             })}
             {purchaseNotes.trim() ? (
-              <SummaryRow label="Notes" value={purchaseNotes.trim()} />
+              <View
+                style={[
+                  styles.reviewNotes,
+                  { backgroundColor: theme.background },
+                ]}
+              >
+                <Ionicons
+                  name="document-text-outline"
+                  size={16}
+                  color={theme.textSecondary}
+                />
+                <AppText size="small" tone="secondary" style={styles.flexCopy}>
+                  {purchaseNotes.trim()}
+                </AppText>
+              </View>
             ) : null}
           </Card>
+
           <Card style={styles.reviewCard}>
-            <AppText weight="semibold">Financial summary</AppText>
+            <View style={styles.reviewSectionHeading}>
+              <View
+                style={[
+                  styles.reviewSectionIcon,
+                  { backgroundColor: `${theme.success}18` },
+                ]}
+              >
+                <Ionicons
+                  name="wallet-outline"
+                  size={18}
+                  color={theme.success}
+                />
+              </View>
+              <AppText weight="semibold" style={styles.flexCopy}>
+                Payment breakdown
+              </AppText>
+              <AppText size="small" tone="secondary">
+                {recordPayment
+                  ? `${1 + additionalPayments.length} entries`
+                  : "Not recorded"}
+              </AppText>
+            </View>
+            {recordPayment ? (
+              <>
+                <ReviewPaymentRow
+                  index={1}
+                  method={paymentMethods.find(
+                    (method) => method.value === paymentMethod,
+                  )?.label ?? "Payment"}
+                  amount={formatCents(enteredPaymentCents, theme.currency)}
+                  reference={paymentReference}
+                />
+                {additionalPayments.map((payment, index) => (
+                  <ReviewPaymentRow
+                    key={payment.id}
+                    index={index + 2}
+                    method={
+                      paymentMethods.find(
+                        (method) => method.value === payment.method,
+                      )?.label ?? "Payment"
+                    }
+                    amount={formatCents(
+                      parseMoneyToCents(payment.amount) ?? 0n,
+                      theme.currency,
+                    )}
+                    reference={payment.reference}
+                  />
+                ))}
+              </>
+            ) : (
+              <AppText size="small" tone="secondary">
+                No payment will be recorded now.
+              </AppText>
+            )}
+          </Card>
+
+          <Card style={styles.reviewCard}>
+            <AppText weight="semibold">Totals</AppText>
             <SummaryRow
-              label="Calculated subtotal"
+              label="Subtotal"
               value={formatCents(purchasePricing.subtotalCents, theme.currency)}
             />
-            <SummaryRow
-              label="Discount"
-              value={formatCents(
-                -purchasePricing.discountCents,
-                theme.currency,
-              )}
-              labelColor={theme.secondary}
-              valueColor={theme.secondary}
-            />
-            <SummaryRow
-              label="Final purchase cost"
-              value={formatCents(purchaseTotalCents, theme.currency)}
-              emphasized
-              labelColor={theme.primary}
-              valueColor={theme.primary}
-            />
-            <SummaryRow
-              label={
-                recordPayment
-                  ? `Amount paid · ${1 + additionalPayments.length} payment${additionalPayments.length === 0 ? "" : "s"}`
-                  : "Amount paid"
-              }
-              value={formatCents(paidNowCents, theme.currency)}
-              labelColor={theme.success}
-              valueColor={theme.success}
-            />
-            {creditBalanceCents > 0n ? (
+            {purchasePricing.discountCents > 0n ? (
               <SummaryRow
-                label="Credit balance"
-                value={formatCents(creditBalanceCents, theme.currency)}
+                label="Discount"
+                value={formatCents(
+                  -purchasePricing.discountCents,
+                  theme.currency,
+                )}
                 labelColor={theme.secondary}
                 valueColor={theme.secondary}
               />
-            ) : (
-              <SummaryRow
-                label="Outstanding balance"
-                value={formatCents(balanceDueCents, theme.currency)}
-                emphasized
-                labelColor={
-                  balanceDueCents === 0n ? theme.success : theme.danger
-                }
-                valueColor={
-                  balanceDueCents === 0n ? theme.success : theme.danger
-                }
-              />
-            )}
-            {[
-              ...(paymentReference.trim()
-                ? [{ id: "first", value: paymentReference.trim() }]
-                : []),
-              ...additionalPayments
-                .filter((payment) => payment.reference.trim())
-                .map((payment) => ({
-                  id: payment.id,
-                  value: payment.reference.trim(),
-                })),
-            ].map((payment, index) => (
-              <SummaryRow
-                key={payment.id}
-                label={`Payment ${index + 1} reference`}
-                value={payment.value}
-              />
-            ))}
+            ) : null}
+            <View
+              style={[
+                styles.reviewTotalLine,
+                { borderTopColor: theme.border },
+              ]}
+            >
+              <AppText weight="semibold">Paid now</AppText>
+              <AppText weight="semibold" style={{ color: theme.success }}>
+                {formatCents(paidNowCents, theme.currency)}
+              </AppText>
+            </View>
+            <View
+              style={[
+                styles.reviewBalance,
+                { backgroundColor: theme.backgroundSelected },
+              ]}
+            >
+              <View style={styles.flexCopy}>
+                <AppText size="small" tone="secondary">
+                  {creditBalanceCents > 0n ? "Supplier credit" : "Balance due"}
+                </AppText>
+                <AppText weight="semibold">
+                  {creditBalanceCents > 0n
+                    ? formatCents(creditBalanceCents, theme.currency)
+                    : formatCents(balanceDueCents, theme.currency)}
+                </AppText>
+              </View>
+              <View
+                style={[
+                  styles.reviewBalanceBadge,
+                  {
+                    backgroundColor:
+                      creditBalanceCents > 0n || balanceDueCents === 0n
+                        ? `${theme.success}18`
+                        : `${theme.secondary}18`,
+                  },
+                ]}
+              >
+                <Ionicons
+                  name={
+                    creditBalanceCents > 0n || balanceDueCents === 0n
+                      ? "checkmark-circle"
+                      : "time-outline"
+                  }
+                  size={17}
+                  color={
+                    creditBalanceCents > 0n || balanceDueCents === 0n
+                      ? theme.success
+                      : theme.secondary
+                  }
+                />
+                <AppText
+                  size="small"
+                  weight="semibold"
+                  style={{
+                    color:
+                      creditBalanceCents > 0n || balanceDueCents === 0n
+                        ? theme.success
+                        : theme.secondary,
+                  }}
+                >
+                  {creditBalanceCents > 0n
+                    ? "Credit"
+                    : balanceDueCents === 0n
+                      ? "Settled"
+                      : "Due"}
+                </AppText>
+              </View>
+            </View>
             {remindForSettlement &&
             (balanceDueCents > 0n || creditBalanceCents > 0n) ? (
               <SummaryRow
-                label="Settlement reminder"
+                label="Reminder"
                 value={`${formatDateForDisplay(reminderDueDate)} · ${reminderDueTime}`}
               />
             ) : null}
           </Card>
-        </View>
+        </Animated.View>
       ) : null}
 
       {error ? (
@@ -2940,25 +5184,249 @@ function ChickenPurchaseContent() {
           {error}
         </AppText>
       ) : null}
+      {messageImportError && !messageReview ? (
+        <View style={styles.sectionIntro}>
+          <AppText size="small" style={{ color: theme.danger }}>
+            {messageImportError}
+          </AppText>
+          {sharedMessage ? (
+            <Button
+              label="Dismiss shared message"
+              variant="secondary"
+              onPress={() =>
+                void dismissPaymentMessageImport(sharedMessage.id)
+              }
+            />
+          ) : null}
+        </View>
+      ) : null}
+
+      {messageReview ? (
+        <PaymentMessageReview
+          payment={messageReview.payment}
+          warnings={importWarnings}
+          currency={theme.currency}
+          expectedAmount={importExpectedAmount}
+          purchaseDate={selectedPurchaseDate}
+          canImport={
+            messageReview.payment.transactionStatus === "SUCCESS" &&
+            !importCurrencyMismatch &&
+            !importAssessment?.duplicateReference
+          }
+          blockReason={importBlockReason}
+          error={messageImportError}
+          onCancel={() => void dismissPaymentMessageImport(messageReview.id)}
+          onConfirm={(edits) => void applyImportedPayment(edits)}
+        />
+      ) : null}
+
+      {smsPickerOpen ? (
+        <SmsPaymentPicker
+          key={selectedPurchaseDate}
+          visible
+          fromDate={selectedPurchaseDate}
+          currency={theme.currency}
+          existingSmsMessageIds={existingSmsMessageIds}
+          selectIntoExistingPayment={Boolean(smsTargetPaymentId)}
+          hasExistingPayments={Boolean(
+            fullyPaid ||
+              paymentAmount.trim() ||
+              paymentReference.trim() ||
+              additionalPayments.length,
+          )}
+          purchaseTotalCents={purchaseTotalCents.toString()}
+          currentPaidCents={paidNowCents.toString()}
+          existingReferences={[
+            paymentReference,
+            ...additionalPayments.map((payment) => payment.reference),
+          ]}
+          onClose={() => {
+            setSmsPickerOpen(false);
+            setSmsTargetPaymentId(null);
+          }}
+          onSelect={(selected, mode) =>
+            void applySelectedSmsPayments(selected, mode)
+          }
+        />
+      ) : null}
+
+      <Modal
+        visible={leavePromptVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (leaveActionPending) return;
+          leaveActionRef.current = null;
+          setLeavePromptVisible(false);
+        }}
+      >
+        <View style={styles.leavePromptOverlay}>
+          <View
+            style={[
+              styles.leavePromptCard,
+              {
+                backgroundColor: theme.backgroundElement,
+                borderColor: theme.border,
+              },
+            ]}
+          >
+            <View
+              style={[
+                styles.leavePromptIcon,
+                { backgroundColor: `${theme.primary}18` },
+              ]}
+            >
+              <Ionicons
+                name="document-text-outline"
+                size={23}
+                color={theme.primary}
+              />
+            </View>
+            <AppText size="heading" weight="semibold">
+              Leave this purchase?
+            </AppText>
+            <AppText tone="secondary">
+              Save your details and selected M-Pesa messages as a draft to
+              continue later, or discard the purchase.
+            </AppText>
+            {leaveDraftError ? (
+              <AppText size="small" style={{ color: theme.danger }}>
+                {leaveDraftError}
+              </AppText>
+            ) : null}
+            <Pressable
+              accessibilityRole="button"
+              disabled={leaveActionPending}
+              onPress={() => {
+                leaveActionRef.current = null;
+                setLeaveDraftError(null);
+                setLeavePromptVisible(false);
+              }}
+              style={[
+                styles.leavePromptButton,
+                {
+                  borderColor: theme.border,
+                  opacity: leaveActionPending ? 0.6 : 1,
+                },
+              ]}
+            >
+              <AppText weight="semibold">Keep editing</AppText>
+            </Pressable>
+            <View style={styles.leavePromptChoices}>
+              <Pressable
+                accessibilityRole="button"
+                disabled={leaveActionPending}
+                onPress={() => void discardDraftAndLeave()}
+                style={[
+                  styles.leavePromptChoice,
+                  styles.leavePromptDestructive,
+                  {
+                    borderColor: theme.danger,
+                    opacity: leaveActionPending ? 0.6 : 1,
+                  },
+                ]}
+              >
+                <AppText
+                  size="small"
+                  weight="semibold"
+                  style={{ color: theme.danger }}
+                >
+                  Discard
+                </AppText>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                disabled={leaveActionPending}
+                onPress={() => void saveDraftAndLeave()}
+                style={[
+                  styles.leavePromptChoice,
+                  {
+                    backgroundColor: theme.primary,
+                    borderColor: theme.primary,
+                    opacity: leaveActionPending ? 0.6 : 1,
+                  },
+                ]}
+              >
+                {leaveActionPending ? (
+                  <ActivityIndicator color={theme.onPrimary} size="small" />
+                ) : (
+                  <AppText
+                    size="small"
+                    weight="semibold"
+                    style={{ color: theme.onPrimary }}
+                  >
+                    Save draft
+                  </AppText>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       <View style={styles.navigationActions}>
-        <Button
-          label={step === 0 ? "Cancel" : "Back"}
-          variant="secondary"
+        <Pressable
+          accessibilityRole="button"
           disabled={createPurchase.isPending}
           onPress={() =>
             step === 0 ? router.back() : setStep((current) => current - 1)
           }
-        />
-        {step < steps.length - 1 ? (
-          <Button label="Continue" onPress={goNext} />
-        ) : (
-          <Button
-            label="Record purchase"
-            loading={createPurchase.isPending}
-            onPress={() => void submitPurchase()}
+          style={({ pressed }) => [
+            styles.navigationBack,
+            {
+              backgroundColor: pressed
+                ? theme.backgroundSelected
+                : theme.backgroundElement,
+              borderColor: theme.border,
+              opacity: createPurchase.isPending ? 0.55 : 1,
+            },
+          ]}
+        >
+          <Ionicons
+            name={step === 0 ? "close" : "arrow-back"}
+            size={18}
+            color={theme.textSecondary}
           />
-        )}
+          <AppText weight="semibold">
+            {step === 0 ? "Cancel" : "Back"}
+          </AppText>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{
+            disabled: createPurchase.isPending,
+            busy: createPurchase.isPending,
+          }}
+          disabled={createPurchase.isPending}
+          onPress={() =>
+            step < steps.length - 1
+              ? goNext()
+              : void submitPurchase()
+          }
+          android_ripple={{ color: `${theme.onPrimary}24` }}
+          style={({ pressed }) => [
+            styles.navigationContinue,
+            {
+              backgroundColor: theme.primary,
+              opacity: pressed || createPurchase.isPending ? 0.9 : 1,
+            },
+          ]}
+        >
+          {createPurchase.isPending ? (
+            <ActivityIndicator color={theme.onPrimary} />
+          ) : (
+            <>
+              <AppText weight="semibold" style={{ color: theme.onPrimary }}>
+                {step < steps.length - 1 ? "Continue" : "Record purchase"}
+              </AppText>
+              <Ionicons
+                name={step < steps.length - 1 ? "arrow-forward" : "checkmark"}
+                size={19}
+                color={theme.onPrimary}
+              />
+            </>
+          )}
+        </Pressable>
       </View>
     </ScreenShell>
   );
@@ -2980,6 +5448,49 @@ function ScreenShell({ children }: { children: React.ReactNode }) {
         >
           {children}
         </ScrollView>
+      </SafeAreaView>
+    </KeyboardAvoidingView>
+  );
+}
+
+function PurchaseSuccessShell({
+  children,
+  footer,
+}: {
+  children: React.ReactNode;
+  footer: React.ReactNode;
+}) {
+  const { theme } = useTheme();
+  return (
+    <KeyboardAvoidingView
+      style={[styles.screen, { backgroundColor: theme.background }]}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+    >
+      <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
+        <FarmPageHeader
+          title="Purchase"
+          showBack
+          fallbackHref="/(tabs)/flock"
+        />
+        <ScrollView
+          contentContainerStyle={[styles.content, styles.successScroll]}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          automaticallyAdjustKeyboardInsets
+        >
+          {children}
+        </ScrollView>
+        <View
+          style={[
+            styles.successFooter,
+            {
+              backgroundColor: theme.background,
+              borderTopColor: theme.border,
+            },
+          ]}
+        >
+          {footer}
+        </View>
       </SafeAreaView>
     </KeyboardAvoidingView>
   );
@@ -3098,11 +5609,6 @@ function SearchableSelectField({
               <View style={styles.flexCopy}>
                 <AppText size="heading" weight="semibold">
                   {label}
-                </AppText>
-                <AppText size="small" tone="secondary">
-                  {searchable
-                    ? "Search and choose an option."
-                    : "Choose an option."}
                 </AppText>
               </View>
               <Pressable
@@ -3229,7 +5735,7 @@ function ChoiceButton({
         styles.choiceButton,
         {
           backgroundColor: selected
-            ? theme.backgroundSelected
+            ? theme.primary
             : pressed
               ? theme.backgroundSelected
               : theme.backgroundElement,
@@ -3245,7 +5751,7 @@ function ChoiceButton({
       <AppText
         size="small"
         weight="semibold"
-        style={{ color: selected ? theme.primary : theme.text }}
+        style={{ color: selected ? theme.onPrimary : theme.text }}
       >
         {label}
       </AppText>
@@ -3253,33 +5759,285 @@ function ChoiceButton({
   );
 }
 
-function ProductUnitChooser({
-  product,
-  selectedUnitId,
-  onSelect,
-  error,
+function DiscountModeChoice({
+  label,
+  description,
+  selected,
+  theme,
+  onPress,
 }: {
-  product: Product;
-  selectedUnitId: string;
-  onSelect: (unit: ProductUnit) => void;
-  error?: string;
+  label: string;
+  description: string;
+  selected: boolean;
+  theme: ReturnType<typeof useTheme>["theme"];
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="radio"
+      accessibilityState={{ checked: selected }}
+      accessibilityLabel={`${description}${label === "%" ? "" : `, ${label}`}`}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.discountMode,
+        {
+          backgroundColor: selected
+            ? theme.primary
+            : pressed
+              ? theme.backgroundSelected
+              : theme.backgroundElement,
+          borderColor: selected ? theme.primary : theme.border,
+        },
+      ]}
+    >
+      <View style={styles.discountModeTop}>
+        <View
+          style={[
+            styles.discountModeSymbol,
+            {
+              backgroundColor: selected
+                ? `${theme.onPrimary}20`
+                : theme.backgroundSelected,
+            },
+          ]}
+        >
+          <AppText
+            size="small"
+            weight="semibold"
+            numberOfLines={1}
+            style={{ color: selected ? theme.onPrimary : theme.primary }}
+          >
+            {label}
+          </AppText>
+        </View>
+        {selected ? (
+          <Ionicons name="checkmark-circle" size={17} color={theme.onPrimary} />
+        ) : null}
+      </View>
+      <View style={styles.discountModeCopy}>
+        <AppText
+          size="small"
+          weight="semibold"
+          style={[
+            styles.discountModeDescription,
+            { color: selected ? theme.onPrimary : theme.text },
+          ]}
+        >
+          {description}
+        </AppText>
+      </View>
+    </Pressable>
+  );
+}
+
+function SmsPaymentImportButton({ onPress }: { onPress: () => void }) {
+  const { theme } = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Paste M-Pesa payment confirmation"
+      onPress={onPress}
+      android_ripple={{ color: `${theme.primary}18` }}
+      style={({ pressed }) => [
+        styles.mpesaImportCard,
+        {
+          backgroundColor: pressed
+            ? theme.backgroundSelected
+            : theme.backgroundElement,
+          borderColor: `${theme.primary}70`,
+        },
+      ]}
+    >
+      <View
+        style={[styles.mpesaImportIcon, { backgroundColor: theme.primary }]}
+      >
+        <Ionicons name="chatbubbles" size={20} color={theme.onPrimary} />
+      </View>
+      <View style={styles.flexCopy}>
+        <AppText weight="semibold">Paste M-Pesa confirmation</AppText>
+        <View style={styles.mpesaCaption}>
+          <Ionicons
+            name="shield-checkmark-outline"
+            size={14}
+            color={theme.success}
+          />
+          <AppText size="small" tone="secondary">
+            Copy a confirmation from Messages, then paste it here
+          </AppText>
+        </View>
+      </View>
+      <View style={[styles.mpesaArrow, { backgroundColor: theme.primary }]}>
+        <Ionicons
+          name="arrow-forward"
+          size={18}
+          color={theme.onPrimary}
+        />
+      </View>
+    </Pressable>
+  );
+}
+
+function PaymentCardHeader({
+  number,
+  method,
+  onRemove,
+  removeLabel,
+}: {
+  number: number;
+  method: string;
+  onRemove?: () => void;
+  removeLabel?: string;
 }) {
   const { theme } = useTheme();
   return (
+    <View style={styles.paymentCardHeader}>
+      <View style={styles.paymentHeadingTitle}>
+        <View
+          style={[
+            styles.paymentNumber,
+            { backgroundColor: theme.backgroundSelected },
+          ]}
+        >
+          <AppText
+            size="small"
+            weight="semibold"
+            style={{ color: theme.primary }}
+          >
+            {String(number).padStart(2, "0")}
+          </AppText>
+        </View>
+        <AppText weight="semibold">Payment {number}</AppText>
+      </View>
+      <View style={styles.flexCopy} />
+      <View
+        style={[
+          styles.paymentMethodBadge,
+          { backgroundColor: theme.backgroundSelected },
+        ]}
+      >
+        <AppText
+          size="small"
+          weight="semibold"
+          style={{ color: theme.primary }}
+        >
+          {method}
+        </AppText>
+      </View>
+      {onRemove ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={removeLabel ?? `Remove payment ${number}`}
+          onPress={onRemove}
+          style={({ pressed }) => [
+            styles.removePaymentButton,
+            {
+              backgroundColor: pressed
+                ? `${theme.danger}24`
+                : `${theme.danger}12`,
+            },
+          ]}
+        >
+          <Ionicons name="trash-outline" size={17} color={theme.danger} />
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+function ProductUnitChooser({
+  product,
+  selectedUnitIds,
+  onToggle,
+  error,
+}: {
+  product: Product;
+  selectedUnitIds: string[];
+  onToggle: (unit: ProductUnit) => void;
+  error?: string;
+}) {
+  const { theme } = useTheme();
+  const baseUnit =
+    product.product_units.find((unit) => unit.is_base_unit) ??
+    product.product_units[0];
+  return (
     <View style={styles.inputSection}>
-      <AppText size="small" weight="semibold">
-        Purchase unit
-      </AppText>
-      <View style={styles.choiceWrap}>
-        {product.product_units.map((unit) => (
-          <ChoiceButton
-            key={unit.unit_id}
-            label={`${unit.unit_name} (${unit.unit_abbreviation})`}
-            selected={selectedUnitId === unit.unit_id}
-            invalid={Boolean(error)}
-            onPress={() => onSelect(unit)}
-          />
-        ))}
+      <View style={styles.unitHeading}>
+        <AppText size="small" weight="semibold">
+          Units
+        </AppText>
+      </View>
+      <View style={styles.productUnits}>
+        {product.product_units.map((unit) => {
+          const selected = selectedUnitIds.includes(unit.unit_id);
+          const factor = Number(unit.conversion_factor);
+          const conversion =
+            unit.is_base_unit || !baseUnit
+              ? "Base unit"
+              : Number.isFinite(factor) && factor > 0
+                ? `1 ${unit.unit_name.toLocaleLowerCase()} = ${formatChickenCount(factor)} ${chickenPurchaseUnitLabel(baseUnit.unit_name, factor)}`
+                : "Conversion not set";
+          return (
+            <Pressable
+              key={unit.unit_id}
+              accessibilityRole="checkbox"
+              accessibilityLabel={`${unit.unit_name}, ${conversion}`}
+              accessibilityState={{ checked: selected }}
+              onPress={() => onToggle(unit)}
+              style={({ pressed }) => [
+                styles.productUnitCard,
+                {
+                  backgroundColor: selected
+                    ? theme.backgroundSelected
+                    : pressed
+                      ? theme.backgroundSelected
+                      : theme.backgroundElement,
+                  borderColor: error
+                    ? theme.danger
+                    : selected
+                      ? theme.primary
+                      : theme.border,
+                },
+              ]}
+            >
+              <View style={styles.productUnitHeading}>
+                <AppText
+                  weight="semibold"
+                  style={styles.productUnitName}
+                >
+                  {unit.unit_name}
+                </AppText>
+                {selected ? (
+                  <Ionicons
+                    name="checkmark-circle"
+                    size={17}
+                    color={theme.primary}
+                  />
+                ) : null}
+                <View
+                  style={[
+                    styles.productUnitAbbreviation,
+                    { backgroundColor: selected ? theme.primary : theme.background },
+                  ]}
+                >
+                  <AppText
+                    size="small"
+                    weight="semibold"
+                    style={{ color: selected ? theme.onPrimary : theme.textSecondary }}
+                  >
+                    {unit.unit_abbreviation}
+                  </AppText>
+                </View>
+              </View>
+              <AppText
+                size="small"
+                tone="secondary"
+                style={styles.productUnitConversion}
+              >
+                {conversion}
+              </AppText>
+            </Pressable>
+          );
+        })}
       </View>
       {error ? (
         <AppText size="small" style={{ color: theme.danger }}>
@@ -3323,18 +6081,64 @@ function SummaryRow({
   );
 }
 
+function ReviewPaymentRow({
+  index,
+  method,
+  amount,
+  reference,
+}: {
+  index: number;
+  method: string;
+  amount: string;
+  reference: string;
+}) {
+  const { theme } = useTheme();
+  return (
+    <View style={[styles.reviewPaymentRow, { borderTopColor: theme.border }]}>
+      <View
+        style={[
+          styles.reviewPaymentIndex,
+          { backgroundColor: theme.backgroundSelected },
+        ]}
+      >
+        <AppText
+          size="small"
+          weight="semibold"
+          style={{ color: theme.primary }}
+        >
+          {index}
+        </AppText>
+      </View>
+      <View style={styles.flexCopy}>
+        <AppText weight="semibold">{method}</AppText>
+        {reference.trim() ? (
+          <AppText size="small" tone="secondary">
+            Ref · {reference.trim()}
+          </AppText>
+        ) : null}
+      </View>
+      <AppText weight="semibold">{amount}</AppText>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   content: {
     width: "100%",
     maxWidth: 760,
     alignSelf: "center",
-    padding: 20,
-    paddingBottom: 36,
-    gap: 16,
+    padding: 17,
+    paddingBottom: 28,
+    gap: 14,
   },
   stateCard: { gap: 10 },
-  progressSection: { gap: 8 },
+  progressSection: {
+    gap: 11,
+    padding: 13,
+    borderRadius: 16,
+    borderWidth: 1,
+  },
   progressLabels: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -3342,11 +6146,39 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   progressTrack: { flexDirection: "row", gap: 5 },
-  progressSegment: { flex: 1, height: 4, borderRadius: 2 },
-  stepContent: { gap: 22 },
-  sectionIntro: { gap: 6, paddingBottom: 6 },
+  progressSegment: { flex: 1, height: 6, borderRadius: 3 },
+  stepContent: { gap: 16 },
+  sectionIntro: { gap: 4, paddingBottom: 0 },
   inputSection: { gap: 8 },
-  newSupplierCard: { gap: 12 },
+  newSupplierCard: { gap: 12, borderRadius: 18, padding: 16 },
+  inlineAddButton: {
+    minHeight: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderRadius: 14,
+    paddingHorizontal: 12,
+  },
+  addPurchaseLine: {
+    minHeight: 68,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  addPurchaseLineIcon: {
+    width: 38,
+    height: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+  },
   supplierFormActions: {
     flexDirection: "row",
     justifyContent: "flex-end",
@@ -3361,7 +6193,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 8,
     borderWidth: 1,
-    borderRadius: 6,
+    borderRadius: 14,
     paddingHorizontal: 12,
   },
   selectModalRoot: { flex: 1, justifyContent: "flex-end" },
@@ -3398,7 +6230,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 9,
     borderWidth: 1,
-    borderRadius: 6,
+    borderRadius: 14,
   },
   emptyOptions: { paddingVertical: 14, textAlign: "center" },
   choiceList: { gap: 7 },
@@ -3406,23 +6238,184 @@ const styles = StyleSheet.create({
   choiceButton: {
     minHeight: 40,
     justifyContent: "center",
-    paddingHorizontal: 12,
+    paddingHorizontal: 15,
     borderWidth: 1,
-    borderRadius: 6,
+    borderRadius: 14,
+  },
+  unitHeading: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  productUnits: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  productUnitCard: {
+    flexGrow: 1,
+    flexBasis: "46%",
+    minWidth: 128,
+    minHeight: 76,
+    justifyContent: "center",
+    gap: 4,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  productUnitHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  productUnitName: { flex: 1, flexShrink: 1 },
+  productUnitAbbreviation: {
+    minHeight: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 7,
+    paddingHorizontal: 6,
+  },
+  productUnitConversion: { flexShrink: 1 },
+  unitQuantityCard: {
+    gap: 12,
+    borderWidth: 1,
+    borderRadius: 15,
+    padding: 12,
+  },
+  unitQuantityHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+  },
+  unitQuantityIcon: {
+    width: 31,
+    height: 31,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 10,
+  },
+  unitQuantityFields: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  unitQuantityInput: { flex: 1, minWidth: 135 },
+  discountHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  discountIcon: {
+    width: 38,
+    height: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+  },
+  discountToggle: {
+    minHeight: 62,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 15,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+  },
+  discountToggleIcon: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+  },
+  discountEditor: {
+    gap: 12,
+    padding: 12,
+    borderRadius: 15,
+  },
+  discountModes: {
+    flexDirection: "row",
+    gap: 7,
+    padding: 5,
+    borderRadius: 14,
+  },
+  discountMode: {
+    flex: 1,
+    minHeight: 74,
+    justifyContent: "center",
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+    borderWidth: 1,
+    borderRadius: 11,
+  },
+  discountModeTop: {
+    minHeight: 27,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  discountModeSymbol: {
+    minWidth: 30,
+    minHeight: 25,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 5,
+    borderRadius: 8,
+  },
+  discountModeCopy: { alignItems: "center" },
+  discountModeDescription: { textAlign: "center", flexShrink: 1 },
+  discountTotals: {
+    gap: 10,
+    padding: 13,
+    borderRadius: 15,
+  },
+  discountSubtotal: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingBottom: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(90,110,100,0.28)",
+  },
+  discountTotal: {
+    minHeight: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
   },
   multilineInput: { minHeight: 88 },
-  itemCard: { gap: 19, borderRadius: 18, padding: 19 },
+  itemCard: {
+    gap: 16,
+    borderRadius: 18,
+    padding: 16,
+    borderLeftWidth: 4,
+  },
+  itemHeadingTitle: { flexDirection: "row", alignItems: "center", gap: 9 },
+  itemNumber: {
+    width: 30,
+    height: 30,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 10,
+  },
   itemHeading: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
   },
   removeItemButton: {
-    minHeight: 36,
-    flexDirection: "row",
+    width: 38,
+    height: 38,
     alignItems: "center",
-    gap: 5,
-    paddingHorizontal: 6,
+    justifyContent: "center",
+    borderRadius: 12,
   },
   numberFields: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
   numberField: { flex: 1, minWidth: 150 },
@@ -3436,30 +6429,43 @@ const styles = StyleSheet.create({
   },
   paymentToggle: {
     flexDirection: "row",
-    alignItems: "flex-start",
+    alignItems: "center",
     gap: 14,
     borderRadius: 16,
     padding: 16,
   },
   reminderSection: { gap: 10 },
+  reminderCard: {
+    overflow: "hidden",
+    borderWidth: 1,
+    borderRadius: 18,
+    paddingHorizontal: 13,
+    paddingVertical: 5,
+  },
   reminderToggle: {
-    minHeight: 62,
+    minHeight: 58,
     flexDirection: "row",
     alignItems: "center",
-    gap: 11,
-    borderWidth: 1,
-    borderRadius: 6,
-    paddingHorizontal: 12,
+    gap: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 2,
     paddingVertical: 8,
   },
-  reminderSchedule: { gap: 12 },
+  reminderIcon: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+  },
+  reminderSchedule: { gap: 12, paddingTop: 13, paddingBottom: 8 },
   fullyPaidToggle: {
     minHeight: 62,
     flexDirection: "row",
     alignItems: "center",
     gap: 11,
     borderWidth: 1,
-    borderRadius: 6,
+    borderRadius: 15,
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
@@ -3469,18 +6475,119 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderRadius: 5,
+    borderRadius: 7,
   },
   paymentSummary: { gap: 11 },
+  paymentPaidRow: {
+    minHeight: 39,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 8,
+  },
+  purchaseTotalHero: {
+    minHeight: 92,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    padding: 16,
+    borderRadius: 16,
+  },
+  purchaseTotalAmount: { marginTop: 4 },
+  purchaseTotalIcon: {
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 14,
+  },
+  mpesaImportCard: {
+    minHeight: 78,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 13,
+    paddingVertical: 11,
+    borderWidth: 1,
+    borderRadius: 18,
+    overflow: "hidden",
+  },
+  mpesaImportIcon: {
+    width: 42,
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 14,
+    backgroundColor: "#226B68",
+  },
+  mpesaCaption: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginTop: 3,
+  },
+  mpesaArrow: {
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+  },
   paymentOutcome: {
+    minHeight: 62,
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    padding: 11,
+    paddingHorizontal: 13,
+    paddingVertical: 10,
     borderWidth: 1,
+    borderRadius: 15,
+  },
+  paymentCard: {
+    gap: 14,
+    borderWidth: 1,
+    borderRadius: 18,
+    padding: 15,
+  },
+  paymentCardHeader: {
+    minHeight: 38,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 2,
+  },
+  paymentHeadingTitle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  paymentNumber: {
+    width: 30,
+    height: 30,
+    alignItems: "center",
+    justifyContent: "center",
     borderRadius: 10,
   },
-  paymentEntry: { gap: 10, borderTopWidth: 1, paddingTop: 12 },
+  paymentMethodBadge: {
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 10,
+  },
+  removePaymentButton: {
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 10,
+  },
+  paymentEntry: {
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 14,
+  },
   flexCopy: { flex: 1 },
   contactDetails: { gap: 6, paddingVertical: 4 },
   contactLink: {
@@ -3489,8 +6596,106 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
   },
-  reviewCard: { gap: 15, borderRadius: 16, padding: 17 },
-  pricingCard: { gap: 18, borderRadius: 18, padding: 19 },
+  reviewCard: { gap: 13, borderRadius: 18, padding: 16 },
+  pricingCard: { gap: 15, borderRadius: 18, padding: 16 },
+  reviewHero: { gap: 14, padding: 17, borderRadius: 20 },
+  reviewHeroTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+  },
+  reviewHeroIcon: {
+    width: 42,
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 13,
+  },
+  reviewHeroAmount: { marginTop: 2 },
+  reviewDateBadge: {
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+    borderRadius: 11,
+  },
+  reviewHeroDivider: { height: StyleSheet.hairlineWidth },
+  reviewSupplierLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  reviewSectionHeading: {
+    minHeight: 38,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    marginBottom: 2,
+  },
+  reviewSectionIcon: {
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+  },
+  reviewSupplierCard: { gap: 10, borderRadius: 18, padding: 14 },
+  supplierStatusBadge: {
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 10,
+  },
+  reviewLine: {
+    minHeight: 54,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 9,
+  },
+  reviewNotes: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    padding: 10,
+    borderRadius: 12,
+  },
+  reviewPaymentRow: {
+    minHeight: 54,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 8,
+  },
+  reviewPaymentIndex: {
+    width: 27,
+    height: 27,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 9,
+  },
+  reviewTotalLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderTopWidth: 1,
+    paddingTop: 11,
+  },
+  reviewBalance: {
+    minHeight: 60,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 11,
+    borderRadius: 14,
+  },
+  reviewBalanceBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
   pricingSummary: {
     gap: 10,
     borderTopWidth: 1,
@@ -3518,20 +6723,103 @@ const styles = StyleSheet.create({
   },
   summaryValue: { flex: 1, textAlign: "right" },
   inventoryNote: { flexDirection: "row", alignItems: "flex-start", gap: 9 },
+  leavePromptOverlay: {
+    flex: 1,
+    justifyContent: "center",
+    padding: 22,
+    backgroundColor: "rgba(0,0,0,0.5)",
+  },
+  leavePromptCard: {
+    gap: 13,
+    alignSelf: "center",
+    width: "100%",
+    maxWidth: 430,
+    borderWidth: 1,
+    borderRadius: 22,
+    padding: 20,
+  },
+  leavePromptIcon: {
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 14,
+  },
+  leavePromptButton: {
+    minHeight: 46,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderRadius: 14,
+  },
+  leavePromptChoices: { flexDirection: "row", gap: 9 },
+  leavePromptChoice: {
+    flex: 1,
+    minHeight: 46,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderRadius: 14,
+  },
+  leavePromptDestructive: { backgroundColor: "transparent" },
   navigationActions: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    gap: 10,
-    paddingTop: 4,
+    justifyContent: "flex-end",
+    gap: 9,
+    paddingTop: 2,
   },
-  successContent: { gap: 14 },
+  navigationBack: {
+    minWidth: 94,
+    minHeight: 52,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: 15,
+  },
+  navigationContinue: {
+    minWidth: 142,
+    minHeight: 52,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    borderRadius: 16,
+    paddingHorizontal: 18,
+    overflow: "hidden",
+  },
+  successContent: { gap: 16 },
+  successScroll: { paddingBottom: 20 },
+  successHeading: { flexDirection: "row", alignItems: "center", gap: 10 },
+  successMeta: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 7, marginTop: -7 },
+  successSection: { gap: 10, borderTopWidth: StyleSheet.hairlineWidth, paddingTop: 16 },
+  successFooter: { flexDirection: "row", gap: 9, borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: 18, paddingTop: 10, paddingBottom: 8 },
+  successFooterButton: { flex: 1, minWidth: 0, paddingHorizontal: 10 },
+  deliveryHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  deliveryItem: { gap: 6, paddingVertical: 7 },
+  successProgressTrack: { height: 7, overflow: "hidden", borderRadius: 4 },
+  successProgressFill: { height: "100%", borderRadius: 4 },
+  purchasedItem: { gap: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: "#D8DED5", paddingTop: 10 },
+  purchasedItemHeading: { flexDirection: "row", alignItems: "center", gap: 10 },
+  purchaseTotalRow: { flexDirection: "row", justifyContent: "space-between", gap: 12, borderTopWidth: 1, paddingTop: 11 },
+  paymentLine: { flexDirection: "row", alignItems: "center", gap: 9, paddingVertical: 5 },
+  inlinePaymentForm: { gap: 12, borderTopWidth: StyleSheet.hairlineWidth, paddingTop: 14, marginTop: 4 },
+  balanceSmsAction: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 9, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12 },
+  paymentMethodChoices: { flexDirection: "row", gap: 8 },
+  paymentMethodChoice: { minHeight: 40, flex: 1, alignItems: "center", justifyContent: "center", borderWidth: 1, borderRadius: 10, paddingHorizontal: 8 },
+  paymentFormActions: { flexDirection: "row", justifyContent: "flex-end", gap: 8 },
+  reminderEditor: { gap: 12, paddingTop: 12 },
+  linkButton: { paddingVertical: 6, paddingHorizontal: 2 },
+  purchaseNotes: { textAlign: "left" },
+  reminderErrorCard: { gap: 10, borderRadius: 12, padding: 12, backgroundColor: "transparent" },
   receiptSuccess: { gap: 10 },
   reminderSaved: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
   },
-  reminderErrorCard: { gap: 10 },
   receiptSuccessItem: { gap: 3, paddingTop: 6 },
   arrivalCard: { gap: 17, borderRadius: 16, padding: 17 },
   arrivalBatch: {

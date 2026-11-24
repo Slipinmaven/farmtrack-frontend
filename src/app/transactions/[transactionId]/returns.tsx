@@ -21,6 +21,11 @@ import { Card } from "@/components/ui/card";
 import { DatePickerField } from "@/components/ui/date-picker-field";
 import { TextField } from "@/components/ui/text-field";
 import {
+  SmsPaymentPicker,
+  type SelectedSmsPayment,
+} from "@/features/payment-message-import/components/SmsPaymentPicker";
+import { PaymentMessageImportAction } from "@/features/payment-message-import/components/PaymentMessageImportAction";
+import {
   useChickenPurchaseDetails,
   useChickenSaleDetails,
   useChickenSaleOptions,
@@ -46,6 +51,8 @@ import { normalizeApiError } from "@/lib/api/errors";
 import { useAuth } from "@/providers/auth-provider";
 import { useFarm } from "@/providers/farm-provider";
 import { useTheme } from "@/providers/theme-provider";
+import { usePaymentMessageImport } from "@/features/payment-message-import/PaymentMessageImportProvider";
+import { parseMoneyToCents } from "@/features/chickens/purchase-pricing";
 
 type TransactionKind = "sale" | "purchase";
 type ReturnMode = "delivered_return" | "undelivered_cancelled";
@@ -93,6 +100,7 @@ function ReturnsContent() {
   const { user } = useAuth();
   const farm = useFarm();
   const { theme } = useTheme();
+  const { sharedMessage } = usePaymentMessageImport();
   const params = useLocalSearchParams<{
     transactionId: string;
     transactionType: TransactionKind;
@@ -171,6 +179,7 @@ function ReturnsContent() {
   const [refundDate, setRefundDate] = useState(today());
   const [refundMethod, setRefundMethod] = useState<SettlementPaymentMethod>("cash");
   const [refundReference, setRefundReference] = useState("");
+  const [refundImportOpen, setRefundImportOpen] = useState(false);
   const [selectedReturnItemId, setSelectedReturnItemId] = useState("");
   const [returnError, setReturnError] = useState("");
   const [refundError, setRefundError] = useState("");
@@ -179,6 +188,7 @@ function ReturnsContent() {
   const contactName = isSale
     ? sale.data?.customer_name || "Customer"
     : purchase.data?.supplier_name || "Supplier";
+  const saleHasNamedCustomer = Boolean(sale.data?.customer_name?.trim());
   const directionColor = isSale ? theme.success : theme.danger;
 
   const rows = useMemo<ReturnRow[]>(() => {
@@ -432,6 +442,12 @@ function ReturnsContent() {
     setReturnSuccess("");
     if (!transactionId || !farmId) {
       setReturnError("Transaction or farm details are missing. Reload the page and try again.");
+      return;
+    }
+    if (isSale && !saleHasNamedCustomer) {
+      setReturnError(
+        "Link a customer with a name to this sale before recording a return credit.",
+      );
       return;
     }
     if (!reason.trim()) {
@@ -712,6 +728,28 @@ function ReturnsContent() {
   const refundAmountExceedsAvailable =
     Number.isFinite(Number(refundAmount)) &&
     Number(refundAmount) > availableRefundAmount;
+  const availableRefundCents =
+    parseMoneyToCents(availableRefundAmount.toFixed(2)) ?? 0n;
+
+  function applyImportedRefund(payments: SelectedSmsPayment[]) {
+    const imported = payments[0]?.payment;
+    if (!imported?.amount) return;
+    const importedCents = parseMoneyToCents(imported.amount);
+    if (
+      importedCents === null ||
+      importedCents > availableRefundCents
+    ) {
+      setRefundError("The imported payment exceeds the available refund amount.");
+      return;
+    }
+    setRefundMethod("mpesa");
+    setRefundAmount(imported.amount);
+    setRefundReference(imported.transactionReference ?? "");
+    if (imported.transactionDate) setRefundDate(imported.transactionDate);
+    setRefundError("");
+    setRefundSuccess("");
+    setRefundImportOpen(false);
+  }
   const returnableRows = rows.filter((row) => maxReturnable(row) > 0);
   const hasUndeliveredToCancel = rows.some(
     (row) => maxUndeliveredCancelable(row) > 0,
@@ -935,6 +973,12 @@ function ReturnsContent() {
                     : "These chickens were never delivered. The sale is cancelled for this quantity; farm stock does not move."}
                 </AppText>
               </Card>
+            ) : null}
+            {isSale && sale.data && !saleHasNamedCustomer ? (
+              <FeedbackNotice
+                tone="error"
+                message="This sale has no linked named customer, so FarmTrack cannot assign return credit. Link a customer before recording a return."
+              />
             ) : null}
 
             <Card style={styles.section}>
@@ -1246,6 +1290,7 @@ function ReturnsContent() {
                         : "Record product return"
                     }
                     loading={createSaleReturn.isPending || createPurchaseReturn.isPending}
+                    disabled={isSale && !saleHasNamedCustomer}
                     onPress={() => void submitReturn()}
                   />
                 </>
@@ -1526,6 +1571,12 @@ function ReturnsContent() {
                   placeholder="Receipt, M-Pesa code, etc."
                 />
               ) : null}
+              {refundMethod === "mpesa" ? (
+                <PaymentMessageImportAction
+                  label="Import M-Pesa refund payment"
+                  onPress={() => setRefundImportOpen(true)}
+                />
+              ) : null}
               <TextField
                 label="Refund reason"
                 value={refundReason}
@@ -1684,6 +1735,27 @@ function ReturnsContent() {
         ) : null}
       </ScrollView>
       </KeyboardAvoidingView>
+      {refundImportOpen ? (
+        <SmsPaymentPicker
+          visible
+          fromDate={refundDate}
+          currency={theme.currency}
+          existingReferences={refundHistory
+            .map((refund) => refund.reference_number ?? "")
+            .filter(Boolean)}
+          existingSmsMessageIds={[]}
+          maxSelections={1}
+          hasExistingPayments={false}
+          transactionLabel="refund"
+          expectedDirection={isSale ? "OUTGOING" : "INCOMING"}
+          overpaymentMessage="The selected payment exceeds the available refund amount."
+          purchaseTotalCents={availableRefundCents.toString()}
+          currentPaidCents="0"
+          sharedMessage={sharedMessage}
+          onClose={() => setRefundImportOpen(false)}
+          onSelect={applyImportedRefund}
+        />
+      ) : null}
     </SafeAreaView>
   );
 

@@ -1,13 +1,23 @@
-const { expo } = require("./app.json");
-
-module.exports = () => {
+module.exports = ({ config }) => {
   return {
-    ...expo,
-    plugins: [...(expo.plugins ?? []), "expo-sharing"],
+    ...config,
+    plugins: [
+      ...(config.plugins ?? []),
+      "expo-sharing",
+      "./plugins/withAndroidShareIntent",
+    ],
+    updates: {
+      url: "https://u.expo.dev/a53c2a57-17df-42fd-a93f-7f4b21ba0337",
+      checkAutomatically: "ON_LOAD",
+      fallbackToCacheTimeout: 0,
+    },
+    runtimeVersion: {
+      policy: "appVersion",
+    },
     android: {
-      ...expo.android,
+      ...config.android,
       permissions: [
-        ...(expo.android?.permissions ?? []),
+        ...(config.android?.permissions ?? []),
         "REQUEST_INSTALL_PACKAGES",
       ],
       googleServicesFile: "./google-services.json",

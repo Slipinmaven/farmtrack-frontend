@@ -1,13 +1,15 @@
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router, useLocalSearchParams, type Href } from "expo-router";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   Alert,
+  Platform,
   ScrollView,
   StyleSheet,
   TextInput,
   Pressable,
   View,
+  type ScrollViewInstance,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -24,7 +26,10 @@ import {
   useInventoryOpeningSetupStatus,
   useProducts,
 } from "@/features/management/hooks";
-import type { InventoryOpeningSetupInput } from "@/features/management/api";
+import type {
+  InventoryOpeningSetupInput,
+  Product,
+} from "@/features/management/api";
 import { normalizeApiError } from "@/lib/api/errors";
 import { useAuth } from "@/providers/auth-provider";
 import { useFarm } from "@/providers/farm-provider";
@@ -36,6 +41,7 @@ type AgeUnit = "days" | "weeks" | "months";
 type ChickenDraft = {
   key: string;
   name: string;
+  productId: string;
   chickenType: ChickenType;
   breed: string;
   age: string;
@@ -106,11 +112,21 @@ function OpeningStockContent() {
           candidate.product_type === "eggs",
       ),
   );
+  const chickenProducts = (productsQuery.data ?? []).filter(
+    (product) =>
+      product.is_active && product.product_type === "chickens",
+  );
   const eligible = status.data?.[species].eligible;
   const [setupDate, setSetupDate] = useState(localDateString());
+  const scrollView = useRef<ScrollViewInstance>(null);
   const [chickenBatches, setChickenBatches] = useState<ChickenDraft[]>(() => [
     newChickenDraft(`Initial Chicken Stock - ${localDateString()}`),
   ]);
+  const resolvedChickenBatches = chickenBatches.map((batch) =>
+    batch.productId || !chickenProducts[0]
+      ? batch
+      : { ...batch, productId: chickenProducts[0].id },
+  );
   const [eggStock, setEggStock] = useState<EggDraft[]>([newEggDraft()]);
   const [formError, setFormError] = useState<string | null>(null);
   const loading =
@@ -118,6 +134,18 @@ function OpeningStockContent() {
     chickenOptions.isLoading ||
     eggOptions.isLoading ||
     productsQuery.isLoading;
+
+  function scrollInputIntoView(target: number) {
+    if (Platform.OS !== "android") return;
+
+    setTimeout(() => {
+      scrollView.current?.scrollResponderScrollNativeHandleToKeyboard(
+        target,
+        24,
+        true,
+      );
+    }, 350);
+  }
 
   function updateChicken(key: string, update: Partial<ChickenDraft>) {
     setFormError(null);
@@ -153,8 +181,9 @@ function OpeningStockContent() {
         );
         return;
       }
-      const batches = chickenBatches.map((batch) => ({
+      const batches = resolvedChickenBatches.map((batch) => ({
         name: batch.name.trim(),
+        product_id: batch.productId,
         chicken_type: batch.chickenType,
         breed: batch.breed.trim() || undefined,
         hatch_date:
@@ -171,6 +200,9 @@ function OpeningStockContent() {
         batches.some(
           (batch) =>
               !batch.name ||
+              !chickenProducts.some(
+                (product) => product.id === batch.product_id,
+              ) ||
               !isOptionalNonNegativeNumber(batch.unit_cost) ||
               batch.allocations.length === 0 ||
             batch.allocations.some(
@@ -252,13 +284,17 @@ function OpeningStockContent() {
   const optionError =
     status.error ??
     (species === "chickens" ? chickenOptions.error : eggOptions.error) ??
-    (species === "eggs" ? productsQuery.error : undefined);
+    productsQuery.error;
   const optionsReady =
     species === "chickens"
-      ? chickenOptions.isSuccess
+      ? chickenOptions.isSuccess && productsQuery.isSuccess
       : eggOptions.isSuccess && productsQuery.isSuccess;
   const noLocations =
     species === "chickens" && optionsReady && chickenBlocks.length === 0;
+  const noChickenProducts =
+    species === "chickens" &&
+    productsQuery.isSuccess &&
+    chickenProducts.length === 0;
   const noEggProducts = species === "eggs" && optionsReady && eggProducts.length === 0;
 
   return (
@@ -267,9 +303,10 @@ function OpeningStockContent() {
       edges={["top", "bottom"]}
     >
       <ScrollView
+        ref={scrollView}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
-        automaticallyAdjustKeyboardInsets
+        automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
       >
         <FarmPageHeader
           title="Opening stock"
@@ -289,12 +326,11 @@ function OpeningStockContent() {
             )}
           </View>
           <View style={styles.grow}>
-            <AppText size="heading" weight="semibold">
-              Set initial {species === "chickens" ? "flock" : "egg"} stock
+            <AppText size="heading" weight="semibold" style={styles.pageTitle}>
+              {species === "chickens" ? "Opening flock" : "Opening egg stock"}
             </AppText>
             <AppText size="small" tone="secondary">
-              One-time setup for existing stock not yet recorded in FarmTrack.
-              It creates no purchase or payment.
+              Record stock already on your farm. This won’t create a purchase.
             </AppText>
           </View>
         </View>
@@ -322,14 +358,96 @@ function OpeningStockContent() {
               onPress={() => router.replace(returnHref)}
             />
           </Card>
-        ) : noLocations || noEggProducts ? (
+        ) : noEggProducts ? (
+          <Card style={styles.emptyEggCard}>
+            <View
+              style={[
+                styles.emptyEggIcon,
+                { backgroundColor: theme.backgroundSelected },
+              ]}
+            >
+              <Ionicons name="egg-outline" size={24} color={theme.primary} />
+            </View>
+            <View style={styles.emptyEggCopy}>
+              <AppText size="heading" weight="semibold">
+                Set up an egg product
+              </AppText>
+              <AppText size="small" tone="secondary">
+                Opening stock needs an active egg product with at least one
+                measurement unit. Create it now, then you’ll return here.
+              </AppText>
+            </View>
+            <Button
+              label="Set up egg product"
+              onPress={() =>
+                router.push({
+                  pathname: "/products/new",
+                  params: {
+                    setupType: "eggs",
+                    returnToOpeningStock: "true",
+                    openingSpecies: "eggs",
+                    fromSetup: params.fromSetup,
+                    setupStep: params.setupStep,
+                  },
+                })
+              }
+            />
+            <Button
+              label="Back to inventory"
+              variant="secondary"
+              onPress={() => router.replace(returnHref)}
+            />
+          </Card>
+        ) : noChickenProducts ? (
+          <Card style={styles.emptyEggCard}>
+            <View
+              style={[
+                styles.emptyEggIcon,
+                { backgroundColor: theme.backgroundSelected },
+              ]}
+            >
+              <MaterialCommunityIcons
+                name="bird"
+                size={24}
+                color={theme.primary}
+              />
+            </View>
+            <View style={styles.emptyEggCopy}>
+              <AppText size="heading" weight="semibold">
+                Set up a chicken product
+              </AppText>
+              <AppText size="small" tone="secondary">
+                Opening flock stock needs an active chicken product so the
+                starting quantity is tracked in inventory. Create one first.
+              </AppText>
+            </View>
+            <Button
+              label="Set up chicken product"
+              onPress={() =>
+                router.push({
+                  pathname: "/products/new",
+                  params: {
+                    setupType: "chickens",
+                    returnToOpeningStock: "true",
+                    openingSpecies: "chickens",
+                    fromSetup: params.fromSetup,
+                    setupStep: params.setupStep,
+                  },
+                })
+              }
+            />
+            <Button
+              label="Back to inventory"
+              variant="secondary"
+              onPress={() => router.replace(returnHref)}
+            />
+          </Card>
+        ) : noLocations ? (
           <Card style={styles.notice}>
             <Ionicons name="alert-circle-outline" size={22} color="#B9852F" />
             <AppText weight="semibold">Complete setup prerequisites</AppText>
             <AppText size="small" tone="secondary">
-              {noLocations
-                ? "Add an active housing block before assigning opening chickens."
-                : "Create an active egg product with configured units before entering opening eggs."}
+              Add an active housing block before assigning opening chickens.
             </AppText>
             <Button
               label="Return to inventory"
@@ -339,24 +457,6 @@ function OpeningStockContent() {
           </Card>
         ) : (
           <>
-            <Card style={styles.infoCard}>
-              <View
-                style={[
-                  styles.infoIcon,
-                  { backgroundColor: theme.backgroundSelected },
-                ]}
-              >
-                <Ionicons
-                  name="information-circle-outline"
-                  size={20}
-                  color={theme.primary}
-                />
-              </View>
-              <AppText size="small" tone="secondary" style={styles.grow}>
-                Set the date this stock count represents. Add a cost only if you
-                know it; unknown costs are left unrecorded.
-              </AppText>
-            </Card>
             <Card style={styles.dateCard}>
               <View style={styles.dateHeading}>
                 <View
@@ -390,17 +490,19 @@ function OpeningStockContent() {
             </Card>
             {species === "chickens" ? (
               <View style={styles.formList}>
-                {chickenBatches.map((batch, index) => (
+                {resolvedChickenBatches.map((batch, index) => (
                   <ChickenBatchCard
                     key={batch.key}
                     batch={batch}
                     index={index}
+                    products={chickenProducts}
                     blocks={chickenBlocks}
                     currency={farm.selectedFarm?.settings?.currency ?? "KES"}
                     setupDate={setupDate}
+                    onInputFocus={scrollInputIntoView}
                     onChange={(update) => updateChicken(batch.key, update)}
                     onRemove={
-                      chickenBatches.length > 1
+                      resolvedChickenBatches.length > 1
                         ? () =>
                             setChickenBatches((current) =>
                               current.filter((item) => item.key !== batch.key),
@@ -412,11 +514,19 @@ function OpeningStockContent() {
                 <Button
                   label="Add another chicken batch"
                   variant="secondary"
+                  style={[
+                    styles.addBatchOption,
+                    {
+                      backgroundColor: "transparent",
+                      borderColor: theme.primary,
+                    },
+                  ]}
                   onPress={() =>
                     setChickenBatches((current) => [
                       ...current,
                       newChickenDraft(
                         `Chicken Batch ${current.length + 1} - ${localDateString()}`,
+                        chickenProducts[0]?.id ?? "",
                       ),
                     ])
                   }
@@ -435,6 +545,7 @@ function OpeningStockContent() {
                       products={eggProducts}
                       units={units}
                       currency={farm.selectedFarm?.settings?.currency ?? "KES"}
+                      onInputFocus={scrollInputIntoView}
                       onChange={(update) => updateEgg(row.key, update)}
                       onRemove={
                         eggStock.length > 1
@@ -478,7 +589,7 @@ function OpeningStockContent() {
             <Button
               label="Record opening stock"
               loading={mutation.isPending}
-              disabled={mutation.isPending || noLocations || noEggProducts}
+              disabled={mutation.isPending || noLocations}
               onPress={() => void saveOpeningStock()}
             />
           </>
@@ -491,21 +602,26 @@ function OpeningStockContent() {
 function ChickenBatchCard({
   batch,
   index,
+  products,
   blocks,
   currency,
   setupDate,
+  onInputFocus,
   onChange,
   onRemove,
 }: {
   batch: ChickenDraft;
   index: number;
+  products: Product[];
   blocks: { id: string; name: string; current_chickens?: number }[];
   currency: string;
   setupDate: string;
+  onInputFocus: (target: number) => void;
   onChange: (update: Partial<ChickenDraft>) => void;
   onRemove?: () => void;
 }) {
   const { theme } = useTheme();
+  const [showOptionalDetails, setShowOptionalDetails] = useState(false);
   const totalBirds = Object.values(batch.quantities).reduce(
     (total, quantity) => total + (Number(quantity) || 0),
     0,
@@ -532,7 +648,7 @@ function ChickenBatchCard({
             />
           </View>
           <View style={styles.grow}>
-            <AppText weight="semibold">Chicken batch {index + 1}</AppText>
+            <AppText weight="semibold">Batch {index + 1}</AppText>
             <AppText size="small" tone="secondary">
               {totalBirds.toLocaleString()} {totalBirds === 1 ? "bird" : "birds"} assigned
             </AppText>
@@ -554,6 +670,41 @@ function ChickenBatchCard({
       </View>
       <View style={styles.fieldBlock}>
         <AppText size="small" weight="semibold">
+          Inventory product
+        </AppText>
+        <View style={styles.productChoiceRow}>
+          {products.map((product) => {
+            const selected = batch.productId === product.id;
+            return (
+              <Pressable
+                key={product.id}
+                accessibilityRole="radio"
+                accessibilityState={{ selected }}
+                onPress={() => onChange({ productId: product.id })}
+                style={[
+                  styles.chickenProductChoice,
+                  {
+                    borderColor: selected ? theme.primary : theme.border,
+                    backgroundColor: selected
+                      ? theme.backgroundSelected
+                      : theme.background,
+                  },
+                ]}
+              >
+                <AppText
+                  size="small"
+                  weight={selected ? "semibold" : "regular"}
+                  numberOfLines={1}
+                >
+                  {product.name}
+                </AppText>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+      <View style={styles.fieldBlock}>
+        <AppText size="small" weight="semibold">
           Batch name
         </AppText>
         <TextInput
@@ -561,6 +712,7 @@ function ChickenBatchCard({
           onChangeText={(name) => onChange({ name })}
           placeholder="e.g. Existing layers"
           accessibilityLabel="Chicken batch name"
+          onFocus={(event) => onInputFocus(event.nativeEvent.target)}
           style={[
             styles.input,
             {
@@ -571,17 +723,14 @@ function ChickenBatchCard({
           ]}
           placeholderTextColor={theme.textSecondary}
         />
-        <AppText size="small" tone="secondary">
-          A suggested name is provided. Edit it or clear it and enter your own.
-        </AppText>
       </View>
       <View style={styles.fieldBlock}>
         <AppText size="small" weight="semibold">
           Chicken type
         </AppText>
-        <View style={styles.chipWrap}>
+        <View style={styles.typeGrid}>
           {chickenTypes.map((type) => (
-            <ChoiceChip
+            <TypeChoiceCard
               key={type.value}
               label={type.label}
               selected={batch.chickenType === type.value}
@@ -590,110 +739,131 @@ function ChickenBatchCard({
           ))}
         </View>
       </View>
-      <View style={styles.fieldBlock}>
-        <AppText size="small" weight="semibold">
-          Breed
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: showOptionalDetails }}
+        onPress={() => setShowOptionalDetails((expanded) => !expanded)}
+        style={[styles.optionalToggle, { borderTopColor: theme.border }]}
+      >
+        <AppText size="small" weight="semibold" tone="secondary">
+          Optional details
         </AppText>
-        <TextInput
-          value={batch.breed}
-          onChangeText={(breed) => onChange({ breed })}
-          placeholder="Breed (optional)"
-          accessibilityLabel="Breed, optional"
-          style={[
-            styles.input,
-            {
-              backgroundColor: theme.background,
-              borderColor: theme.border,
-              color: theme.text,
-            },
-          ]}
-          placeholderTextColor={theme.textSecondary}
+        <Ionicons
+          name={showOptionalDetails ? "chevron-up" : "chevron-down"}
+          size={17}
+          color={theme.textSecondary}
         />
-      </View>
-      <View style={styles.fieldBlock}>
-        <AppText size="small" weight="semibold">
-          Approximate current age (optional)
-        </AppText>
-        <AppText size="small" tone="secondary">
-          If you don’t know the hatch date, enter the flock’s age as of the
-          opening stock date. FarmTrack will estimate the hatch date.
-        </AppText>
-        <TextInput
-          value={batch.age}
-          onChangeText={(age) => onChange({ age })}
-          placeholder="Enter age"
-          keyboardType="number-pad"
-          accessibilityLabel="Approximate current chicken age"
-          style={[
-            styles.input,
-            {
-              backgroundColor: theme.background,
-              borderColor: theme.border,
-              color: theme.text,
-            },
-          ]}
-          placeholderTextColor={theme.textSecondary}
-        />
-        <View style={styles.chipWrap}>
-          {ageUnits.map((unit) => (
-            <ChoiceChip
-              key={unit.value}
-              label={unit.label}
-              selected={batch.ageUnit === unit.value}
-              onPress={() => onChange({ ageUnit: unit.value })}
+      </Pressable>
+      {showOptionalDetails ? (
+        <View style={styles.optionalFields}>
+          <View style={styles.fieldBlock}>
+            <AppText size="small" weight="semibold">
+              Breed
+            </AppText>
+            <TextInput
+              value={batch.breed}
+              onChangeText={(breed) => onChange({ breed })}
+              placeholder="Optional"
+              accessibilityLabel="Breed, optional"
+              onFocus={(event) => onInputFocus(event.nativeEvent.target)}
+              style={[
+                styles.input,
+                {
+                  backgroundColor: theme.background,
+                  borderColor: theme.border,
+                  color: theme.text,
+                },
+              ]}
+              placeholderTextColor={theme.textSecondary}
             />
-          ))}
-        </View>
-        <View
-          style={[
-            styles.estimatedHatchDate,
-            { backgroundColor: theme.backgroundSelected },
-          ]}
-        >
-          <Ionicons
-            name="calendar-outline"
-            size={17}
-            color={theme.primary}
-          />
-          <View style={styles.grow}>
+          </View>
+          <View style={styles.fieldBlock}>
+            <AppText size="small" weight="semibold">
+              Age (optional)
+            </AppText>
             <AppText size="small" tone="secondary">
-              Estimated hatch date
+              Age on the stock date estimates the hatch date.
             </AppText>
-            <AppText weight="semibold">
-              {estimatedHatchDate
-                ? formatDisplayDate(estimatedHatchDate)
-                : "Enter an age to estimate"}
+            <TextInput
+              value={batch.age}
+              onChangeText={(age) => onChange({ age })}
+              placeholder="Enter age"
+              keyboardType="number-pad"
+              accessibilityLabel="Approximate current chicken age"
+              onFocus={(event) => onInputFocus(event.nativeEvent.target)}
+              style={[
+                styles.input,
+                {
+                  backgroundColor: theme.background,
+                  borderColor: theme.border,
+                  color: theme.text,
+                },
+              ]}
+              placeholderTextColor={theme.textSecondary}
+            />
+            <View style={styles.chipWrap}>
+              {ageUnits.map((unit) => (
+                <ChoiceChip
+                  key={unit.value}
+                  label={unit.label}
+                  selected={batch.ageUnit === unit.value}
+                  onPress={() => onChange({ ageUnit: unit.value })}
+                />
+              ))}
+            </View>
+            {estimatedHatchDate ? (
+              <View
+                style={[
+                  styles.estimatedHatchDate,
+                  { backgroundColor: theme.backgroundSelected },
+                ]}
+              >
+                <Ionicons
+                  name="calendar-outline"
+                  size={17}
+                  color={theme.primary}
+                />
+                <View style={styles.grow}>
+                  <AppText size="small" tone="secondary">
+                    Estimated hatch date
+                  </AppText>
+                  <AppText size="small" weight="semibold">
+                    {formatDisplayDate(estimatedHatchDate)}
+                  </AppText>
+                </View>
+              </View>
+            ) : null}
+          </View>
+          <View style={styles.fieldBlock}>
+            <AppText size="small" weight="semibold">
+              Cost per bird ({currency}, optional)
             </AppText>
+            <TextInput
+              value={batch.unitCost}
+              onChangeText={(unitCost) => onChange({ unitCost })}
+              placeholder="Leave blank if unknown"
+              keyboardType="decimal-pad"
+              accessibilityLabel={`Acquisition cost per bird in ${currency}, optional`}
+              onFocus={(event) => onInputFocus(event.nativeEvent.target)}
+              style={[
+                styles.input,
+                {
+                  backgroundColor: theme.background,
+                  borderColor: theme.border,
+                  color: theme.text,
+                },
+              ]}
+              placeholderTextColor={theme.textSecondary}
+            />
           </View>
         </View>
-      </View>
-      <View style={styles.fieldBlock}>
-        <AppText size="small" weight="semibold">
-          Acquisition cost per bird ({currency}, optional)
-        </AppText>
-        <TextInput
-          value={batch.unitCost}
-          onChangeText={(unitCost) => onChange({ unitCost })}
-          placeholder="Leave blank if not known"
-          keyboardType="decimal-pad"
-          accessibilityLabel={`Acquisition cost per bird in ${currency}, optional`}
-          style={[
-            styles.input,
-            {
-              backgroundColor: theme.background,
-              borderColor: theme.border,
-              color: theme.text,
-            },
-          ]}
-          placeholderTextColor={theme.textSecondary}
-        />
-      </View>
+      ) : null}
       <View style={styles.allocationSection}>
         <View style={styles.allocationHeading}>
           <View style={styles.grow}>
-            <AppText weight="semibold">Assign birds to housing</AppText>
+            <AppText size="small" weight="semibold">Assign birds to housing</AppText>
             <AppText size="small" tone="secondary">
-              Enter how many birds are in each block.
+              Enter the count for each block.
             </AppText>
           </View>
           <View
@@ -734,6 +904,7 @@ function ChickenBatchCard({
               placeholder="0"
               keyboardType="number-pad"
               accessibilityLabel={`Birds assigned to ${block.name}`}
+              onFocus={(event) => onInputFocus(event.nativeEvent.target)}
               style={[
                 styles.quantityInput,
                 {
@@ -757,6 +928,7 @@ function EggStockCard({
   products,
   units,
   currency,
+  onInputFocus,
   onChange,
   onRemove,
 }: {
@@ -781,6 +953,7 @@ function EggStockCard({
     is_base_unit: boolean;
   }[];
   currency: string;
+  onInputFocus: (target: number) => void;
   onChange: (update: Partial<EggDraft>) => void;
   onRemove?: () => void;
 }) {
@@ -811,7 +984,7 @@ function EggStockCard({
           <View style={styles.grow}>
             <AppText weight="semibold">Egg stock {index + 1}</AppText>
             <AppText size="small" tone="secondary">
-              Track by product and unit; housing block isn’t needed
+              {selectedProduct?.name ?? "Choose a product"}
             </AppText>
           </View>
         </View>
@@ -830,12 +1003,12 @@ function EggStockCard({
         ) : null}
       </View>
       <AppText size="small" weight="semibold">Egg product</AppText>
-      <View style={styles.chipWrap}>
+      <View style={styles.productChoices}>
         {products.map((product) => (
-          <ChoiceChip
+          <Pressable
             key={product.id}
-            label={product.name}
-            selected={row.productId === product.id}
+            accessibilityRole="radio"
+            accessibilityState={{ checked: row.productId === product.id }}
             onPress={() =>
               onChange({
                 productId: product.id,
@@ -843,22 +1016,82 @@ function EggStockCard({
                 unitCosts: {},
               })
             }
-          />
+            style={[
+              styles.eggProductChoice,
+              {
+                backgroundColor:
+                  row.productId === product.id
+                    ? theme.backgroundSelected
+                    : theme.background,
+                borderColor:
+                  row.productId === product.id ? theme.primary : theme.border,
+              },
+            ]}
+          >
+            <View
+              style={[
+                styles.productChoiceIcon,
+                {
+                  backgroundColor:
+                    row.productId === product.id
+                      ? theme.background
+                      : theme.backgroundSelected,
+                },
+              ]}
+            >
+              <Ionicons
+                name="egg-outline"
+                size={17}
+                color={
+                  row.productId === product.id
+                    ? theme.primary
+                    : theme.textSecondary
+                }
+              />
+            </View>
+            <AppText
+              size="small"
+              weight={row.productId === product.id ? "semibold" : "regular"}
+              style={styles.grow}
+            >
+              {product.name}
+            </AppText>
+            <Ionicons
+              name={
+                row.productId === product.id
+                  ? "checkmark-circle"
+                  : "ellipse-outline"
+              }
+              size={19}
+              color={
+                row.productId === product.id
+                  ? theme.primary
+                  : theme.textSecondary
+              }
+            />
+          </Pressable>
         ))}
       </View>
       {selectedProduct ? (
         units.length ? (
           <View style={styles.eggUnitList}>
-            <AppText size="small" tone="secondary">
-              Enter stock in any configured unit. You can use more than one;
-              quantities will be converted to the product’s main unit.
-            </AppText>
+            <View style={styles.quantityHeading}>
+              <AppText size="small" weight="semibold">
+                Opening quantities
+              </AppText>
+              <AppText size="small" tone="secondary">
+                Enter one or more units
+              </AppText>
+            </View>
             {units.map((unit) => (
               <View
                 key={unit.id}
                 style={[
-                  styles.eggUnitRow,
-                  { borderTopColor: theme.border },
+                  styles.eggUnitCard,
+                  {
+                    backgroundColor: theme.backgroundElement,
+                    borderColor: theme.border,
+                  },
                 ]}
               >
                 <View style={styles.eggUnitCopy}>
@@ -866,7 +1099,7 @@ function EggStockCard({
                   <AppText size="small" tone="secondary">
                     {unit.is_base_unit
                       ? "Main unit"
-                      : `1 ${unit.abbreviation} = ${Number(unit.conversion_factor).toLocaleString()} main units`}
+                      : `1 ${unit.abbreviation} = ${Number(unit.conversion_factor).toLocaleString()} ${baseUnit?.abbreviation ?? "main units"}`}
                   </AppText>
                 </View>
                 <View style={styles.eggQuantityField}>
@@ -886,6 +1119,7 @@ function EggStockCard({
                     placeholder="0"
                     keyboardType="decimal-pad"
                     accessibilityLabel={`${unit.name} opening quantity`}
+                    onFocus={(event) => onInputFocus(event.nativeEvent.target)}
                     style={[
                       styles.input,
                       {
@@ -903,7 +1137,10 @@ function EggStockCard({
               <View
                 style={[
                   styles.eggTotal,
-                  { backgroundColor: theme.backgroundSelected },
+                  {
+                    backgroundColor: theme.backgroundSelected,
+                    borderColor: theme.border,
+                  },
                 ]}
               >
                 <Ionicons
@@ -912,7 +1149,7 @@ function EggStockCard({
                   color={theme.primary}
                 />
                 <AppText size="small" weight="semibold">
-                  Total:{" "}
+                  Total in {baseUnit.abbreviation}:{" "}
                   {totalInBaseUnits.toLocaleString(undefined, {
                     maximumFractionDigits: 3,
                   })}{" "}
@@ -972,6 +1209,7 @@ function EggStockCard({
                   placeholder="Leave blank if not known"
                   keyboardType="decimal-pad"
                   accessibilityLabel={`Optional cost per ${unit.name} in ${currency}`}
+                  onFocus={(event) => onInputFocus(event.nativeEvent.target)}
                   style={[
                     styles.input,
                     {
@@ -987,6 +1225,41 @@ function EggStockCard({
         </View>
       ) : null}
     </Card>
+  );
+}
+
+function TypeChoiceCard({
+  label,
+  selected,
+  onPress,
+}: {
+  label: string;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  const { theme } = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ selected }}
+      onPress={onPress}
+      style={[
+        styles.typeCard,
+        {
+          backgroundColor: selected ? `${theme.primary}18` : theme.background,
+          borderColor: selected ? theme.primary : theme.border,
+          shadowColor: selected ? theme.primary : "transparent",
+        },
+      ]}
+    >
+      <AppText
+        size="small"
+        weight={selected ? "semibold" : "regular"}
+        style={{ color: selected ? theme.primary : theme.text }}
+      >
+        {label}
+      </AppText>
+    </Pressable>
   );
 }
 
@@ -1022,10 +1295,12 @@ function ChoiceChip({
 
 function newChickenDraft(
   name = `Chicken Batch - ${localDateString()}`,
+  productId = "",
 ): ChickenDraft {
   return {
     key: `${Date.now()}-${Math.random()}`,
     name,
+    productId,
     chickenType: "layers",
     breed: "",
     age: "",
@@ -1115,27 +1390,15 @@ const styles = StyleSheet.create({
     maxWidth: 720,
     alignSelf: "center",
     padding: 18,
-    gap: 14,
-    paddingBottom: 36,
+    gap: 16,
+    paddingBottom: 44,
   },
-  intro: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 5 },
-  introIcon: { width: 48, height: 48, borderRadius: 15, alignItems: "center", justifyContent: "center" },
+  intro: { flexDirection: "row", alignItems: "flex-start", gap: 12, paddingVertical: 5 },
+  introIcon: { width: 42, height: 42, borderRadius: 13, alignItems: "center", justifyContent: "center" },
+  pageTitle: { fontSize: 22, lineHeight: 28 },
   grow: { flex: 1 },
-  infoCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 11,
-    padding: 14,
-  },
-  infoIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 11,
-    alignItems: "center",
-    justifyContent: "center",
-  },
   notice: { gap: 10 },
-  dateCard: { gap: 14, padding: 16 },
+  dateCard: { gap: 12, padding: 15 },
   dateHeading: { flexDirection: "row", alignItems: "center", gap: 10 },
   dateIcon: {
     width: 34,
@@ -1145,8 +1408,22 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   formList: { gap: 14 },
-  batchCard: { gap: 16, padding: 16 },
+  addBatchOption: {
+    borderStyle: "dotted",
+    borderWidth: 1.5,
+    borderRadius: 12,
+  },
+  batchCard: { gap: 13, padding: 16 },
   formCard: { gap: 12 },
+  emptyEggCard: { gap: 14, padding: 18 },
+  emptyEggIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  emptyEggCopy: { gap: 5 },
   cardHeading: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1186,7 +1463,29 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  fieldBlock: { gap: 7 },
+  fieldBlock: { gap: 6 },
+  productChoiceRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  chickenProductChoice: {
+    minHeight: 38,
+    justifyContent: "center",
+    paddingHorizontal: 11,
+    borderWidth: 1,
+    borderRadius: 9,
+  },
+  optionalToggle: {
+    minHeight: 40,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    marginTop: 1,
+    paddingTop: 8,
+  },
+  optionalFields: { gap: 14, paddingBottom: 2 },
   estimatedHatchDate: {
     minHeight: 54,
     flexDirection: "row",
@@ -1206,12 +1505,37 @@ const styles = StyleSheet.create({
   clearDate: { alignSelf: "flex-start", minHeight: 34, justifyContent: "center" },
   allocationSection: { gap: 10, paddingTop: 3 },
   eggUnitList: { gap: 10 },
-  eggUnitRow: {
+  quantityHeading: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 8,
+  },
+  productChoices: { gap: 8 },
+  eggProductChoice: {
+    minHeight: 54,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+  },
+  productChoiceIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  eggUnitCard: {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: 10,
+    borderWidth: 1,
+    borderRadius: 11,
+    padding: 10,
   },
   eggUnitCopy: { flex: 1, gap: 3 },
   eggQuantityField: { width: 128, gap: 5 },
@@ -1221,6 +1545,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
     borderRadius: 9,
+    borderWidth: 1,
     paddingHorizontal: 11,
   },
   noEggUnits: {
@@ -1262,6 +1587,26 @@ const styles = StyleSheet.create({
     paddingTop: 8,
   },
   chipWrap: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
+  typeGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 2,
+  },
+  typeCard: {
+    minHeight: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 108,
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
   chip: {
     minHeight: 38,
     borderRadius: 12,

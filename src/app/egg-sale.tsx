@@ -5,12 +5,14 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
-  TextInput,
   ScrollView,
   StyleSheet,
   Switch,
   View,
+  type ScrollViewInstance,
+  type TextInputInstance,
 } from "react-native";
+import Animated, { FadeInDown } from "react-native-reanimated";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { LoadingState } from "@/components/feedback/loading-state";
@@ -28,11 +30,23 @@ import {
   useEggCollectionOptions,
 } from "@/features/eggs/hooks";
 import type { EggCollectionProduct, EggSaleInput } from "@/features/eggs/api";
-import type { Contact } from "@/features/management/api";
+import { getContacts, type Contact } from "@/features/management/api";
 import {
   useCreateContact,
-  useSearchCustomers,
+  useCreateContactRole,
+  useContacts,
+  useProfitabilityReport,
 } from "@/features/management/hooks";
+import {
+  isValidKenyanMobile,
+  kenyanMobileError,
+  normalizedKenyanPhone,
+} from "@/features/management/kenyan-phone";
+import {
+  SmsPaymentPicker,
+  type SelectedSmsPayment,
+} from "@/features/payment-message-import/components/SmsPaymentPicker";
+import { usePaymentMessageImport } from "@/features/payment-message-import/PaymentMessageImportProvider";
 import { useCreateReminder } from "@/features/reminders/hooks";
 import {
   registerForReminderPush,
@@ -51,6 +65,7 @@ import { useTheme } from "@/providers/theme-provider";
 
 type SaleLine = {
   id: string;
+  productId: string;
   unitId: string;
   quantity: string;
   unitPrice: string;
@@ -62,21 +77,37 @@ type PaymentDraft = {
   amount: string;
   method: PaymentMethod;
   reference: string;
+  smsMessageId?: string;
+  date?: string;
+  time?: string | null;
+  payerName?: string | null;
+  payerPhone?: string | null;
 };
 
 const paymentMethods = [
-  { label: "Cash", value: "cash" },
-  { label: "M-Pesa", value: "mpesa" },
-  { label: "Bank transfer", value: "bank_transfer" },
-  { label: "Card", value: "card" },
-  { label: "Other", value: "other" },
+  { label: "Cash", value: "cash", icon: "cash-outline" },
+  { label: "M-Pesa", value: "mpesa", icon: "phone-portrait-outline" },
+  { label: "Bank", value: "bank_transfer", icon: "business-outline" },
+  { label: "Card", value: "card", icon: "card-outline" },
+  { label: "Other", value: "other", icon: "ellipsis-horizontal-outline" },
 ] as const;
 
 const MAX_MONEY_CENTS = 999_999_999_999n;
 
-function newLine(unitId: string): SaleLine {
+type SmsCustomerDraft = {
+  name: string;
+  phone: string;
+  sourceMessageId: string;
+};
+
+function normalizedName(name: string): string {
+  return name.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
+function newLine(productId: string, unitId: string): SaleLine {
   return {
     id: `${Date.now()}-${Math.random()}`,
+    productId,
     unitId,
     quantity: "",
     unitPrice: "",
@@ -186,13 +217,16 @@ function EggSaleContent() {
   const { user } = useAuth();
   const farm = useFarm();
   const { theme } = useTheme();
+  const {
+    nativeError: smsImportNativeError,
+    sharedMessage,
+  } = usePaymentMessageImport();
   const dialog = useAppDialog();
   const farmId = farm.selectedFarm?.id ?? "";
   const options = useEggCollectionOptions(user?.id, farm.selectedFarm?.id);
   const createSale = useCreateEggSale(user?.id ?? "", farmId);
   const createReminder = useCreateReminder(user?.id ?? "", farmId);
   const timezone = farm.selectedFarm?.settings?.timezone;
-
   const sellableProducts = useMemo(
     () =>
       (options.data?.products ?? []).filter((product) => product.is_sellable),
@@ -208,13 +242,30 @@ function EggSaleContent() {
 
   const [stage, setStage] = useState<"edit" | "review">("edit");
   const [step, setStep] = useState(0);
-  const [productId, setProductId] = useState("");
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
   const [lines, setLines] = useState<SaleLine[]>([]);
   const [saleDate, setSaleDate] = useState("");
   const [customerSearch, setCustomerSearch] = useState("");
   const [debouncedCustomerSearch, setDebouncedCustomerSearch] = useState("");
+  const [showAllCustomers, setShowAllCustomers] = useState(false);
   const [customer, setCustomer] = useState<Contact | null>(null);
   const createContact = useCreateContact(user?.id ?? "", farmId);
+  const createContactRole = useCreateContactRole(user?.id ?? "", farmId);
+  const customerDirectoryQuery = useContacts(
+    user?.id,
+    farm.selectedFarm?.id,
+    debouncedCustomerSearch,
+    "customer",
+  );
+  const visibleCustomers =
+    customerDirectoryQuery.data?.pages.flatMap((page) => page) ?? [];
+  const displayedCustomers = showAllCustomers
+    ? visibleCustomers
+    : visibleCustomers.slice(0, 5);
+  const customerListLoading =
+    customerSearch.trim() !== debouncedCustomerSearch ||
+    customerDirectoryQuery.isLoading ||
+    (customerSearch.trim().length > 0 && customerDirectoryQuery.isFetching);
   const [showNewCustomerForm, setShowNewCustomerForm] = useState(false);
   const [newCustomerName, setNewCustomerName] = useState("");
   const [newCustomerPhone, setNewCustomerPhone] = useState("");
@@ -222,14 +273,19 @@ function EggSaleContent() {
   const [customerError, setCustomerError] = useState("");
   const [recordPayment, setRecordPayment] = useState(false);
   const [payments, setPayments] = useState<PaymentDraft[]>([newPayment()]);
+  const [smsPickerPaymentId, setSmsPickerPaymentId] = useState<string | null>(
+    null,
+  );
+  const [smsCustomerDraft, setSmsCustomerDraft] =
+    useState<SmsCustomerDraft | null>(null);
   const [scheduleSaleFollowUp, setScheduleSaleFollowUp] = useState(false);
   const [reminderDueDate, setReminderDueDate] = useState<string | null>(null);
   const [reminderDueTime, setReminderDueTime] = useState("09:00");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-  const scrollRef = useRef<ScrollView>(null);
-  const inputRefs = useRef<Record<string, TextInput | null>>({});
+  const scrollRef = useRef<ScrollViewInstance>(null);
+  const inputRefs = useRef<Record<string, TextInputInstance | null>>({});
 
   useEffect(() => {
     const timeout = setTimeout(
@@ -239,27 +295,45 @@ function EggSaleContent() {
     return () => clearTimeout(timeout);
   }, [customerSearch]);
 
-  const customerSearchQuery = useSearchCustomers(
-    user?.id,
-    farm.selectedFarm?.id,
-    debouncedCustomerSearch,
-  );
-  const product = inStockProducts.find((item) => item.id === productId) ?? null;
-  const availableQuantity = Number(
-    product?.available_quantity_in_base_unit ?? 0,
-  );
-  const baseUnit = product?.units.find((unit) => unit.is_base_unit);
-  const requestedBaseMicro = lines.reduce((total, line) => {
-    const selectedUnit = product?.units.find((unit) => unit.id === line.unitId);
-    const quantity = quantityMilli(line.quantity);
-    const factor = selectedUnit
-      ? quantityMilli(String(selectedUnit.conversion_factor))
+  const selectedProducts = selectedProductIds
+    .map((id) => inStockProducts.find((item) => item.id === id))
+    .filter((item): item is EggCollectionProduct => Boolean(item));
+  const activeSmsCustomerDraft =
+    smsCustomerDraft &&
+    payments.some(
+      (payment) => payment.smsMessageId === smsCustomerDraft.sourceMessageId,
+    )
+      ? smsCustomerDraft
       : null;
-    return quantity !== null && factor !== null
-      ? total + quantity * factor
-      : total;
-  }, 0n);
-  const requestedBaseQuantity = Number(requestedBaseMicro) / 1_000_000;
+  const productTotals = selectedProducts.map((selectedProduct) => {
+    const requestedBaseMicro = lines
+      .filter((line) => line.productId === selectedProduct.id)
+      .reduce((total, line) => {
+        const selectedUnit = selectedProduct.units.find(
+          (unit) => unit.id === line.unitId,
+        );
+        const quantity = quantityMilli(line.quantity);
+        const factor = selectedUnit
+          ? quantityMilli(String(selectedUnit.conversion_factor))
+          : null;
+        return quantity !== null && factor !== null
+          ? total + quantity * factor
+          : total;
+      }, 0n);
+    const baseUnit = selectedProduct.units.find((unit) => unit.is_base_unit);
+    const availableQuantity = Number(
+      selectedProduct.available_quantity_in_base_unit,
+    );
+    return {
+      product: selectedProduct,
+      baseUnit,
+      availableQuantity,
+      requestedBaseMicro,
+      requestedBaseQuantity: Number(requestedBaseMicro) / 1_000_000,
+      remainingQuantity:
+        availableQuantity - Number(requestedBaseMicro) / 1_000_000,
+    };
+  });
   const totalCents = lines.reduce(
     (total, line) => total + (lineTotalCents(line) ?? 0n),
     0n,
@@ -272,20 +346,63 @@ function EggSaleContent() {
     : 0n;
   const balanceDueCents = totalCents > paidCents ? totalCents - paidCents : 0n;
   const creditCents = paidCents > totalCents ? paidCents - totalCents : 0n;
+  const hasNamedCustomer = Boolean(
+    customer?.name.trim() || activeSmsCustomerDraft?.name.trim(),
+  );
   const effectiveSaleDate = saleDate || farmToday(timezone);
   const effectiveReminderDueDate =
     reminderDueDate ?? addFarmDays(farmToday(timezone), 1);
   const currency = farm.selectedFarm?.settings?.currency ?? "KES";
+  const costReport = useProfitabilityReport(user?.id, farmId, {
+    from_date: effectiveSaleDate,
+    to_date: effectiveSaleDate,
+  });
+  const closingStock = costReport.data?.closing_stock ?? [];
+
+  function estimatedStockCostCents(
+    productId: string,
+    quantityMicro: bigint,
+  ): bigint | null {
+    const stock = closingStock.find((item) => item.product_id === productId);
+    const valuedQuantityMilli = quantityMilli(
+      String(stock?.valued_quantity ?? ""),
+    );
+    const valuedCostCents = salePriceCents(String(stock?.valued_cost ?? ""));
+    if (
+      valuedQuantityMilli === null ||
+      valuedCostCents === null ||
+      valuedQuantityMilli <= 0n ||
+      Number(stock?.unvalued_quantity ?? 0) > 0
+    ) {
+      return null;
+    }
+    const valuedQuantityMicro = valuedQuantityMilli * 1000n;
+    return (
+      (valuedCostCents * quantityMicro + valuedQuantityMicro / 2n) /
+      valuedQuantityMicro
+    );
+  }
 
   function selectProduct(nextProduct: EggCollectionProduct) {
-    setProductId(nextProduct.id);
-    setLines([
-      newLine(
-        nextProduct.units.find((unit) => unit.is_base_unit)?.id ??
-          nextProduct.units[0]?.id ??
-          "",
-      ),
-    ]);
+    const selected = selectedProductIds.includes(nextProduct.id);
+    setSelectedProductIds((current) =>
+      selected
+        ? current.filter((id) => id !== nextProduct.id)
+        : [...current, nextProduct.id],
+    );
+    setLines((current) =>
+      selected
+        ? current.filter((line) => line.productId !== nextProduct.id)
+        : [
+            ...current,
+            newLine(
+              nextProduct.id,
+              nextProduct.units.find((unit) => unit.is_base_unit)?.id ??
+                nextProduct.units[0]?.id ??
+                "",
+            ),
+          ],
+    );
     setError("");
     setFieldErrors({});
   }
@@ -342,6 +459,180 @@ function EggSaleContent() {
     });
   }
 
+  async function applySmsPayment(selectedPayments: SelectedSmsPayment[]) {
+    const targetId = smsPickerPaymentId;
+    if (!selectedPayments.length || !targetId) return;
+    const target = payments.find((payment) => payment.id === targetId);
+    if (!target) {
+      setError("This payment entry is no longer available. Try again.");
+      setSmsPickerPaymentId(null);
+      return;
+    }
+
+    const otherPayments = payments.filter(
+      (payment) => payment.id !== targetId,
+    );
+    const seenReferences = new Set(
+      otherPayments
+        .filter((payment) => payment.method === "mpesa")
+        .map((payment) => payment.reference.trim().toUpperCase())
+        .filter(Boolean),
+    );
+    const seenMessageIds = new Set(
+      otherPayments
+        .map((payment) => payment.smsMessageId)
+        .filter((messageId): messageId is string => Boolean(messageId)),
+    );
+    for (const [index, selected] of selectedPayments.entries()) {
+      if (!selected.payment.amount || !selected.payment.transactionDate) {
+        setError(
+          `M-Pesa message ${index + 1} is missing a usable amount or date.`,
+        );
+        setSmsPickerPaymentId(null);
+        return;
+      }
+      const reference =
+        selected.payment.transactionReference?.trim().toUpperCase() ?? "";
+      if (reference && seenReferences.has(reference)) {
+        setError(
+          `M-Pesa transaction code in selected message ${index + 1} is already used.`,
+        );
+        setSmsPickerPaymentId(null);
+        return;
+      }
+      if (selected.messageId && seenMessageIds.has(selected.messageId)) {
+        setError(`M-Pesa message ${index + 1} is already used in this sale.`);
+        setSmsPickerPaymentId(null);
+        return;
+      }
+      if (reference) seenReferences.add(reference);
+      seenMessageIds.add(selected.messageId);
+    }
+
+    const payer = selectedPayments[0]?.payment;
+    const payerName = payer?.senderName?.trim() ?? "";
+    const payerPhone = payer?.senderPhone?.trim() ?? "";
+    let needsPayerDetailsReview = false;
+    if (payerName || payerPhone) {
+      const usePayerAsCustomer = await dialog.confirmDialog({
+        title: customer ? "Replace the selected customer?" : "Use payer as customer?",
+        message:
+          `${customer ? "Use the payer details from this message instead of the selected customer?" : "Use the payer details from this message for the sale?"} FarmTrack checks your contacts when you submit.${selectedPayments.length > 1 ? " Details come from the first selected message." : ""}`,
+        tone: "info",
+        details: [
+          ...(customer
+            ? [
+                {
+                  label: "Selected customer",
+                  value: `${customer.name}${customer.phone ? ` · ${customer.phone}` : ""}`,
+                },
+              ]
+            : []),
+          { label: "Payer name", value: payerName || "Not included in message" },
+          {
+            label: "Payer phone",
+            value: payerPhone || "Not included in message",
+          },
+        ],
+        confirmLabel: customer ? "Replace customer" : "Use as customer",
+        cancelLabel: customer ? "Keep selected customer" : "Payment only",
+      });
+      if (usePayerAsCustomer) {
+        setSmsCustomerDraft({
+          name: payerName,
+          phone: payerPhone,
+          sourceMessageId: selectedPayments[0].messageId,
+        });
+        setCustomer(null);
+        setCustomerSearch("");
+        setDebouncedCustomerSearch("");
+        if (payerName && isValidKenyanMobile(payerPhone)) {
+          setShowNewCustomerForm(false);
+        } else {
+          needsPayerDetailsReview = true;
+          setNewCustomerName(payerName);
+          setNewCustomerPhone(payerPhone);
+          setNewCustomerEmail("");
+          setShowNewCustomerForm(true);
+          setStep(1);
+        }
+      }
+    }
+
+    const toDraft = (selected: SelectedSmsPayment): PaymentDraft => ({
+      ...newPayment(),
+      amount: selected.payment.amount ?? "",
+      method: "mpesa",
+      reference: selected.payment.transactionReference ?? "",
+      smsMessageId: selected.messageId,
+      date: selected.payment.transactionDate ?? undefined,
+      time: selected.payment.transactionTime,
+      payerName: selected.payment.senderName,
+      payerPhone: selected.payment.senderPhone,
+    });
+    const [first, ...additional] = selectedPayments.map(toDraft);
+    setError(
+      needsPayerDetailsReview
+        ? "The M-Pesa message does not provide a complete customer phone number. Correct the payer details below or select an existing customer before continuing."
+        : "",
+    );
+    setRecordPayment(true);
+    setPayments((current) => [
+      ...current.map((payment) =>
+        payment.id === targetId ? { ...first, id: targetId } : payment,
+      ),
+      ...additional,
+    ]);
+    setSmsPickerPaymentId(null);
+  }
+
+  async function findMatchingSmsContact(details: {
+    name: string;
+    phone: string;
+  }): Promise<Contact | null> {
+    let offset = 0;
+    while (true) {
+      const contacts = await getContacts(farmId, {
+        search: details.name,
+        limit: 100,
+        offset,
+      });
+      const match = contacts.find(
+        (contact) =>
+          normalizedName(contact.name) === normalizedName(details.name) &&
+          normalizedKenyanPhone(contact.phone) ===
+            normalizedKenyanPhone(details.phone),
+      );
+      if (match) return match;
+      if (contacts.length < 100) return null;
+      offset += contacts.length;
+    }
+  }
+
+  async function resolveSmsCustomer(
+    details: SmsCustomerDraft,
+  ): Promise<Contact> {
+    if (!details.name.trim()) {
+      throw new Error("Enter the payer’s name before using them as the customer.");
+    }
+    const phoneError = kenyanMobileError(details.phone);
+    if (phoneError) throw new Error(phoneError);
+    const match = await findMatchingSmsContact(details);
+    if (match) {
+      if (match.roles.includes("customer")) return match;
+      await createContactRole.mutateAsync({
+        contactId: match.id,
+        role: "customer",
+      });
+      return { ...match, roles: [...match.roles, "customer"] };
+    }
+    return createContact.mutateAsync({
+      name: details.name.trim(),
+      phone: normalizedKenyanPhone(details.phone),
+      roles: ["customer"],
+    });
+  }
+
   async function addCustomer() {
     const name = newCustomerName.trim();
     if (!name) {
@@ -356,6 +647,7 @@ function EggSaleContent() {
         email: newCustomerEmail.trim() || undefined,
       });
       setCustomer(created);
+      setSmsCustomerDraft(null);
       setCustomerSearch("");
       setDebouncedCustomerSearch("");
       setShowNewCustomerForm(false);
@@ -371,15 +663,20 @@ function EggSaleContent() {
   function validateStep(targetStep: number): boolean {
     const nextErrors: Record<string, string> = {};
     if (targetStep === 0) {
-      if (!product) {
-        nextErrors.product = "Choose the egg product you are selling.";
+      if (selectedProducts.length === 0) {
+        nextErrors.product = "Choose at least one egg product to sell.";
       } else {
         if (lines.length === 0) {
-          nextErrors.product = "Add at least one unit line to this sale.";
+          nextErrors.product = "Add at least one sale unit to this sale.";
         }
         for (const [index, line] of lines.entries()) {
           const quantity = quantityMilli(line.quantity);
-          const unit = product.units.find((entry) => entry.id === line.unitId);
+          const lineProduct = selectedProducts.find(
+            (item) => item.id === line.productId,
+          );
+          const unit = lineProduct?.units.find(
+            (entry) => entry.id === line.unitId,
+          );
           const price = salePriceCents(line.unitPrice);
           if (!unit) {
             nextErrors[`quantity:${line.id}`] =
@@ -414,22 +711,17 @@ function EggSaleContent() {
           (key) => key.startsWith("quantity:") || key.startsWith("price:"),
         );
         if (!hasLineErrors) {
-          const availableMilli = quantityMilli(
-            String(product.available_quantity_in_base_unit),
-          );
-          if (availableMilli === null) {
-            nextErrors.stock =
-              "Current stock could not be verified. Refresh the stock options and try again.";
-          } else if (requestedBaseMicro > availableMilli * 1000n) {
-            const requested = formatQuantity(
-              requestedBaseQuantity,
-              baseUnit?.abbreviation ?? "base units",
+          for (const totals of productTotals) {
+            const availableMilli = quantityMilli(
+              String(totals.product.available_quantity_in_base_unit),
             );
-            const available = formatQuantity(
-              availableQuantity,
-              baseUnit?.abbreviation ?? "base units",
-            );
-            nextErrors.stock = `This sale uses ${requested} but only ${available} are available. Reduce one or more unit-line quantities.`;
+            if (availableMilli === null) {
+              nextErrors[`stock:${totals.product.id}`] =
+                `Current stock for ${totals.product.name} could not be verified. Refresh the stock options and try again.`;
+            } else if (totals.requestedBaseMicro > availableMilli * 1000n) {
+              nextErrors[`stock:${totals.product.id}`] =
+                `${totals.product.name}: this sale uses ${formatQuantity(totals.requestedBaseQuantity, totals.baseUnit?.abbreviation ?? "base units")} but only ${formatQuantity(totals.availableQuantity, totals.baseUnit?.abbreviation ?? "base units")} are available. Reduce one or more quantities.`;
+            }
           }
         }
         if (totalCents <= 0n) {
@@ -443,15 +735,46 @@ function EggSaleContent() {
       if (!parseCalendarDate(effectiveSaleDate)) {
         nextErrors.saleDate = "Choose a valid sale date.";
       }
+      if (activeSmsCustomerDraft) {
+        if (!activeSmsCustomerDraft.name.trim()) {
+          nextErrors.smsCustomerName = "Enter the payer’s name.";
+        }
+        const phoneError = kenyanMobileError(activeSmsCustomerDraft.phone);
+        if (phoneError) nextErrors.smsCustomerPhone = phoneError;
+      }
     } else if (targetStep === 2) {
       if (recordPayment) {
+        const seenMpesaReferences = new Set<string>();
+        const seenSmsMessageIds = new Set<string>();
         for (const [index, payment] of payments.entries()) {
           const amount = salePriceCents(payment.amount);
           if (amount === null || amount <= 0n || amount > MAX_MONEY_CENTS) {
             nextErrors[`payment:${payment.id}`] =
               `Enter a valid amount greater than zero for payment ${index + 1} (up to 2 decimal places).`;
           }
+          if (payment.method === "mpesa") {
+            const reference = payment.reference.trim().toUpperCase();
+            if (reference && seenMpesaReferences.has(reference)) {
+              nextErrors[`payment:${payment.id}`] =
+                "This M-Pesa transaction code is already used in another payment.";
+            }
+            if (reference) seenMpesaReferences.add(reference);
+            if (
+              payment.smsMessageId &&
+              seenSmsMessageIds.has(payment.smsMessageId)
+            ) {
+              nextErrors[`payment:${payment.id}`] =
+                "This M-Pesa message is already used in another payment.";
+            }
+            if (payment.smsMessageId) {
+              seenSmsMessageIds.add(payment.smsMessageId);
+            }
+          }
         }
+      }
+      if ((balanceDueCents > 0n || creditCents > 0n) && !hasNamedCustomer) {
+        nextErrors.customer =
+          "Select a customer with a name to track a balance due or overpayment.";
       }
       if (scheduleSaleFollowUp && (balanceDueCents > 0n || creditCents > 0n)) {
         if (!parseCalendarDate(effectiveReminderDueDate)) {
@@ -476,11 +799,21 @@ function EggSaleContent() {
           ? firstError
           : firstError.startsWith("payment:")
             ? firstError
-            : null;
+            : firstError === "smsCustomerName"
+              ? "smsCustomerName"
+              : firstError === "smsCustomerPhone"
+                ? "smsCustomerPhone"
+                : null;
       const focusKey =
         inputKey ??
-        (firstError === "stock" && lines.length
-          ? `quantity:${lines[lines.length - 1].id}`
+        (firstError.startsWith("stock:")
+          ? (() => {
+              const stockProductId = firstError.slice("stock:".length);
+              const stockLine = lines.find(
+                (line) => line.productId === stockProductId,
+              );
+              return stockLine ? `quantity:${stockLine.id}` : null;
+            })()
           : null);
       if (focusKey) {
         setTimeout(() => inputRefs.current[focusKey]?.focus(), 0);
@@ -503,7 +836,7 @@ function EggSaleContent() {
   }
 
   async function submitSale() {
-    if (!product) {
+    if (selectedProducts.length === 0) {
       setStage("edit");
       setStep(0);
       validateStep(0);
@@ -516,12 +849,25 @@ function EggSaleContent() {
         return;
       }
     }
+    let saleCustomer = customer;
+    if (activeSmsCustomerDraft) {
+      try {
+        saleCustomer = await resolveSmsCustomer(activeSmsCustomerDraft);
+      } catch (customerError: unknown) {
+        setStage("edit");
+        setStep(1);
+        setError(
+          `Could not link the M-Pesa payer as a customer. The sale has not been recorded. ${normalizeApiError(customerError).message}`,
+        );
+        return;
+      }
+    }
     const payload: EggSaleInput = {
       transaction_date: effectiveSaleDate,
-      contact_id: customer?.id,
+      contact_id: saleCustomer?.id,
       notes: notes.trim() || undefined,
       items: lines.map((line) => ({
-        product_id: product.id,
+        product_id: line.productId,
         unit_id: line.unitId,
         quantity: line.quantity.trim(),
         unit_price: centsToDecimal(salePriceCents(line.unitPrice) ?? 0n),
@@ -529,7 +875,7 @@ function EggSaleContent() {
       payments: recordPayment
         ? payments.map((payment) => ({
             amount: centsToDecimal(salePriceCents(payment.amount) ?? 0n),
-            payment_date: effectiveSaleDate,
+            payment_date: payment.date ?? effectiveSaleDate,
             payment_method: payment.method,
             reference_number: payment.reference.trim() || undefined,
           }))
@@ -537,16 +883,27 @@ function EggSaleContent() {
     };
     if (creditCents > 0n) {
       const confirmed = await dialog.confirmDialog({
-        title: "Payments exceed sale total",
-        message: `The sale total is ${formatCurrency(totalCents, currency)}, but the payments add up to ${formatCurrency(paidCents, currency)}. ${formatCurrency(creditCents, currency)} will be recorded as ${customer ? `${customer.name}’s` : "walk-in customer"} credit. No refund will be issued.`,
-        tone: "info",
-        cancelLabel: "Review payments",
-        confirmLabel: "Confirm customer credit",
+        title: "Keep the extra as customer credit?",
+        message:
+          "The amount above the sale total will stay on this customer's account for a future purchase.",
+        tone: "warning",
+        details: [
+          { label: "Sale total", value: formatCurrency(totalCents, currency) },
+          { label: "Paid", value: formatCurrency(paidCents, currency) },
+          {
+            label: `${saleCustomer?.name ?? "Customer"} credit`,
+            value: formatCurrency(creditCents, currency),
+          },
+        ],
+        note: "No refund will be sent.",
+        cancelLabel: "Edit payments",
+        confirmLabel: "Keep as credit",
       });
       if (!confirmed) return;
     }
     try {
       const result = await createSale.mutateAsync(payload);
+      setSmsCustomerDraft(null);
       const savedBalanceDue =
         parseMoneyToCents(String(result.balance_due)) ?? balanceDueCents;
       const savedCredit =
@@ -563,7 +920,7 @@ function EggSaleContent() {
           }
           const isOverpayment = savedCredit > 0n;
           const followUpAmount = isOverpayment ? savedCredit : savedBalanceDue;
-          const buyerName = customer?.name ?? "the buyer";
+          const buyerName = saleCustomer?.name ?? "the buyer";
           const reminder = await createReminder.mutateAsync({
             title: isOverpayment
               ? "Settle egg sale overpayment"
@@ -616,24 +973,39 @@ function EggSaleContent() {
       const message = normalizeApiError(submitError).message;
       if (/not enough|available|stock|inventory/i.test(message)) {
         const refreshed = await options.refetch();
-        const latestProduct =
-          refreshed.data?.products.find((item) => item.id === product.id) ??
-          options.data?.products.find((item) => item.id === product.id);
-        const latestAvailable = Number(
-          latestProduct?.available_quantity_in_base_unit ??
-            product.available_quantity_in_base_unit,
-        );
+        const latestProducts =
+          refreshed.data?.products ?? options.data?.products ?? [];
+        const changedStock = productTotals.find((totals) => {
+          const latest = latestProducts.find(
+            (item) => item.id === totals.product.id,
+          );
+          return (
+            latest &&
+            Number(latest.available_quantity_in_base_unit) <
+              totals.requestedBaseQuantity
+          );
+        });
+        const latestProduct = changedStock
+          ? latestProducts.find(
+              (item) => item.id === changedStock.product.id,
+            )
+          : undefined;
         const latestBaseUnit = latestProduct?.units.find(
           (unit) => unit.is_base_unit,
         );
-        const stockMessage = latestProduct
-          ? `Stock changed before the sale could be saved. The latest available amount is ${formatQuantity(latestAvailable, latestBaseUnit?.abbreviation ?? "base units")}; this sale requests ${formatQuantity(requestedBaseQuantity, baseUnit?.abbreviation ?? "base units")}. Reduce one or more quantities and try again.`
-          : friendlySaleError(message);
-        setFieldErrors({
-          stock: stockMessage,
-        });
-        setError("");
-        const lastLine = lines[lines.length - 1];
+        const stockMessage =
+          changedStock && latestProduct
+            ? `Stock changed for ${latestProduct.name}. ${formatQuantity(Number(latestProduct.available_quantity_in_base_unit), latestBaseUnit?.abbreviation ?? "base units")} remain, but this sale needs ${formatQuantity(changedStock.requestedBaseQuantity, changedStock.baseUnit?.abbreviation ?? "base units")}. Reduce the quantity and try again.`
+            : friendlySaleError(message);
+        setFieldErrors(
+          changedStock
+            ? { [`stock:${changedStock.product.id}`]: stockMessage }
+            : {},
+        );
+        setError(changedStock ? "" : stockMessage);
+        const lastLine = lines.find(
+          (line) => line.productId === changedStock?.product.id,
+        );
         if (lastLine) {
           setTimeout(
             () => inputRefs.current[`quantity:${lastLine.id}`]?.focus(),
@@ -669,11 +1041,7 @@ function EggSaleContent() {
           automaticallyAdjustKeyboardInsets
           keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
         >
-          <FarmPageHeader
-            title={stage === "edit" ? "Sell eggs" : "Review egg sale"}
-            showBack
-            backHref="/(tabs)/eggs"
-          />
+          <FarmPageHeader title="Egg sale" showBack backHref="/(tabs)/eggs" />
 
           {options.isError ? (
             <Card style={styles.card}>
@@ -739,21 +1107,20 @@ function EggSaleContent() {
               <View
                 accessibilityRole="progressbar"
                 accessibilityLabel={`Sale setup step ${step + 1} of 3`}
-                style={[styles.progressCard, { borderColor: theme.border }]}
+                style={[
+                  styles.progressCard,
+                  {
+                    backgroundColor: theme.backgroundElement,
+                    borderColor: theme.border,
+                  },
+                ]}
               >
-                <View style={styles.headingRow}>
-                  <AppText weight="semibold">
-                    Step {step + 1} of 3 ·{" "}
-                    {
-                      [
-                        "Eggs and price",
-                        "Customer and date",
-                        "Payment and reminder",
-                      ][step]
-                    }
+                <View style={styles.progressLabels}>
+                  <AppText size="small" weight="semibold">
+                    EGG SALE
                   </AppText>
                   <AppText size="small" tone="secondary">
-                    {Math.round(((step + 1) / 3) * 100)}%
+                    {String(step + 1).padStart(2, "0")} / 03
                   </AppText>
                 </View>
                 <View style={styles.progressTrack}>
@@ -770,15 +1137,6 @@ function EggSaleContent() {
                     />
                   ))}
                 </View>
-                <AppText size="small" tone="secondary">
-                  {
-                    [
-                      "Choose the product, enter the quantities and prices.",
-                      "Choose a customer if known and confirm when the sale happened.",
-                      "Record one or more payments, or leave the balance due.",
-                    ][step]
-                  }
-                </AppText>
               </View>
               {error ? (
                 <View
@@ -802,10 +1160,23 @@ function EggSaleContent() {
                   </AppText>
                 </View>
               ) : null}
+              <Animated.View
+                key={`egg-sale-step-${step}`}
+                entering={FadeInDown.duration(220)}
+                style={styles.stepContent}
+              >
+                <View style={styles.sectionIntro}>
+                  <AppText size="heading" weight="semibold">
+                    {["Items and price", "Customer and date", "Payment"][step]}
+                  </AppText>
+                </View>
               {step === 0 ? (
                 <>
                   <Card style={styles.card}>
-                    <AppText weight="semibold">Choose egg product</AppText>
+                    <AppText weight="semibold">Choose products to sell</AppText>
+                    <AppText size="small" tone="secondary">
+                      Select every egg grade or type included in this sale.
+                    </AppText>
                     {fieldErrors.product ? (
                       <AppText size="small" style={{ color: theme.danger }}>
                         {fieldErrors.product}
@@ -813,14 +1184,14 @@ function EggSaleContent() {
                     ) : null}
                     <View style={styles.choiceList}>
                       {inStockProducts.map((item) => {
-                        const selected = productId === item.id;
+                        const selected = selectedProductIds.includes(item.id);
                         const unit = item.units.find(
                           (entry) => entry.is_base_unit,
                         );
                         return (
                           <Pressable
                             key={item.id}
-                            accessibilityRole="radio"
+                            accessibilityRole="checkbox"
                             accessibilityState={{ checked: selected }}
                             onPress={() => selectProduct(item)}
                             style={[
@@ -830,32 +1201,91 @@ function EggSaleContent() {
                                   ? theme.primary
                                   : theme.border,
                                 backgroundColor: selected
-                                  ? theme.backgroundSelected
+                                  ? `${theme.primary}0A`
                                   : theme.background,
                               },
                             ]}
                           >
-                            <View style={styles.productCopy}>
-                              <AppText weight="semibold">{item.name}</AppText>
-                              <AppText size="small" tone="secondary">
-                                {quantityLabel(
-                                  item.available_quantity_in_base_unit,
-                                  unit?.abbreviation ?? "base units",
-                                )}{" "}
-                                available
-                              </AppText>
+                            <View style={styles.productChoiceContent}>
+                              <View style={styles.productChoiceHeading}>
+                                <View style={styles.productCopy}>
+                                  <AppText weight="semibold">
+                                    {item.name}
+                                  </AppText>
+                                  <AppText size="small" tone="secondary">
+                                    {unit?.name ?? "Egg stock"}
+                                  </AppText>
+                                </View>
+                                <Ionicons
+                                  name={
+                                    selected
+                                      ? "checkmark-circle"
+                                      : "chevron-forward"
+                                  }
+                                  size={20}
+                                  color={
+                                    selected ? theme.primary : theme.textSecondary
+                                  }
+                                />
+                              </View>
+                              <View style={styles.productStockStats}>
+                                <View
+                                  style={[
+                                    styles.productStockStat,
+                                    { backgroundColor: theme.backgroundElement },
+                                  ]}
+                                >
+                                  <AppText size="small" tone="secondary">
+                                    Total stock
+                                  </AppText>
+                                  <AppText size="small" weight="semibold">
+                                    {quantityLabel(item.on_hand_quantity_in_base_unit, unit?.abbreviation ?? "units")}
+                                  </AppText>
+                                </View>
+                                <View
+                                  style={[
+                                    styles.productStockStat,
+                                    {
+                                      backgroundColor: `${theme.secondary}12`,
+                                      borderColor: `${theme.secondary}35`,
+                                    },
+                                  ]}
+                                >
+                                  <AppText
+                                    size="small"
+                                    style={{ color: theme.secondary }}
+                                  >
+                                    Reserved for orders
+                                  </AppText>
+                                  <AppText size="small" weight="semibold">
+                                    {quantityLabel(item.reserved_quantity_in_base_unit, unit?.abbreviation ?? "units")}
+                                  </AppText>
+                                </View>
+                                <View
+                                  style={[
+                                    styles.productStockStat,
+                                    {
+                                      backgroundColor: `${theme.success}10`,
+                                      borderColor: `${theme.success}35`,
+                                    },
+                                  ]}
+                                >
+                                  <AppText
+                                    size="small"
+                                    style={{ color: theme.success }}
+                                  >
+                                    Sellable
+                                  </AppText>
+                                  <AppText
+                                    size="small"
+                                    weight="semibold"
+                                    style={{ color: theme.success }}
+                                  >
+                                    {quantityLabel(item.available_quantity_in_base_unit, unit?.abbreviation ?? "units")}
+                                  </AppText>
+                                </View>
+                              </View>
                             </View>
-                            <Ionicons
-                              name={
-                                selected
-                                  ? "radio-button-on"
-                                  : "radio-button-off"
-                              }
-                              size={20}
-                              color={
-                                selected ? theme.primary : theme.textSecondary
-                              }
-                            />
                           </Pressable>
                         );
                       })}
@@ -864,33 +1294,223 @@ function EggSaleContent() {
                 </>
               ) : null}
 
-              {product ? (
+              {selectedProducts.length > 0 ? (
                 <>
                   {step === 0 ? (
                     <Card style={styles.card}>
-                      <View style={styles.headingRow}>
-                        <AppText weight="semibold">
-                          Enter quantities and prices
-                        </AppText>
-                        <AppText size="small" tone="secondary">
-                          {formatQuantity(
-                            availableQuantity,
-                            baseUnit?.abbreviation ?? "base units",
-                          )}{" "}
-                          available
-                        </AppText>
+                      <View style={styles.sectionTitle}>
+                        <View
+                          style={[
+                            styles.sectionIcon,
+                            { backgroundColor: theme.backgroundSelected },
+                          ]}
+                        >
+                          <Ionicons
+                            name="pricetag-outline"
+                            size={18}
+                            color={theme.primary}
+                          />
+                        </View>
+                        <View style={styles.sectionTitleCopy}>
+                          <AppText weight="semibold">
+                            Set quantity and price
+                          </AppText>
+                          <AppText size="small" tone="secondary">
+                            Add units for each selected product. Different egg
+                            grades stay together on this sale.
+                          </AppText>
+                        </View>
                       </View>
-                      {lines.map((line, index) => {
-                        const selectedUnit = product.units.find(
-                          (unit) => unit.id === line.unitId,
+                      {selectedProducts.map((selectedProduct) => {
+                        const totals = productTotals.find(
+                          (item) => item.product.id === selectedProduct.id,
+                        );
+                        const baseUnit = totals?.baseUnit;
+                        const availableQuantity =
+                          totals?.availableQuantity ?? 0;
+                        const onHandQuantity = Number(
+                          selectedProduct.on_hand_quantity_in_base_unit,
+                        );
+                        const reservedQuantity = Number(
+                          selectedProduct.reserved_quantity_in_base_unit,
+                        );
+                        const requestedBaseQuantity =
+                          totals?.requestedBaseQuantity ?? 0;
+                        const productLines = lines.filter(
+                          (line) => line.productId === selectedProduct.id,
                         );
                         return (
-                          <View key={line.id} style={styles.lineCard}>
-                            <View style={styles.headingRow}>
-                              <AppText size="small" weight="semibold">
-                                Unit line {index + 1}
+                          <View
+                            key={selectedProduct.id}
+                            style={[
+                              styles.productSaleGroup,
+                              { borderTopColor: theme.border },
+                            ]}
+                          >
+                            <View style={styles.sectionTitleCopy}>
+                              <AppText weight="semibold">
+                                {selectedProduct.name}
                               </AppText>
-                              {lines.length > 1 ? (
+                            </View>
+                            <View style={styles.stockOverview}>
+                              <View
+                                style={[
+                                  styles.sellableStock,
+                                  {
+                                    backgroundColor: `${theme.success}10`,
+                                    borderColor: `${theme.success}35`,
+                                  },
+                                ]}
+                              >
+                                <View
+                                  style={[
+                                    styles.stockStateIcon,
+                                    { backgroundColor: `${theme.success}18` },
+                                  ]}
+                                >
+                                  <Ionicons
+                                    name="checkmark-circle-outline"
+                                    size={19}
+                                    color={theme.success}
+                                  />
+                                </View>
+                                <View style={styles.sellableStockCopy}>
+                                  <AppText
+                                    size="small"
+                                    weight="semibold"
+                                    style={{ color: theme.success }}
+                                  >
+                                    Ready to sell
+                                  </AppText>
+                                  <AppText
+                                    size="heading"
+                                    weight="semibold"
+                                    style={{ color: theme.success }}
+                                  >
+                                    {quantityLabel(
+                                      availableQuantity,
+                                      baseUnit?.abbreviation ?? "pieces",
+                                    )}
+                                  </AppText>
+                                  <AppText size="small" tone="secondary">
+                                    After this sale:{" "}
+                                    {formatQuantity(
+                                      Math.max(
+                                        0,
+                                        availableQuantity -
+                                          requestedBaseQuantity,
+                                      ),
+                                      baseUnit?.abbreviation ?? "pieces",
+                                    )}
+                                  </AppText>
+                                </View>
+                              </View>
+                              <View style={styles.stockBreakdown}>
+                                <View style={styles.stockBreakdownRow}>
+                                  <AppText size="small" tone="secondary">
+                                    Total stock
+                                  </AppText>
+                                  <AppText size="small" weight="semibold">
+                                    {quantityLabel(onHandQuantity, baseUnit?.abbreviation ?? "pieces")}
+                                  </AppText>
+                                </View>
+                                <View
+                                  style={[
+                                    styles.stockBreakdownRow,
+                                    styles.reservedStockRow,
+                                    {
+                                      backgroundColor: `${theme.secondary}10`,
+                                      borderColor: `${theme.secondary}35`,
+                                    },
+                                  ]}
+                                >
+                                  <AppText
+                                    size="small"
+                                    weight="semibold"
+                                    style={{ color: theme.secondary }}
+                                  >
+                                    Reserved for orders
+                                  </AppText>
+                                  <AppText size="small" weight="semibold">
+                                    {quantityLabel(reservedQuantity, baseUnit?.abbreviation ?? "pieces")}
+                                  </AppText>
+                                </View>
+                              </View>
+                            </View>
+                            {fieldErrors[`stock:${selectedProduct.id}`] ? (
+                              <AppText
+                                size="small"
+                                style={{ color: theme.danger }}
+                              >
+                                {fieldErrors[`stock:${selectedProduct.id}`]}
+                              </AppText>
+                            ) : null}
+                            {productLines.map((line, index) => {
+                        const selectedUnit = selectedProduct.units.find(
+                          (unit) => unit.id === line.unitId,
+                        );
+                        const lineQuantity = quantityMilli(line.quantity);
+                        const conversionFactor = selectedUnit
+                          ? quantityMilli(String(selectedUnit.conversion_factor))
+                          : null;
+                        const convertedLineQuantity =
+                          lineQuantity !== null && conversionFactor !== null
+                            ? Number(lineQuantity * conversionFactor) / 1_000_000
+                            : null;
+                        const baseQuantityMicro =
+                          lineQuantity !== null && conversionFactor !== null
+                            ? lineQuantity * conversionFactor
+                            : null;
+                        const lineRevenueCents = lineTotalCents(line);
+                        const estimatedCostCents =
+                          baseQuantityMicro !== null
+                            ? estimatedStockCostCents(
+                                selectedProduct.id,
+                                baseQuantityMicro,
+                              )
+                            : null;
+                        const estimatedProfitCents =
+                          estimatedCostCents !== null &&
+                          lineRevenueCents !== null
+                            ? lineRevenueCents - estimatedCostCents
+                            : null;
+                        return (
+                          <View
+                            key={line.id}
+                            style={[
+                              styles.lineCard,
+                              {
+                                borderColor: theme.border,
+                                backgroundColor: theme.background,
+                              },
+                            ]}
+                          >
+                            <View style={styles.lineHeading}>
+                              <View
+                                style={[
+                                  styles.lineNumber,
+                                  { backgroundColor: theme.backgroundSelected },
+                                ]}
+                              >
+                                <AppText
+                                  size="small"
+                                  weight="semibold"
+                                  style={{ color: theme.primary }}
+                                >
+                                  {index + 1}
+                                </AppText>
+                              </View>
+                              <View style={styles.lineHeadingCopy}>
+                                <AppText size="small" weight="semibold">
+                                  Sale unit
+                                </AppText>
+                                {selectedUnit ? (
+                                  <AppText size="small" tone="secondary">
+                                    Price per {selectedUnit.abbreviation}
+                                  </AppText>
+                                ) : null}
+                              </View>
+                              {productLines.length > 1 ? (
                                 <Pressable
                                   accessibilityRole="button"
                                   accessibilityLabel={`Remove unit line ${index + 1}`}
@@ -913,7 +1533,7 @@ function EggSaleContent() {
                               ) : null}
                             </View>
                             <View style={styles.unitChoices}>
-                              {product.units.map((unit) => {
+                              {selectedProduct.units.map((unit) => {
                                 const active = unit.id === line.unitId;
                                 return (
                                   <Pressable
@@ -959,9 +1579,6 @@ function EggSaleContent() {
                               placeholder="e.g. 2"
                               error={
                                 fieldErrors[`quantity:${line.id}`] ??
-                                (line.id === lines[lines.length - 1]?.id
-                                  ? fieldErrors.stock
-                                  : undefined) ??
                                 (line.quantity.trim() &&
                                 (quantityMilli(line.quantity) === null ||
                                   quantityMilli(line.quantity) === 0n)
@@ -969,6 +1586,34 @@ function EggSaleContent() {
                                   : undefined)
                               }
                             />
+                            {selectedUnit && convertedLineQuantity !== null ? (
+                              <View
+                                style={[
+                                  styles.conversionNotice,
+                                  {
+                                    backgroundColor: `${theme.primary}0A`,
+                                    borderColor: `${theme.primary}24`,
+                                  },
+                                ]}
+                              >
+                                <Ionicons
+                                  name="swap-horizontal-outline"
+                                  size={16}
+                                  color={theme.primary}
+                                />
+                                <AppText
+                                  size="small"
+                                  style={styles.conversionCopy}
+                                >
+                                  {line.quantity} {selectedUnit.abbreviation} =
+                                  {" "}
+                                  {formatQuantity(
+                                    convertedLineQuantity,
+                                    baseUnit?.abbreviation ?? "pieces",
+                                  )}
+                                </AppText>
+                              </View>
+                            ) : null}
                             <TextField
                               ref={(input) => {
                                 inputRefs.current[`price:${line.id}`] = input;
@@ -991,9 +1636,16 @@ function EggSaleContent() {
                               }
                             />
                             {selectedUnit ? (
-                              <View style={styles.summaryRow}>
+                              <View
+                                style={[
+                                  styles.lineTotal,
+                                  { backgroundColor: theme.backgroundElement },
+                                ]}
+                              >
+                                <AppText size="small" tone="secondary">
+                                  Line amount
+                                </AppText>
                                 <AppText size="small" weight="semibold">
-                                  Line total:{" "}
                                   {formatCurrency(
                                     lineTotalCents(line) ?? 0n,
                                     currency,
@@ -1001,35 +1653,225 @@ function EggSaleContent() {
                                 </AppText>
                               </View>
                             ) : null}
+                            {lineTotalCents(line) !== null ? (
+                              <View
+                                style={[
+                                  styles.marginEstimate,
+                                  {
+                                    backgroundColor: theme.backgroundElement,
+                                    borderColor: theme.border,
+                                  },
+                                ]}
+                              >
+                                <View style={styles.marginEstimateHeading}>
+                                  <View style={styles.lineHeadingCopy}>
+                                    <AppText size="small" weight="semibold">
+                                      Estimated gross profit
+                                    </AppText>
+                                    <AppText size="small" tone="secondary">
+                                      Sale amount less stock cost, before other
+                                      expenses
+                                    </AppText>
+                                  </View>
+                                  <Ionicons
+                                    name="trending-up-outline"
+                                    size={18}
+                                    color={theme.primary}
+                                  />
+                                </View>
+                                {estimatedCostCents !== null &&
+                                estimatedProfitCents !== null &&
+                                lineRevenueCents !== null ? (
+                                  <View style={styles.marginValues}>
+                                    <View style={styles.marginValue}>
+                                      <AppText size="small" tone="secondary">
+                                        Sale
+                                      </AppText>
+                                      <AppText size="small" weight="semibold">
+                                        {formatCurrency(
+                                          lineRevenueCents,
+                                          currency,
+                                        )}
+                                      </AppText>
+                                    </View>
+                                    <View style={styles.marginValue}>
+                                      <AppText size="small" tone="secondary">
+                                        Stock cost
+                                      </AppText>
+                                      <AppText size="small" weight="semibold">
+                                        {formatCurrency(
+                                          estimatedCostCents,
+                                          currency,
+                                        )}
+                                      </AppText>
+                                    </View>
+                                    <View style={styles.marginValue}>
+                                      <AppText size="small" tone="secondary">
+                                        Est. profit
+                                      </AppText>
+                                      <AppText
+                                        size="small"
+                                        weight="semibold"
+                                        style={{
+                                          color:
+                                            estimatedProfitCents >= 0n
+                                              ? theme.success
+                                              : theme.danger,
+                                        }}
+                                      >
+                                        {formatCurrency(
+                                          estimatedProfitCents,
+                                          currency,
+                                        )}
+                                      </AppText>
+                                    </View>
+                                  </View>
+                                ) : (
+                                  <AppText size="small" tone="secondary">
+                                    {costReport.isPending
+                                      ? "Loading recorded stock cost..."
+                                      : costReport.isError
+                                        ? "Could not load recorded stock cost. This estimate is unavailable."
+                                        : "A complete recorded stock cost is unavailable, so profit cannot be estimated."}
+                                  </AppText>
+                                )}
+                              </View>
+                            ) : null}
                           </View>
                         );
                       })}
-                      {product.units.length > 1 ? (
-                        <Button
-                          label="Add another unit line"
-                          variant="secondary"
-                          onPress={() => {
-                            setError("");
-                            setFieldErrors({});
-                            setLines((current) => [
-                              ...current,
-                              newLine(
-                                product.units.find(
-                                  (unit) =>
-                                    !current.some(
-                                      (line) => line.unitId === unit.id,
-                                    ),
-                                )?.id ?? product.units[0].id,
-                              ),
-                            ]);
-                          }}
+                            <View
+                              style={[
+                                styles.remainingStock,
+                                {
+                                  backgroundColor:
+                                    totals && totals.remainingQuantity < 0
+                                      ? `${theme.danger}0A`
+                                      : theme.backgroundElement,
+                                  borderColor:
+                                    totals && totals.remainingQuantity < 0
+                                      ? `${theme.danger}35`
+                                      : theme.border,
+                                },
+                              ]}
+                            >
+                              <Ionicons
+                                name={
+                                  totals && totals.remainingQuantity < 0
+                                    ? "alert-circle-outline"
+                                    : "cube-outline"
+                                }
+                                size={18}
+                                color={
+                                  totals && totals.remainingQuantity < 0
+                                    ? theme.danger
+                                    : theme.primary
+                                }
+                              />
+                              <View style={styles.remainingStockCopy}>
+                                <AppText size="small" weight="semibold">
+                                  {formatQuantity(
+                                    Math.max(0, totals?.remainingQuantity ?? 0),
+                                    baseUnit?.abbreviation ?? "pieces",
+                                  )}{" "}
+                                  left
+                                </AppText>
+                                <AppText size="small" tone="secondary">
+                                  Converted from all units of {selectedProduct.name}
+                                </AppText>
+                              </View>
+                            </View>
+                            {selectedProduct.units.length > 1 ? (
+                              <Pressable
+                                accessibilityRole="button"
+                                accessibilityLabel={`Add another sale unit for ${selectedProduct.name}`}
+                                onPress={() => {
+                                  setError("");
+                                  setFieldErrors({});
+                                  setLines((current) => {
+                                    const currentProductLines = current.filter(
+                                      (line) =>
+                                        line.productId === selectedProduct.id,
+                                    );
+                                    const unitId =
+                                      selectedProduct.units.find(
+                                        (unit) =>
+                                          !currentProductLines.some(
+                                            (line) => line.unitId === unit.id,
+                                          ),
+                                      )?.id ?? selectedProduct.units[0].id;
+                                    return [
+                                      ...current,
+                                      newLine(selectedProduct.id, unitId),
+                                    ];
+                                  });
+                                }}
+                                style={({ pressed }) => [
+                                  styles.addUnitAction,
+                                  {
+                                    backgroundColor: pressed
+                                      ? theme.backgroundSelected
+                                      : theme.background,
+                                    borderColor: `${theme.primary}55`,
+                                  },
+                                ]}
+                              >
+                                <View
+                                  style={[
+                                    styles.addUnitIcon,
+                                    { backgroundColor: `${theme.primary}12` },
+                                  ]}
+                                >
+                                  <Ionicons
+                                    name="add"
+                                    size={20}
+                                    color={theme.primary}
+                                  />
+                                </View>
+                                <View style={styles.addUnitCopy}>
+                                  <AppText
+                                    size="small"
+                                    weight="semibold"
+                                    style={{ color: theme.primary }}
+                                  >
+                                    Add another unit
+                                  </AppText>
+                                  <AppText size="small" tone="secondary">
+                                    Add a different pack size
+                                  </AppText>
+                                </View>
+                                <Ionicons
+                                  name="chevron-forward"
+                                  size={18}
+                                  color={theme.primary}
+                                />
+                              </Pressable>
+                            ) : null}
+                          </View>
+                        );
+                      })}
+                      <View
+                        style={[
+                          styles.saleTotal,
+                          {
+                            backgroundColor: theme.backgroundSelected,
+                            borderColor: `${theme.primary}30`,
+                          },
+                        ]}
+                      >
+                        <View style={styles.saleTotalCopy}>
+                          <AppText size="small" tone="secondary">
+                            SALE TOTAL
+                          </AppText>
+                          <AppText weight="semibold">
+                            {formatCurrency(totalCents, currency)}
+                          </AppText>
+                        </View>
+                        <Ionicons
+                          name="arrow-forward-circle-outline"
+                          size={25}
+                          color={theme.primary}
                         />
-                      ) : null}
-                      <View style={styles.totalRow}>
-                        <AppText weight="semibold">Sale total</AppText>
-                        <AppText weight="semibold">
-                          {formatCurrency(totalCents, currency)}
-                        </AppText>
                       </View>
                       {fieldErrors.total ? (
                         <AppText size="small" style={{ color: theme.danger }}>
@@ -1041,9 +1883,26 @@ function EggSaleContent() {
 
                   {step === 1 ? (
                     <Card style={styles.card}>
-                      <AppText weight="semibold">
-                        Customer and sale date
-                      </AppText>
+                      <View style={styles.sectionTitle}>
+                        <View
+                          style={[
+                            styles.sectionIcon,
+                            { backgroundColor: theme.backgroundSelected },
+                          ]}
+                        >
+                          <Ionicons
+                            name="calendar-outline"
+                            size={18}
+                            color={theme.primary}
+                          />
+                        </View>
+                        <View style={styles.sectionTitleCopy}>
+                          <AppText weight="semibold">Sale date</AppText>
+                          <AppText size="small" tone="secondary">
+                            When the eggs were sold.
+                          </AppText>
+                        </View>
+                      </View>
                       <DatePickerField
                         label="Sale date"
                         value={effectiveSaleDate}
@@ -1062,63 +1921,230 @@ function EggSaleContent() {
                           {fieldErrors.saleDate}
                         </AppText>
                       ) : null}
+                      <View
+                        style={[
+                          styles.sectionDivider,
+                          { backgroundColor: theme.border },
+                        ]}
+                      />
+                      <View style={styles.sectionTitle}>
+                        <View
+                          style={[
+                            styles.sectionIcon,
+                            { backgroundColor: theme.backgroundSelected },
+                          ]}
+                        >
+                          <Ionicons
+                            name="person-outline"
+                            size={18}
+                            color={theme.primary}
+                          />
+                        </View>
+                        <View style={styles.sectionTitleCopy}>
+                          <AppText weight="semibold">Customer</AppText>
+                          <AppText size="small" tone="secondary">
+                            Optional for walk-in sales.
+                          </AppText>
+                        </View>
+                      </View>
                       <TextField
-                        label="Search for a customer (optional)"
+                        label="Find a customer"
                         value={customerSearch}
                         onChangeText={(value) => {
                           setCustomerSearch(value);
+                          setShowAllCustomers(false);
                           setCustomer(null);
                           setCustomerError("");
                           setError("");
                         }}
-                        placeholder="Type at least 2 characters"
+                        placeholder="Search customers by name or phone"
                       />
-                      {!customer && debouncedCustomerSearch.length >= 2 ? (
-                        customerSearchQuery.isFetching ? (
-                          <AppText size="small" tone="secondary">
-                            Searching customers…
-                          </AppText>
-                        ) : (customerSearchQuery.data ?? []).length > 0 ? (
-                          <View style={styles.customerResults}>
-                            {(customerSearchQuery.data ?? []).map((contact) => (
-                              <Pressable
-                                key={contact.id}
-                                accessibilityRole="button"
-                                onPress={() => {
-                                  setCustomer(contact);
-                                  setCustomerSearch("");
-                                  setDebouncedCustomerSearch("");
-                                  setCustomerError("");
-                                }}
-                                style={[
-                                  styles.customerChoice,
-                                  { borderColor: theme.border },
-                                ]}
-                              >
-                                <View style={styles.customerResultCopy}>
-                                  <AppText weight="semibold">
-                                    {contact.name}
-                                  </AppText>
-                                  <AppText size="small" tone="secondary">
-                                    {[contact.phone, contact.email]
-                                      .filter(Boolean)
-                                      .join(" · ") || "No contact details"}
-                                  </AppText>
-                                </View>
-                                <Ionicons
-                                  name="chevron-forward"
-                                  size={18}
-                                  color={theme.textSecondary}
-                                />
-                              </Pressable>
-                            ))}
+                      {!customer ? (
+                        <View
+                          style={[
+                            styles.customerPicker,
+                            { backgroundColor: theme.backgroundElement },
+                          ]}
+                        >
+                          <View style={styles.customerPickerHeading}>
+                            <AppText size="small" weight="semibold">
+                              {customerSearch.trim()
+                                ? "SEARCH RESULTS"
+                                : "CUSTOMERS"}
+                            </AppText>
+                            <AppText size="small" tone="secondary">
+                              {visibleCustomers.length}
+                            </AppText>
                           </View>
-                        ) : (
-                          <AppText size="small" tone="secondary">
-                            No customers match “{debouncedCustomerSearch}”. You
-                            can add them below.
-                          </AppText>
-                        )
+                          {customerListLoading ? (
+                            <View style={styles.customerStatus}>
+                              <AppText size="small" tone="secondary">
+                                Loading customers…
+                              </AppText>
+                            </View>
+                          ) : customerDirectoryQuery.isError ? (
+                            <View
+                              style={[
+                                styles.customerStatus,
+                                {
+                                  backgroundColor: `${theme.danger}0A`,
+                                  borderColor: `${theme.danger}35`,
+                                },
+                              ]}
+                            >
+                              <AppText size="small" style={{ color: theme.danger }}>
+                                Could not load customers. Check your connection and retry.
+                              </AppText>
+                              <Pressable
+                                accessibilityRole="button"
+                                onPress={() =>
+                                  void customerDirectoryQuery.refetch()
+                                }
+                              >
+                                <AppText
+                                  size="small"
+                                  weight="semibold"
+                                  style={{ color: theme.primary }}
+                                >
+                                  Retry
+                                </AppText>
+                              </Pressable>
+                            </View>
+                          ) : displayedCustomers.length > 0 ? (
+                            <View style={styles.customerResults}>
+                              {displayedCustomers.map((contact, index) => (
+                                <Pressable
+                                  key={contact.id}
+                                  accessibilityRole="button"
+                                  accessibilityLabel={`Select ${contact.name}${contact.phone ? `, ${contact.phone}` : ""}`}
+                                  onPress={() => {
+                                    setCustomer(contact);
+                                    setSmsCustomerDraft(null);
+                                    setShowNewCustomerForm(false);
+                                    setCustomerSearch("");
+                                    setDebouncedCustomerSearch("");
+                                    setCustomerError("");
+                                  }}
+                                  style={({ pressed }) => [
+                                    styles.customerChoice,
+                                    {
+                                      borderColor: theme.border,
+                                      backgroundColor: pressed
+                                        ? theme.backgroundSelected
+                                        : theme.background,
+                                    },
+                                  ]}
+                                >
+                                  <View
+                                    style={[
+                                      styles.customerAvatar,
+                                      {
+                                        backgroundColor:
+                                          index % 2 === 0
+                                            ? `${theme.primary}18`
+                                            : `${theme.secondary}18`,
+                                      },
+                                    ]}
+                                  >
+                                    <AppText
+                                      size="small"
+                                      weight="semibold"
+                                      style={{
+                                        color:
+                                          index % 2 === 0
+                                            ? theme.primary
+                                            : theme.secondary,
+                                      }}
+                                    >
+                                      {contact.name.trim().charAt(0).toUpperCase()}
+                                    </AppText>
+                                  </View>
+                                  <View style={styles.customerResultCopy}>
+                                    <AppText weight="semibold">
+                                      {contact.name}
+                                    </AppText>
+                                    <AppText size="small" tone="secondary">
+                                      {contact.phone ||
+                                        contact.email ||
+                                        "No contact details"}
+                                    </AppText>
+                                  </View>
+                                  <Ionicons
+                                    name="add-circle-outline"
+                                    size={21}
+                                    color={theme.primary}
+                                  />
+                                </Pressable>
+                              ))}
+                            </View>
+                          ) : (
+                            <View style={styles.customerStatus}>
+                              <AppText size="small" tone="secondary">
+                                {customerSearch.trim()
+                                  ? `No customers match “${customerSearch.trim()}”.`
+                                  : "No customers saved yet. This can still be recorded as a walk-in sale."}
+                              </AppText>
+                            </View>
+                          )}
+                          {visibleCustomers.length > 5 ||
+                          customerDirectoryQuery.hasNextPage ||
+                          showAllCustomers ? (
+                            <Pressable
+                              accessibilityRole="button"
+                              disabled={customerDirectoryQuery.isFetchingNextPage}
+                              onPress={() => {
+                                if (
+                                  showAllCustomers &&
+                                  customerDirectoryQuery.hasNextPage
+                                ) {
+                                  void customerDirectoryQuery.fetchNextPage();
+                                } else if (
+                                  !showAllCustomers &&
+                                  visibleCustomers.length > 5
+                                ) {
+                                  setShowAllCustomers((current) => !current);
+                                } else if (customerDirectoryQuery.hasNextPage) {
+                                  setShowAllCustomers(true);
+                                  void customerDirectoryQuery.fetchNextPage();
+                                } else {
+                                  setShowAllCustomers(false);
+                                }
+                              }}
+                              style={[
+                                styles.customerMoreButton,
+                                { borderColor: theme.border },
+                              ]}
+                            >
+                              <AppText
+                                size="small"
+                                weight="semibold"
+                                style={{ color: theme.primary }}
+                              >
+                                {customerDirectoryQuery.isFetchingNextPage
+                                  ? "Loading…"
+                                  : showAllCustomers &&
+                                      customerDirectoryQuery.hasNextPage
+                                    ? "Load more customers"
+                                    : showAllCustomers
+                                      ? "Show fewer"
+                                      : visibleCustomers.length > 5
+                                        ? `Show all ${visibleCustomers.length} customers`
+                                        : customerSearch.trim()
+                                          ? "Load more results"
+                                          : "Load more customers"}
+                              </AppText>
+                              <Ionicons
+                                name={
+                                  customerDirectoryQuery.isFetchingNextPage
+                                    ? "hourglass-outline"
+                                    : "chevron-down"
+                                }
+                                size={16}
+                                color={theme.primary}
+                              />
+                            </Pressable>
+                          ) : null}
+                        </View>
                       ) : null}
                       {customer ? (
                         <View
@@ -1155,7 +2181,46 @@ function EggSaleContent() {
                         </View>
                       ) : null}
 
-                      {!customer ? (
+                      {activeSmsCustomerDraft && !customer ? (
+                        <View
+                          style={[
+                            styles.smsCustomerNote,
+                            {
+                              backgroundColor: `${theme.primary}0A`,
+                              borderColor: `${theme.primary}35`,
+                            },
+                          ]}
+                        >
+                          <Ionicons
+                            name="person-circle-outline"
+                            size={19}
+                            color={theme.primary}
+                          />
+                          <View style={styles.customerResultCopy}>
+                            <AppText size="small" weight="semibold">
+                              M-Pesa payer will be linked
+                            </AppText>
+                            <AppText size="small" tone="secondary">
+                              {activeSmsCustomerDraft.name || "Name missing"} ·{" "}
+                              {activeSmsCustomerDraft.phone || "Phone missing"}
+                            </AppText>
+                          </View>
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="Do not link the M-Pesa payer as customer"
+                            onPress={() => setSmsCustomerDraft(null)}
+                            hitSlop={8}
+                          >
+                            <Ionicons
+                              name="close-circle-outline"
+                              size={20}
+                              color={theme.textSecondary}
+                            />
+                          </Pressable>
+                        </View>
+                      ) : null}
+
+                      {!customer && !activeSmsCustomerDraft ? (
                         <View style={styles.walkInNote}>
                           <Ionicons
                             name="person-outline"
@@ -1164,8 +2229,8 @@ function EggSaleContent() {
                           />
                           <AppText size="small" tone="secondary">
                             {customerSearch.trim()
-                              ? "You can continue without selecting a customer; this will be a walk-in sale."
-                              : "No customer selected · this will be recorded as a walk-in sale."}
+                              ? "Continue without linking a customer for a walk-in sale."
+                              : "Walk-in sale · no customer linked."}
                           </AppText>
                         </View>
                       ) : null}
@@ -1175,13 +2240,18 @@ function EggSaleContent() {
                           <Button
                             label={
                               showNewCustomerForm
-                                ? "Cancel adding customer"
+                                ? activeSmsCustomerDraft
+                                  ? "Cancel using payer details"
+                                  : "Cancel adding customer"
                                 : "Add a new customer"
                             }
                             variant="secondary"
                             onPress={() => {
                               setShowNewCustomerForm((visible) => !visible);
                               setCustomerError("");
+                              if (showNewCustomerForm && activeSmsCustomerDraft) {
+                                setSmsCustomerDraft(null);
+                              }
                             }}
                           />
                           {showNewCustomerForm ? (
@@ -1198,25 +2268,60 @@ function EggSaleContent() {
                                 New customer details
                               </AppText>
                               <TextField
+                                ref={(input) => {
+                                  inputRefs.current.smsCustomerName = input;
+                                }}
                                 label="Customer name"
                                 value={newCustomerName}
                                 onChangeText={(value) => {
                                   setNewCustomerName(value);
                                   setCustomerError("");
+                                  setError("");
+                                  setFieldErrors((current) => {
+                                    const next = { ...current };
+                                    delete next.smsCustomerName;
+                                    return next;
+                                  });
+                                  setSmsCustomerDraft((current) =>
+                                    current ? { ...current, name: value } : current,
+                                  );
                                 }}
                                 placeholder="Full name or business name"
                                 maxLength={150}
+                                error={fieldErrors.smsCustomerName}
                               />
                               <TextField
-                                label="Phone (optional)"
+                                ref={(input) => {
+                                  inputRefs.current.smsCustomerPhone = input;
+                                }}
+                                label={
+                                  activeSmsCustomerDraft
+                                    ? "Payer phone number"
+                                    : "Phone (optional)"
+                                }
                                 value={newCustomerPhone}
                                 onChangeText={(value) => {
                                   setNewCustomerPhone(value);
                                   setCustomerError("");
+                                  setError("");
+                                  setFieldErrors((current) => {
+                                    const next = { ...current };
+                                    delete next.smsCustomerPhone;
+                                    return next;
+                                  });
+                                  setSmsCustomerDraft((current) =>
+                                    current ? { ...current, phone: value } : current,
+                                  );
                                 }}
-                                placeholder="Phone number"
+                                placeholder="0712 345 678 or +254 712 345 678"
                                 keyboardType="phone-pad"
                                 maxLength={30}
+                                error={
+                                  fieldErrors.smsCustomerPhone ??
+                                  (activeSmsCustomerDraft
+                                    ? kenyanMobileError(newCustomerPhone)
+                                    : undefined)
+                                }
                               />
                               <TextField
                                 label="Email (optional)"
@@ -1239,10 +2344,53 @@ function EggSaleContent() {
                                 </AppText>
                               ) : null}
                               <Button
-                                label="Save and select customer"
-                                loading={createContact.isPending}
-                                disabled={!newCustomerName.trim()}
-                                onPress={() => void addCustomer()}
+                                label={
+                                  activeSmsCustomerDraft
+                                    ? "Use these details on the sale"
+                                    : "Save and select customer"
+                                }
+                                loading={
+                                  !activeSmsCustomerDraft &&
+                                  createContact.isPending
+                                }
+                                disabled={
+                                  !activeSmsCustomerDraft &&
+                                  !newCustomerName.trim()
+                                }
+                                onPress={() => {
+                                  if (activeSmsCustomerDraft) {
+                                    if (!newCustomerName.trim()) {
+                                      setCustomerError(
+                                        "Enter the payer’s name before using them as the customer.",
+                                      );
+                                      inputRefs.current.smsCustomerName?.focus();
+                                      return;
+                                    }
+                                    const phoneError =
+                                      kenyanMobileError(newCustomerPhone);
+                                    if (phoneError) {
+                                      setCustomerError(phoneError);
+                                      inputRefs.current.smsCustomerPhone?.focus();
+                                      return;
+                                    }
+                                    setSmsCustomerDraft({
+                                      ...activeSmsCustomerDraft,
+                                      name: newCustomerName.trim(),
+                                      phone: newCustomerPhone,
+                                    });
+                                    setShowNewCustomerForm(false);
+                                    setCustomerError("");
+                                    setError("");
+                                    setFieldErrors((current) => {
+                                      const next = { ...current };
+                                      delete next.smsCustomerName;
+                                      delete next.smsCustomerPhone;
+                                      return next;
+                                    });
+                                  } else {
+                                    void addCustomer();
+                                  }
+                                }}
                               />
                             </View>
                           ) : null}
@@ -1254,29 +2402,88 @@ function EggSaleContent() {
                   {step === 2 ? (
                     <>
                       <Card style={styles.card}>
-                        <AppText weight="semibold">Payments received</AppText>
-                        <AppText size="small" tone="secondary">
-                          Split payments across methods, leave an amount due, or
-                          record an overpayment as customer credit.
-                        </AppText>
-                        <View style={styles.switchRow}>
-                          <View style={styles.switchCopy}>
-                            <AppText weight="semibold">
-                              Record a payment now
-                            </AppText>
+                        <View style={styles.sectionTitle}>
+                          <View
+                            style={[
+                              styles.sectionIcon,
+                              { backgroundColor: theme.backgroundSelected },
+                            ]}
+                          >
+                            <Ionicons
+                              name="card-outline"
+                              size={18}
+                              color={theme.primary}
+                            />
+                          </View>
+                          <View style={styles.sectionTitleCopy}>
+                            <AppText weight="semibold">Payment</AppText>
                             <AppText size="small" tone="secondary">
-                              Turn this on to enter one or more payments.
+                              Sale total · {formatCurrency(totalCents, currency)}
                             </AppText>
                           </View>
-                          <Switch
-                            accessibilityLabel="Record payment now"
-                            value={recordPayment}
-                            onValueChange={setRecordPayment}
-                            trackColor={{
-                              false: theme.border,
-                              true: theme.primary,
-                            }}
-                          />
+                        </View>
+                        <View style={styles.paymentModeChoices}>
+                          {[
+                            {
+                              value: true,
+                              title: "Received",
+                              detail: "Record money collected",
+                            },
+                            {
+                              value: false,
+                              title: "Not yet",
+                              detail: "Leave the full balance due",
+                            },
+                          ].map((choice) => {
+                            const selected = recordPayment === choice.value;
+                            return (
+                              <Pressable
+                                key={choice.title}
+                                accessibilityRole="radio"
+                                accessibilityState={{ checked: selected }}
+                                onPress={() => {
+                                  setRecordPayment(choice.value);
+                                  if (!choice.value) setSmsCustomerDraft(null);
+                                }}
+                                style={[
+                                  styles.paymentMode,
+                                  {
+                                    borderColor: selected
+                                      ? theme.primary
+                                      : theme.border,
+                                    backgroundColor: selected
+                                      ? `${theme.primary}0A`
+                                      : theme.background,
+                                  },
+                                ]}
+                              >
+                                <Ionicons
+                                  name={
+                                    choice.value
+                                      ? "checkmark-circle-outline"
+                                      : "time-outline"
+                                  }
+                                  size={20}
+                                  color={
+                                    selected
+                                      ? theme.primary
+                                      : theme.textSecondary
+                                  }
+                                />
+                                <View style={styles.paymentModeCopy}>
+                                  <AppText
+                                    size="small"
+                                    weight={selected ? "semibold" : "regular"}
+                                  >
+                                    {choice.title}
+                                  </AppText>
+                                  <AppText size="small" tone="secondary">
+                                    {choice.detail}
+                                  </AppText>
+                                </View>
+                              </Pressable>
+                            );
+                          })}
                         </View>
                         {recordPayment ? (
                           <>
@@ -1285,7 +2492,10 @@ function EggSaleContent() {
                                 key={payment.id}
                                 style={[
                                   styles.paymentEntry,
-                                  { borderColor: theme.border },
+                                  {
+                                    borderColor: theme.border,
+                                    backgroundColor: theme.background,
+                                  },
                                 ]}
                               >
                                 <View style={styles.headingRow}>
@@ -1305,11 +2515,13 @@ function EggSaleContent() {
                                         );
                                       }}
                                     >
-                                      <Ionicons
-                                        name="trash-outline"
-                                        size={19}
-                                        color={theme.danger}
-                                      />
+                                      <View style={styles.removePaymentIcon}>
+                                        <Ionicons
+                                          name="trash-outline"
+                                          size={17}
+                                          color={theme.danger}
+                                        />
+                                      </View>
                                     </Pressable>
                                   ) : null}
                                 </View>
@@ -1345,14 +2557,13 @@ function EggSaleContent() {
                                     style={[
                                       styles.fillPaymentButton,
                                       {
-                                        borderColor: theme.border,
-                                        backgroundColor:
-                                          theme.backgroundElement,
+                                        borderColor: `${theme.primary}35`,
+                                        backgroundColor: `${theme.primary}08`,
                                       },
                                     ]}
                                   >
                                     <Ionicons
-                                      name="checkmark-circle-outline"
+                                      name="arrow-down-circle-outline"
                                       size={17}
                                       color={theme.primary}
                                     />
@@ -1361,14 +2572,18 @@ function EggSaleContent() {
                                       weight="semibold"
                                       style={{ color: theme.primary }}
                                     >
-                                      Fill remaining to pay in full
+                                      Fill remaining ·{" "}
+                                      {formatCurrency(
+                                        remainingForFullPayment(payment.id),
+                                        currency,
+                                      )}
                                     </AppText>
                                   </Pressable>
                                 ) : null}
                                 <AppText size="small" weight="semibold">
-                                  Payment method
+                                  How was it paid?
                                 </AppText>
-                                <View style={styles.unitChoices}>
+                                <View style={styles.paymentMethodsGrid}>
                                   {paymentMethods.map((method) => {
                                     const active =
                                       payment.method === method.value;
@@ -1376,43 +2591,204 @@ function EggSaleContent() {
                                       <Pressable
                                         key={method.value}
                                         accessibilityRole="radio"
-                                        accessibilityState={{ checked: active }}
+                                        accessibilityState={{
+                                          checked: active,
+                                        }}
                                         onPress={() =>
                                           updatePayment(payment.id, {
                                             method: method.value,
-                                            reference:
-                                              method.value === "cash"
-                                                ? ""
-                                                : payment.reference,
+                                            ...(method.value !== "mpesa"
+                                              ? {
+                                                  reference: "",
+                                                  smsMessageId: undefined,
+                                                  date: undefined,
+                                                  time: undefined,
+                                                  payerName: undefined,
+                                                  payerPhone: undefined,
+                                                }
+                                              : {}),
                                           })
                                         }
                                         style={[
-                                          styles.unitChip,
+                                          styles.paymentMethod,
                                           {
                                             borderColor: active
                                               ? theme.primary
                                               : theme.border,
                                             backgroundColor: active
-                                              ? theme.backgroundSelected
+                                              ? `${theme.primary}0A`
                                               : theme.background,
                                           },
                                         ]}
                                       >
-                                        <AppText size="small">
+                                        <Ionicons
+                                          name={method.icon}
+                                          size={18}
+                                          color={
+                                            active
+                                              ? theme.primary
+                                              : theme.textSecondary
+                                          }
+                                        />
+                                        <AppText
+                                          size="small"
+                                          weight={
+                                            active ? "semibold" : "regular"
+                                          }
+                                        >
                                           {method.label}
                                         </AppText>
                                       </Pressable>
                                     );
                                   })}
                                 </View>
-                                {payment.method !== "cash" ? (
+                                {payment.method === "mpesa" ? (
+                                  <>
+                                    <Pressable
+                                      accessibilityRole="button"
+                                      accessibilityLabel={
+                                        payment.smsMessageId
+                                          ? "Choose a different M-Pesa message"
+                                          : "Paste an M-Pesa payment confirmation"
+                                      }
+                                      onPress={() => {
+                                        setError("");
+                                        setSmsPickerPaymentId(payment.id);
+                                      }}
+                                      style={({ pressed }) => [
+                                        styles.smsPaymentButton,
+                                        {
+                                          backgroundColor: pressed
+                                            ? theme.backgroundSelected
+                                            : theme.backgroundElement,
+                                          borderColor: `${theme.primary}55`,
+                                        },
+                                      ]}
+                                    >
+                                      <View
+                                        style={[
+                                          styles.smsPaymentIcon,
+                                          { backgroundColor: theme.primary },
+                                        ]}
+                                      >
+                                        <Ionicons
+                                          name="chatbox-ellipses-outline"
+                                          size={18}
+                                          color={theme.onPrimary}
+                                        />
+                                      </View>
+                                      <View style={styles.smsPaymentCopy}>
+                                        <AppText
+                                          size="small"
+                                          weight="semibold"
+                                        >
+                                          {payment.smsMessageId
+                                            ? "Change M-Pesa message"
+                                            : "Paste M-Pesa confirmation"}
+                                        </AppText>
+                                        <AppText size="small" tone="secondary">
+                                          Copy a confirmation from Messages, then paste
+                                        </AppText>
+                                      </View>
+                                      <Ionicons
+                                        name="chevron-forward"
+                                        size={19}
+                                        color={theme.primary}
+                                      />
+                                    </Pressable>
+                                    {payment.smsMessageId ? (
+                                      <View
+                                        style={[
+                                          styles.smsSelectedBadge,
+                                          {
+                                            backgroundColor: `${theme.success}0A`,
+                                            borderColor: `${theme.success}35`,
+                                          },
+                                        ]}
+                                      >
+                                        <Ionicons
+                                          name="checkmark-circle"
+                                          size={17}
+                                          color={theme.success}
+                                        />
+                                        <View style={styles.smsSelectedCopy}>
+                                          <AppText
+                                            size="small"
+                                            weight="semibold"
+                                          >
+                                            Message added
+                                          </AppText>
+                                          {payment.payerName ? (
+                                            <AppText
+                                              size="small"
+                                              tone="secondary"
+                                            >
+                                              Paid by {payment.payerName}
+                                            </AppText>
+                                          ) : null}
+                                          {payment.date ? (
+                                            <AppText
+                                              size="small"
+                                              tone="secondary"
+                                            >
+                                              {payment.date}
+                                              {payment.time
+                                                ? ` at ${payment.time}`
+                                                : ""}
+                                            </AppText>
+                                          ) : null}
+                                          {payment.reference ? (
+                                            <View style={styles.smsReference}>
+                                              <AppText
+                                                size="small"
+                                                tone="secondary"
+                                              >
+                                                Transaction code
+                                              </AppText>
+                                              <AppText
+                                                size="small"
+                                                weight="semibold"
+                                                style={styles.smsReferenceValue}
+                                              >
+                                                {payment.reference}
+                                              </AppText>
+                                            </View>
+                                          ) : null}
+                                        </View>
+                                      </View>
+                                    ) : null}
+                                    {smsImportNativeError ? (
+                                      <AppText
+                                        size="small"
+                                        style={{ color: theme.danger }}
+                                      >
+                                        {smsImportNativeError}
+                                      </AppText>
+                                    ) : null}
+                                  </>
+                                ) : null}
+                                {payment.method !== "cash" &&
+                                payment.method !== "mpesa" ? (
                                   <TextField
                                     label="Reference number (optional)"
                                     value={payment.reference}
                                     onChangeText={(reference) =>
                                       updatePayment(payment.id, { reference })
                                     }
-                                    placeholder="Bank or M-Pesa reference"
+                                    placeholder="Bank or card reference"
+                                    maxLength={100}
+                                  />
+                                ) : null}
+                                {payment.method === "mpesa" &&
+                                !payment.smsMessageId ? (
+                                  <TextField
+                                    label="M-Pesa transaction code (optional)"
+                                    value={payment.reference}
+                                    onChangeText={(reference) =>
+                                      updatePayment(payment.id, { reference })
+                                    }
+                                    placeholder="e.g. QWE123ABC"
+                                    autoCapitalize="characters"
                                     maxLength={100}
                                   />
                                 ) : null}
@@ -1440,8 +2816,24 @@ function EggSaleContent() {
                               {formatCurrency(paidCents, currency)}
                             </AppText>
                           </View>
+                          {fieldErrors.customer ? (
+                            <AppText
+                              size="small"
+                              style={{ color: theme.danger }}
+                            >
+                              {fieldErrors.customer}
+                            </AppText>
+                          ) : null}
                           {creditCents > 0n ? (
-                            <View style={styles.paymentOutcome}>
+                            <View
+                              style={[
+                                styles.paymentOutcome,
+                                {
+                                  backgroundColor: `${theme.primary}0A`,
+                                  borderColor: `${theme.primary}30`,
+                                },
+                              ]}
+                            >
                               <Ionicons
                                 name="return-down-back-outline"
                                 size={20}
@@ -1453,19 +2845,23 @@ function EggSaleContent() {
                                   weight="semibold"
                                   style={{ color: theme.primary }}
                                 >
-                                  Customer credit
+                                  {formatCurrency(creditCents, currency)} customer credit
                                 </AppText>
                                 <AppText size="small" tone="secondary">
-                                  {formatCurrency(creditCents, currency)}{" "}
-                                  exceeds this sale. It will be recorded as
-                                  credit for{" "}
-                                  {customer?.name ?? "the walk-in customer"}; no
-                                  refund is issued.
+                                  The extra will be held as credit; no refund is issued.
                                 </AppText>
                               </View>
                             </View>
                           ) : balanceDueCents > 0n ? (
-                            <View style={styles.paymentOutcome}>
+                            <View
+                              style={[
+                                styles.paymentOutcome,
+                                {
+                                  backgroundColor: `${theme.danger}0A`,
+                                  borderColor: `${theme.danger}30`,
+                                },
+                              ]}
+                            >
                               <Ionicons
                                 name="time-outline"
                                 size={20}
@@ -1477,17 +2873,23 @@ function EggSaleContent() {
                                   weight="semibold"
                                   style={{ color: theme.danger }}
                                 >
-                                  Balance due
+                                  {formatCurrency(balanceDueCents, currency)} due
                                 </AppText>
                                 <AppText size="small" tone="secondary">
-                                  {formatCurrency(balanceDueCents, currency)}{" "}
-                                  remains to collect. The sale will be recorded
-                                  with this outstanding balance.
+                                  This amount will remain outstanding on the sale.
                                 </AppText>
                               </View>
                             </View>
                           ) : totalCents > 0n ? (
-                            <View style={styles.paymentOutcome}>
+                            <View
+                              style={[
+                                styles.paymentOutcome,
+                                {
+                                  backgroundColor: `${theme.success}0A`,
+                                  borderColor: `${theme.success}30`,
+                                },
+                              ]}
+                            >
                               <Ionicons
                                 name="checkmark-circle-outline"
                                 size={20}
@@ -1512,17 +2914,50 @@ function EggSaleContent() {
 
                       {balanceDueCents > 0n || creditCents > 0n ? (
                         <Card style={styles.reminderCard}>
-                          <View style={styles.switchRow}>
-                            <View style={styles.switchCopy}>
+                          <View style={styles.sectionTitle}>
+                            <View
+                              style={[
+                                styles.sectionIcon,
+                                { backgroundColor: `${theme.primary}14` },
+                              ]}
+                            >
+                              <Ionicons
+                                name="notifications-outline"
+                                size={18}
+                                color={theme.primary}
+                              />
+                            </View>
+                            <View style={styles.sectionTitleCopy}>
                               <AppText weight="semibold">
-                                {creditCents > 0n
-                                  ? "Reminder to settle the customer credit"
-                                  : "Reminder to collect the balance"}
+                                Follow-up reminder
                               </AppText>
                               <AppText size="small" tone="secondary">
+                                Keep this outstanding amount on your radar.
+                              </AppText>
+                            </View>
+                          </View>
+                          <View
+                            style={[
+                              styles.reminderAmount,
+                              {
+                                backgroundColor: `${theme.primary}0A`,
+                                borderColor: `${theme.primary}25`,
+                              },
+                            ]}
+                          >
+                            <View style={styles.reminderAmountCopy}>
+                              <AppText size="small" tone="secondary">
                                 {creditCents > 0n
-                                  ? `Remind yourself to settle ${formatCurrency(creditCents, currency)} owed to ${customer?.name ?? "the buyer"}.`
-                                  : `Remind yourself to collect ${formatCurrency(balanceDueCents, currency)} from ${customer?.name ?? "the buyer"}.`}
+                                  ? "Customer credit to settle"
+                                  : "Balance to collect"}
+                              </AppText>
+                              <AppText weight="semibold">
+                                {formatCurrency(
+                                  creditCents > 0n
+                                    ? creditCents
+                                    : balanceDueCents,
+                                  currency,
+                                )}
                               </AppText>
                             </View>
                             <Switch
@@ -1536,63 +2971,81 @@ function EggSaleContent() {
                             />
                           </View>
                           {scheduleSaleFollowUp ? (
-                            <View style={styles.reminderSchedule}>
+                            <>
                               <AppText size="small" tone="secondary">
-                                We’ll remind you in FarmTrack. A phone alert is
-                                scheduled when this device supports it;
-                                otherwise the reminder stays in-app.
+                                Reminder for{" "}
+                                {customer?.name ??
+                                  activeSmsCustomerDraft?.name ??
+                                  "the buyer"}
                               </AppText>
-                              <DatePickerField
-                                label="Remind me on"
-                                value={effectiveReminderDueDate}
-                                onChange={(value) => {
-                                  setReminderDueDate(value);
-                                  setFieldErrors((current) => {
-                                    const next = { ...current };
-                                    delete next.reminderDate;
-                                    return next;
-                                  });
-                                }}
-                                minimumDate={parseCalendarDate(
-                                  farmToday(timezone),
-                                )}
-                              />
-                              {fieldErrors.reminderDate ? (
-                                <AppText
-                                  size="small"
-                                  style={{ color: theme.danger }}
-                                >
-                                  {fieldErrors.reminderDate}
+                              <View
+                                style={[
+                                  styles.reminderSchedule,
+                                  {
+                                    backgroundColor: theme.background,
+                                    borderColor: theme.border,
+                                  },
+                                ]}
+                              >
+                                <AppText size="small" weight="semibold">
+                                  WHEN SHOULD WE REMIND YOU?
                                 </AppText>
-                              ) : null}
-                              <TimePickerField
-                                label="Reminder time (farm local time)"
-                                value={reminderDueTime}
-                                onChange={(value) => {
-                                  setReminderDueTime(value);
-                                  setFieldErrors((current) => {
-                                    const next = { ...current };
-                                    delete next.reminderTime;
-                                    delete next.reminderDate;
-                                    return next;
-                                  });
-                                }}
-                                minimumTime={
-                                  effectiveReminderDueDate ===
-                                  farmToday(timezone)
-                                    ? farmTimeNow(timezone)
-                                    : undefined
-                                }
-                              />
-                              {fieldErrors.reminderTime ? (
-                                <AppText
-                                  size="small"
-                                  style={{ color: theme.danger }}
-                                >
-                                  {fieldErrors.reminderTime}
+                                <AppText size="small" tone="secondary">
+                                  Saved in FarmTrack; a phone alert is also set
+                                  when this device supports it.
                                 </AppText>
-                              ) : null}
-                            </View>
+                                <DatePickerField
+                                  label="Reminder date"
+                                  value={effectiveReminderDueDate}
+                                  onChange={(value) => {
+                                    setReminderDueDate(value);
+                                    setFieldErrors((current) => {
+                                      const next = { ...current };
+                                      delete next.reminderDate;
+                                      return next;
+                                    });
+                                  }}
+                                  minimumDate={parseCalendarDate(
+                                    farmToday(timezone),
+                                  )}
+                                />
+                                {fieldErrors.reminderDate ? (
+                                  <AppText
+                                    size="small"
+                                    style={{ color: theme.danger }}
+                                  >
+                                    {fieldErrors.reminderDate}
+                                  </AppText>
+                                ) : null}
+                                <TimePickerField
+                                  label="Reminder time · farm local"
+                                  value={reminderDueTime}
+                                  onChange={(value) => {
+                                    setReminderDueTime(value);
+                                    setFieldErrors((current) => {
+                                      const next = { ...current };
+                                      delete next.reminderTime;
+                                      delete next.reminderDate;
+                                      return next;
+                                    });
+                                  }}
+                                  minimumTime={
+                                    effectiveReminderDueDate ===
+                                    farmToday(timezone)
+                                      ? farmTimeNow(timezone)
+                                      : undefined
+                                  }
+                                />
+                                {fieldErrors.reminderTime ? (
+                                  <AppText
+                                    size="small"
+                                    style={{ color: theme.danger }}
+                                  >
+                                    {fieldErrors.reminderTime}
+                                  </AppText>
+                                ) : null}
+                              </View>
+                            </>
                           ) : null}
                         </Card>
                       ) : null}
@@ -1615,81 +3068,266 @@ function EggSaleContent() {
                 </>
               ) : null}
 
-              <View style={styles.stepActions}>
-                {step > 0 ? (
-                  <Button
-                    label="Back"
-                    variant="secondary"
-                    onPress={() => {
-                      setError("");
-                      setStep((current) => current - 1);
-                      scrollRef.current?.scrollTo({ y: 0, animated: true });
-                    }}
-                  />
-                ) : null}
-                <Button
-                  label={step === 2 ? "Review sale" : "Continue"}
-                  onPress={continueSale}
-                />
-              </View>
+              </Animated.View>
             </>
           ) : null}
 
-          {stage === "review" && product ? (
+          {stage === "review" && selectedProducts.length > 0 ? (
             <>
-              <Card style={styles.card}>
-                <AppText weight="semibold">Sale summary</AppText>
-                <AppText>{product.name}</AppText>
-                {lines.map((line, index) => {
-                  const unit = product.units.find(
-                    (item) => item.id === line.unitId,
-                  );
-                  const priceCents = salePriceCents(line.unitPrice) ?? 0n;
-                  return (
-                    <View key={line.id} style={styles.summaryRow}>
-                      <AppText size="small" tone="secondary">
-                        {line.quantity} {unit?.abbreviation} ×{" "}
-                        {formatCurrency(priceCents, currency)}
-                      </AppText>
-                      <AppText size="small">
-                        {formatCurrency(lineTotalCents(line) ?? 0n, currency)}
+              <View
+                style={[
+                  styles.reviewTotalCard,
+                  {
+                    backgroundColor: theme.backgroundSelected,
+                    borderColor: `${theme.primary}35`,
+                  },
+                ]}
+              >
+                <View style={styles.reviewTotalTop}>
+                  <View
+                    style={[
+                      styles.reviewTotalIcon,
+                      { backgroundColor: `${theme.primary}18` },
+                    ]}
+                  >
+                    <Ionicons
+                      name="receipt-outline"
+                      size={20}
+                      color={theme.primary}
+                    />
+                  </View>
+                  <AppText size="small" weight="semibold">
+                    SALE TOTAL
+                  </AppText>
+                </View>
+                <AppText size="title" weight="semibold">
+                  {formatCurrency(totalCents, currency)}
+                </AppText>
+                <AppText size="small" tone="secondary">
+                  {selectedProducts.length} egg product
+                  {selectedProducts.length === 1 ? "" : "s"} · {lines.length} sale
+                  {lines.length === 1 ? " line" : " lines"}
+                </AppText>
+              </View>
+
+              {productTotals.map((totals) => {
+                const productLines = lines.filter(
+                  (line) => line.productId === totals.product.id,
+                );
+                const productTotal = productLines.reduce(
+                  (sum, line) => sum + (lineTotalCents(line) ?? 0n),
+                  0n,
+                );
+                return (
+                  <Card key={totals.product.id} style={styles.reviewCard}>
+                    <View style={styles.sectionTitle}>
+                      <View
+                        style={[
+                          styles.sectionIcon,
+                          { backgroundColor: theme.backgroundSelected },
+                        ]}
+                      >
+                        <Ionicons
+                          name="egg-outline"
+                          size={18}
+                          color={theme.primary}
+                        />
+                      </View>
+                      <View style={styles.sectionTitleCopy}>
+                        <AppText weight="semibold">
+                          {totals.product.name}
+                        </AppText>
+                        <AppText size="small" tone="secondary">
+                          {formatQuantity(
+                            totals.requestedBaseQuantity,
+                            totals.baseUnit?.abbreviation ?? "pieces",
+                          )}{" "}
+                          from stock
+                        </AppText>
+                      </View>
+                      <AppText size="small" weight="semibold">
+                        {formatCurrency(productTotal, currency)}
                       </AppText>
                     </View>
-                  );
-                })}
-                <View style={styles.totalRow}>
-                  <AppText weight="semibold">Total</AppText>
-                  <AppText weight="semibold">
-                    {formatCurrency(totalCents, currency)}
-                  </AppText>
+                    {productLines.map((line) => {
+                      const unit = totals.product.units.find(
+                        (item) => item.id === line.unitId,
+                      );
+                      const quantity = quantityMilli(line.quantity);
+                      const factor = unit
+                        ? quantityMilli(String(unit.conversion_factor))
+                        : null;
+                      const convertedQuantity =
+                        quantity !== null && factor !== null
+                          ? Number(quantity * factor) / 1_000_000
+                          : null;
+                      return (
+                        <View
+                          key={line.id}
+                          style={[
+                            styles.reviewItem,
+                            { borderTopColor: theme.border },
+                          ]}
+                        >
+                          <View style={styles.reviewItemCopy}>
+                            <AppText size="small" weight="semibold">
+                              {line.quantity} {unit?.abbreviation}
+                            </AppText>
+                            <AppText size="small" tone="secondary">
+                              {convertedQuantity !== null
+                                ? `${formatQuantity(convertedQuantity, totals.baseUnit?.abbreviation ?? "pieces")} · `
+                                : ""}
+                              {formatCurrency(
+                                salePriceCents(line.unitPrice) ?? 0n,
+                                currency,
+                              )}{" "}
+                              per {unit?.abbreviation}
+                            </AppText>
+                          </View>
+                          <AppText size="small" weight="semibold">
+                            {formatCurrency(lineTotalCents(line) ?? 0n, currency)}
+                          </AppText>
+                        </View>
+                      );
+                    })}
+                    <View
+                      style={[
+                        styles.reviewStockSummary,
+                        { backgroundColor: theme.backgroundElement },
+                      ]}
+                    >
+                      <Ionicons
+                        name="cube-outline"
+                        size={17}
+                        color={theme.primary}
+                      />
+                      <AppText size="small" weight="semibold">
+                        {formatQuantity(
+                          Math.max(0, totals.remainingQuantity),
+                          totals.baseUnit?.abbreviation ?? "pieces",
+                        )}{" "}
+                        left after sale
+                      </AppText>
+                    </View>
+                  </Card>
+                );
+              })}
+
+              <Card style={styles.reviewCard}>
+                <View style={styles.sectionTitle}>
+                  <View
+                    style={[
+                      styles.sectionIcon,
+                      { backgroundColor: theme.backgroundSelected },
+                    ]}
+                  >
+                    <Ionicons
+                      name="person-outline"
+                      size={18}
+                      color={theme.primary}
+                    />
+                  </View>
+                  <AppText weight="semibold">Sale details</AppText>
                 </View>
                 <SummaryRow label="Sale date" value={effectiveSaleDate} />
                 <SummaryRow
                   label="Customer"
-                  value={customer?.name ?? "Walk-in · no customer linked"}
+                  value={
+                    customer?.name ??
+                    activeSmsCustomerDraft?.name ??
+                    "Walk-in · no customer linked"
+                  }
                 />
+                {activeSmsCustomerDraft?.phone ? (
+                  <SummaryRow
+                    label="Payer phone"
+                    value={activeSmsCustomerDraft.phone}
+                  />
+                ) : null}
+              </Card>
+
+              <Card style={styles.reviewCard}>
+                <View style={styles.sectionTitle}>
+                  <View
+                    style={[
+                      styles.sectionIcon,
+                      { backgroundColor: theme.backgroundSelected },
+                    ]}
+                  >
+                    <Ionicons
+                      name="card-outline"
+                      size={18}
+                      color={theme.primary}
+                    />
+                  </View>
+                  <AppText weight="semibold">Payment summary</AppText>
+                </View>
                 {recordPayment ? (
                   payments.map((payment, index) => (
-                    <SummaryRow
+                    <View
                       key={payment.id}
-                      label={`Payment ${index + 1} · ${paymentMethods.find((method) => method.value === payment.method)?.label ?? "Payment"}`}
-                      value={`${formatCurrency(salePriceCents(payment.amount) ?? 0n, currency)}${payment.reference.trim() ? ` · ${payment.reference.trim()}` : ""}`}
-                    />
+                      style={[
+                        styles.paymentReviewRow,
+                        { borderTopColor: theme.border },
+                      ]}
+                    >
+                      <View style={styles.paymentReviewHeading}>
+                        <AppText size="small" weight="semibold">
+                          {index + 1}.{" "}
+                          {paymentMethods.find(
+                            (method) => method.value === payment.method,
+                          )?.label ?? "Payment"}
+                        </AppText>
+                        <AppText size="small" weight="semibold">
+                          {formatCurrency(
+                            salePriceCents(payment.amount) ?? 0n,
+                            currency,
+                          )}
+                        </AppText>
+                      </View>
+                      {payment.reference.trim() ? (
+                        <AppText size="small" tone="secondary">
+                          Ref: {payment.reference.trim()}
+                        </AppText>
+                      ) : null}
+                      {payment.date ? (
+                        <AppText size="small" tone="secondary">
+                          Received {payment.date}
+                          {payment.time ? ` at ${payment.time}` : ""}
+                        </AppText>
+                      ) : null}
+                    </View>
                   ))
                 ) : (
-                  <SummaryRow label="Payments" value="None recorded now" />
+                  <View
+                    style={[
+                      styles.noPaymentsNote,
+                      { backgroundColor: theme.backgroundElement },
+                    ]}
+                  >
+                    <Ionicons
+                      name="information-circle-outline"
+                      size={18}
+                      color={theme.textSecondary}
+                    />
+                    <AppText size="small" tone="secondary">
+                      No payment recorded now
+                    </AppText>
+                  </View>
                 )}
-                <SummaryRow
-                  label="Paid now"
-                  value={formatCurrency(paidCents, currency)}
-                />
-                <SummaryRow
-                  label={creditCents > 0n ? "Customer credit" : "Balance due"}
-                  value={formatCurrency(
-                    creditCents > 0n ? creditCents : balanceDueCents,
-                    currency,
-                  )}
-                />
+                <View
+                  style={[
+                    styles.paidNowSummary,
+                    { backgroundColor: theme.backgroundElement },
+                  ]}
+                >
+                  <AppText size="small" tone="secondary">
+                    Paid now
+                  </AppText>
+                  <AppText size="small" weight="semibold">
+                    {formatCurrency(paidCents, currency)}
+                  </AppText>
+                </View>
                 <View
                   style={[
                     styles.reviewOutcome,
@@ -1726,25 +3364,85 @@ function EggSaleContent() {
                         ? "Customer still owes you"
                         : "Paid in full"}
                   </AppText>
-                  <AppText size="small" tone="secondary">
-                    {creditCents > 0n
-                      ? `${formatCurrency(creditCents, currency)} becomes customer credit. No refund is issued.`
-                      : balanceDueCents > 0n
-                        ? `${formatCurrency(balanceDueCents, currency)} remains as the sale’s balance due.`
-                        : "Payments match the sale total exactly."}
-                  </AppText>
+                  {creditCents > 0n || balanceDueCents > 0n ? (
+                    <AppText size="small" weight="semibold">
+                      {formatCurrency(
+                        creditCents > 0n ? creditCents : balanceDueCents,
+                        currency,
+                      )}
+                    </AppText>
+                  ) : null}
+                  {creditCents > 0n ? (
+                    <AppText size="small" tone="secondary">
+                      Held as customer credit. No refund is issued.
+                    </AppText>
+                  ) : balanceDueCents > 0n ? (
+                    <AppText size="small" tone="secondary">
+                      Remains outstanding on this sale.
+                    </AppText>
+                  ) : null}
                 </View>
-                {notes.trim() ? (
-                  <SummaryRow label="Notes" value={notes.trim()} />
-                ) : null}
-                {scheduleSaleFollowUp &&
-                (balanceDueCents > 0n || creditCents > 0n) ? (
-                  <SummaryRow
-                    label="Follow-up reminder"
-                    value={`${effectiveReminderDueDate} at ${reminderDueTime}`}
-                  />
-                ) : null}
               </Card>
+
+              {notes.trim() ||
+              (scheduleSaleFollowUp &&
+                (balanceDueCents > 0n || creditCents > 0n)) ? (
+                <Card style={styles.reviewCard}>
+                  <View style={styles.sectionTitle}>
+                    <View
+                      style={[
+                        styles.sectionIcon,
+                        { backgroundColor: theme.backgroundSelected },
+                      ]}
+                    >
+                      <Ionicons
+                        name="document-text-outline"
+                        size={18}
+                        color={theme.primary}
+                      />
+                    </View>
+                    <AppText weight="semibold">Notes and follow-up</AppText>
+                  </View>
+                  {notes.trim() ? (
+                    <View
+                      style={[
+                        styles.reviewNote,
+                        { backgroundColor: theme.backgroundElement },
+                      ]}
+                    >
+                      <AppText size="small" tone="secondary">
+                        Sale note
+                      </AppText>
+                      <AppText size="small">{notes.trim()}</AppText>
+                    </View>
+                  ) : null}
+                  {scheduleSaleFollowUp &&
+                  (balanceDueCents > 0n || creditCents > 0n) ? (
+                    <View style={styles.reviewReminder}>
+                      <View
+                        style={[
+                          styles.reviewReminderIcon,
+                          { backgroundColor: `${theme.primary}14` },
+                        ]}
+                      >
+                        <Ionicons
+                          name="notifications-outline"
+                          size={18}
+                          color={theme.primary}
+                        />
+                      </View>
+                      <View style={styles.reviewReminderCopy}>
+                        <AppText size="small" weight="semibold">
+                          Follow-up scheduled
+                        </AppText>
+                        <AppText size="small" tone="secondary">
+                          {effectiveReminderDueDate} · {reminderDueTime}
+                        </AppText>
+                      </View>
+                    </View>
+                  ) : null}
+                </Card>
+              ) : null}
               <View style={styles.reviewEditGroup}>
                 <AppText size="small" weight="semibold" tone="secondary">
                   Need to change something?
@@ -1800,20 +3498,110 @@ function EggSaleContent() {
                   </Pressable>
                 </View>
               </View>
-              <Button
-                label={
-                  creditCents > 0n
-                    ? "Confirm sale & customer credit"
-                    : balanceDueCents > 0n
-                      ? "Confirm sale with balance due"
-                      : "Confirm fully paid sale"
-                }
-                loading={createSale.isPending}
-                onPress={() => void submitSale()}
-              />
             </>
           ) : null}
         </ScrollView>
+        {stage === "edit" && inStockProducts.length > 0 ? (
+          <View
+            style={[
+              styles.stickyActions,
+              {
+                backgroundColor: theme.background,
+                borderTopColor: theme.border,
+              },
+            ]}
+          >
+            {step > 0 ? (
+              <Button
+                label="Back"
+                variant="secondary"
+                onPress={() => {
+                  setError("");
+                  setStep((current) => current - 1);
+                  scrollRef.current?.scrollTo({ y: 0, animated: true });
+                }}
+                style={styles.backAction}
+              />
+            ) : null}
+            <Button
+              label={step === 2 ? "Review sale" : "Continue"}
+              onPress={continueSale}
+              style={styles.continueAction}
+            />
+          </View>
+        ) : null}
+        {stage === "review" && selectedProducts.length > 0 ? (
+          <View
+            style={[
+              styles.stickyActions,
+              {
+                backgroundColor: theme.background,
+                borderTopColor: theme.border,
+              },
+            ]}
+          >
+            <Button
+              label={
+                creditCents > 0n
+                  ? "Confirm sale & customer credit"
+                  : balanceDueCents > 0n
+                    ? "Confirm sale with balance due"
+                    : "Confirm fully paid sale"
+              }
+              loading={createSale.isPending}
+              disabled={createSale.isPending}
+              onPress={() => void submitSale()}
+              style={styles.continueAction}
+            />
+          </View>
+        ) : null}
+        {smsPickerPaymentId ? (
+          <SmsPaymentPicker
+            key={smsPickerPaymentId}
+            visible
+            fromDate={effectiveSaleDate}
+            currency={currency}
+            existingReferences={payments.flatMap((payment) =>
+              payment.id !== smsPickerPaymentId &&
+              payment.method === "mpesa" &&
+              payment.reference.trim()
+                ? [payment.reference.trim()]
+                : [],
+            )}
+            existingSmsMessageIds={payments.flatMap((payment) =>
+              payment.id === smsPickerPaymentId && payment.smsMessageId
+                ? [payment.smsMessageId]
+                : [],
+            )}
+            excludedSmsMessageIds={payments.flatMap((payment) =>
+              payment.id !== smsPickerPaymentId && payment.smsMessageId
+                ? [payment.smsMessageId]
+                : [],
+            )}
+            maxSelections={10}
+            hasExistingPayments={payments.some(
+              (payment) =>
+                payment.id !== smsPickerPaymentId &&
+                (payment.amount.trim() || payment.reference.trim()),
+            )}
+            selectIntoExistingPayment
+            transactionLabel="egg sale"
+            expectedDirection="INCOMING"
+            overpaymentMessage="The amount above the egg sale total becomes customer credit."
+            purchaseTotalCents={totalCents.toString()}
+            currentPaidCents={payments
+              .filter((payment) => payment.id !== smsPickerPaymentId)
+              .reduce(
+                (sum, payment) =>
+                  sum + (salePriceCents(payment.amount) ?? 0n),
+                0n,
+              )
+              .toString()}
+            sharedMessage={sharedMessage}
+            onClose={() => setSmsPickerPaymentId(null)}
+            onSelect={(selected) => void applySmsPayment(selected)}
+          />
+        ) : null}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -1867,14 +3655,20 @@ const styles = StyleSheet.create({
     maxWidth: 760,
     alignSelf: "center",
     padding: 20,
+    paddingBottom: 24,
     gap: 14,
   },
   card: { gap: 13 },
   progressCard: {
-    gap: 10,
+    gap: 9,
     borderWidth: 1,
-    borderRadius: 10,
-    padding: 14,
+    borderRadius: 14,
+    padding: 13,
+  },
+  progressLabels: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
   },
   progressTrack: {
     flexDirection: "row",
@@ -1885,6 +3679,16 @@ const styles = StyleSheet.create({
     height: 5,
     borderRadius: 4,
   },
+  stickyActions: {
+    flexDirection: "row",
+    gap: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: 8,
+  },
+  backAction: { minWidth: 96 },
+  continueAction: { flex: 1 },
   formError: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -1895,25 +3699,175 @@ const styles = StyleSheet.create({
   },
   formErrorText: { flex: 1 },
   empty: { alignItems: "center", gap: 12, paddingVertical: 24 },
+  stepContent: { gap: 14 },
+  sectionIntro: { gap: 3 },
   choiceList: { gap: 9 },
   productChoice: {
-    minHeight: 68,
+    gap: 11,
+    borderWidth: 1,
+    borderRadius: 15,
+    padding: 12,
+  },
+  productChoiceContent: { flex: 1, minWidth: 0, gap: 11 },
+  productChoiceHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  productCopy: { flex: 1, minWidth: 0, gap: 3 },
+  productStockStats: { gap: 6 },
+  productStockStat: {
+    minHeight: 38,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 12,
+    gap: 10,
     borderWidth: 1,
-    borderRadius: 8,
-    padding: 13,
+    borderColor: "transparent",
+    borderRadius: 9,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
   },
-  productCopy: { flex: 1, gap: 4 },
-  lineCard: {
-    gap: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "#8885",
-    borderRadius: 8,
+  sectionTitle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  sectionIcon: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+  },
+  sectionTitleCopy: { flex: 1, minWidth: 0, gap: 1 },
+  sectionDivider: { height: StyleSheet.hairlineWidth, marginVertical: 2 },
+  stockOverview: {
+    gap: 10,
+  },
+  sellableStock: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+    borderWidth: 1,
+    borderRadius: 15,
     padding: 12,
   },
+  stockStateIcon: {
+    width: 38,
+    height: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+  },
+  sellableStockCopy: { flex: 1, minWidth: 0, gap: 1 },
+  stockBreakdown: {
+    gap: 5,
+    paddingTop: 2,
+  },
+  stockBreakdownRow: {
+    minHeight: 40,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    borderRadius: 9,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+  },
+  reservedStockRow: {
+    borderWidth: 1,
+  },
+  productSaleGroup: {
+    gap: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 14,
+  },
+  conversionNotice: {
+    minHeight: 38,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 9,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  conversionCopy: { flex: 1, minWidth: 0 },
+  remainingStock: {
+    minHeight: 52,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+  },
+  remainingStockCopy: { flex: 1, gap: 2 },
+  addUnitAction: {
+    minHeight: 66,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderRadius: 13,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  addUnitIcon: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+  },
+  addUnitCopy: { flex: 1, minWidth: 0, gap: 2 },
+  lineCard: {
+    gap: 12,
+    borderWidth: 1,
+    borderRadius: 13,
+    padding: 12,
+  },
+  lineHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+  },
+  lineNumber: {
+    width: 28,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 9,
+  },
+  lineHeadingCopy: { flex: 1, minWidth: 0, gap: 1 },
+  lineTotal: {
+    minHeight: 40,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderRadius: 9,
+    paddingHorizontal: 10,
+  },
+  marginEstimate: {
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 11,
+    padding: 11,
+  },
+  marginEstimateHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  marginValues: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  marginValue: { flex: 1, minWidth: 82, gap: 3 },
   headingRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -1930,14 +3884,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 7,
   },
-  totalRow: {
+  saleTotal: {
+    minHeight: 64,
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "#8885",
-    paddingTop: 12,
+    justifyContent: "space-between",
+    borderWidth: 1,
+    borderRadius: 13,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
   },
+  saleTotalCopy: { gap: 1 },
   switchRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1945,11 +3902,6 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   switchCopy: { flex: 1, gap: 4 },
-  stepActions: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    gap: 10,
-  },
   reviewEditGroup: { gap: 6 },
   editReviewActions: { flexDirection: "row", gap: 7 },
   editAction: {
@@ -1968,18 +3920,79 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#8885",
   },
-  reminderSchedule: { gap: 11 },
-  customerChoice: {
+  reminderAmount: {
+    minHeight: 68,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 12,
+    gap: 10,
     borderWidth: 1,
-    borderRadius: 8,
+    borderRadius: 12,
+    paddingHorizontal: 13,
+    paddingVertical: 9,
+  },
+  reminderAmountCopy: { flex: 1, gap: 3 },
+  reminderSchedule: {
+    gap: 11,
+    borderWidth: 1,
+    borderRadius: 12,
     padding: 12,
   },
-  customerResults: { gap: 8 },
+  customerChoice: {
+    minHeight: 62,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 11,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  customerPicker: {
+    gap: 9,
+    borderRadius: 13,
+    padding: 11,
+  },
+  customerPickerHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  customerStatus: {
+    minHeight: 48,
+    justifyContent: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderColor: "#8885",
+    borderRadius: 10,
+    padding: 10,
+  },
+  customerResults: { gap: 7 },
+  customerAvatar: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+  },
   customerResultCopy: { flex: 1, gap: 3 },
+  customerMoreButton: {
+    minHeight: 39,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: 10,
+  },
+  smsCustomerNote: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 10,
+  },
   selectedCustomer: {
     flexDirection: "row",
     alignItems: "center",
@@ -2002,17 +4015,90 @@ const styles = StyleSheet.create({
   },
   paymentEntry: {
     gap: 12,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: 13,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 13,
   },
-  fillPaymentButton: {
-    minHeight: 40,
+  removePaymentIcon: {
+    width: 32,
+    height: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 10,
+    backgroundColor: "#D9484814",
+  },
+  paymentModeChoices: {
+    flexDirection: "row",
+    gap: 9,
+  },
+  paymentMode: {
+    flex: 1,
+    minHeight: 78,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 10,
+  },
+  paymentModeCopy: { flex: 1, minWidth: 0, gap: 2 },
+  paymentMethodsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  paymentMethod: {
+    minWidth: "30%",
+    minHeight: 55,
+    flexGrow: 1,
+    flexBasis: "30%",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 7,
     borderWidth: 1,
-    borderRadius: 7,
+    borderRadius: 11,
+    paddingHorizontal: 9,
+  },
+  smsPaymentButton: {
+    minHeight: 65,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+  },
+  smsPaymentIcon: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+  },
+  smsPaymentCopy: { flex: 1, minWidth: 0, gap: 2 },
+  smsSelectedBadge: {
+    minHeight: 60,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+  },
+  smsSelectedCopy: { flex: 1, minWidth: 0, gap: 4 },
+  smsReference: { gap: 2, marginTop: 2 },
+  smsReferenceValue: { flexWrap: "wrap" },
+  fillPaymentButton: {
+    minHeight: 42,
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    gap: 7,
+    borderWidth: 1,
+    borderRadius: 9,
     paddingHorizontal: 10,
   },
   paymentSummary: {
@@ -2025,6 +4111,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 9,
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 11,
   },
   reviewOutcome: {
     gap: 5,
@@ -2032,6 +4121,56 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     padding: 12,
   },
+  paymentReviewRow: {
+    gap: 5,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 10,
+  },
+  paymentReviewHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  noPaymentsNote: {
+    minHeight: 42,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: 9,
+    paddingHorizontal: 10,
+  },
+  paidNowSummary: {
+    minHeight: 42,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    borderRadius: 9,
+    paddingHorizontal: 11,
+  },
+  reviewNote: {
+    gap: 5,
+    borderRadius: 10,
+    padding: 12,
+  },
+  reviewReminder: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderColor: "#8885",
+    borderRadius: 11,
+    padding: 11,
+  },
+  reviewReminderIcon: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+  },
+  reviewReminderCopy: { flex: 1, gap: 3 },
   summaryRow: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -2039,4 +4178,45 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   summaryValue: { flex: 1, textAlign: "right" },
+  reviewTotalCard: {
+    minHeight: 150,
+    alignItems: "flex-start",
+    justifyContent: "center",
+    gap: 3,
+    borderWidth: 1,
+    borderRadius: 18,
+    padding: 18,
+  },
+  reviewTotalTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    marginBottom: 2,
+  },
+  reviewTotalIcon: {
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+  },
+  reviewCard: { gap: 12 },
+  reviewItem: {
+    minHeight: 50,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 10,
+  },
+  reviewItemCopy: { flex: 1, gap: 2 },
+  reviewStockSummary: {
+    minHeight: 40,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: 9,
+    paddingHorizontal: 10,
+  },
 });

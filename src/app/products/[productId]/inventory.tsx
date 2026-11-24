@@ -45,10 +45,22 @@ function ProductInventoryContent() {
   const farm = useFarm();
   const { theme } = useTheme();
   const dialog = useAppDialog();
-  const { productId, fromSetup, setupStep } = useLocalSearchParams<{
+  const {
+    productId,
+    fromSetup,
+    setupStep,
+    reportSupportedQuantity,
+    reportLedgerQuantity,
+    reportAsOf,
+    reportFromDate,
+  } = useLocalSearchParams<{
     productId: string;
     fromSetup?: string;
     setupStep?: string;
+    reportSupportedQuantity?: string;
+    reportLedgerQuantity?: string;
+    reportAsOf?: string;
+    reportFromDate?: string;
   }>();
   const farmId = farm.selectedFarm?.id;
   const productQuery = useProduct(user?.id, farmId, productId);
@@ -75,9 +87,16 @@ function ProductInventoryContent() {
   const eggProduct = eggOptions.data?.products.find(
     (item) => item.id === productId,
   );
+  const eggUnit =
+    eggProduct?.units.find((unit) => unit.is_base_unit)?.abbreviation ?? "eggs";
   const isPoultryProduct =
     product?.product_type === "chickens" || product?.product_type === "eggs";
   const currentQuantity = Number(balance?.quantity ?? 0);
+  const hasEggReportReconciliation =
+    product?.product_type === "eggs" &&
+    reportSupportedQuantity !== undefined &&
+    reportLedgerQuantity !== undefined &&
+    reportAsOf !== undefined;
   const canSetOpeningStock =
     inventoryQuery.data !== undefined &&
     !inventoryQuery.isError &&
@@ -87,6 +106,7 @@ function ProductInventoryContent() {
   const [direction, setDirection] = useState<"in" | "out">("in");
   const [occurredOn, setOccurredOn] = useState(today());
   const [reason, setReason] = useState("");
+  const [correctionOpen, setCorrectionOpen] = useState(fromSetup === "true");
   const effectiveDirection =
     direction === "out" && currentQuantity > 0 ? "out" : "in";
 
@@ -178,11 +198,12 @@ function ProductInventoryContent() {
       <ScrollView
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
+        keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
         automaticallyAdjustKeyboardInsets
       >
         <FarmPageHeader
           title="Product stock"
+          compact
           showBack
           fallbackHref={
             fromSetup === "true"
@@ -237,23 +258,61 @@ function ProductInventoryContent() {
                     />
                   </View>
                   <View style={styles.poultryCopy}>
-                    <AppText size="small" weight="semibold">
-                      {product.product_type === "chickens"
-                        ? "FLOCK INVENTORY"
-                        : "EGG INVENTORY"}
-                    </AppText>
-                    <AppText size="small" tone="secondary">
-                      {product.product_type === "chickens"
-                        ? "Bird counts belong to batches and housing blocks."
-                        : "Egg stock is recorded by product, block, and collection."}
-                    </AppText>
+                    {product.product_type === "chickens" ? (
+                      <>
+                        <AppText size="small" weight="semibold">
+                          FLOCK INVENTORY
+                        </AppText>
+                        <AppText size="small" tone="secondary">
+                          Bird counts belong to batches and housing blocks.
+                        </AppText>
+                      </>
+                    ) : (
+                      <>
+                        <AppText size="heading" weight="semibold">
+                          {product.name}
+                        </AppText>
+                        <AppText size="small" tone="secondary">
+                          Egg product · {product.is_sellable ? "For sale" : "Not for sale"}
+                        </AppText>
+                      </>
+                    )}
                   </View>
                 </View>
-                <AppText size="title" weight="semibold" style={{ color: theme.primary }}>
-                  {product.product_type === "chickens"
-                    ? `${chickenOptions.isLoading ? "…" : chickenCount.toLocaleString()} birds`
-                    : `${eggOptions.isLoading ? "…" : Number(eggProduct?.available_quantity_in_base_unit ?? 0).toLocaleString()} eggs`}
-                </AppText>
+                <View
+                  style={[
+                    styles.poultryBalance,
+                    { backgroundColor: theme.backgroundSelected },
+                  ]}
+                >
+                  <AppText size="small" weight="semibold" tone="secondary">
+                    {product.product_type === "chickens"
+                      ? "BIRDS ON HAND"
+                      : product.is_sellable
+                        ? "AVAILABLE TO SELL"
+                        : "EGGS ON HAND"}
+                  </AppText>
+                  <AppText size="title" weight="semibold" style={{ color: theme.text }}>
+                    {product.product_type === "chickens"
+                      ? `${chickenOptions.isLoading ? "…" : chickenCount.toLocaleString()} birds`
+                      : eggOptions.isLoading
+                        ? "…"
+                        : eggProduct
+                          ? `${formatStockQuantity(
+                              product.is_sellable
+                                ? eggProduct.available_quantity_in_base_unit
+                                : eggProduct.on_hand_quantity_in_base_unit,
+                            )} ${eggProduct.units.find((unit) => unit.is_base_unit)?.abbreviation ?? "eggs"}`
+                          : "—"}
+                  </AppText>
+                  {product.product_type === "eggs" && eggProduct ? (
+                    <AppText size="small" tone="secondary">
+                      {product.is_sellable
+                        ? "After recorded sales, losses, and stock adjustments."
+                        : "Recorded opening stock and collections, less sales, losses, and adjustments."}
+                    </AppText>
+                  ) : null}
+                </View>
                 {product.product_type === "chickens" ? (
                   chickenBlocks.length ? (
                     chickenBlocks.map((block) => (
@@ -283,13 +342,139 @@ function ProductInventoryContent() {
                   <AppText size="small" style={{ color: theme.danger }}>
                     {normalizeApiError(eggOptions.error).message}
                   </AppText>
+                ) : eggProduct ? (
+                  <>
+                    <View style={[styles.eggBreakdown, { borderTopColor: theme.border }]}>
+                      <View style={styles.eggBreakdownHeading}>
+                        <AppText weight="semibold">How this stock adds up</AppText>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={`Review ${product.name} production records`}
+                          onPress={() =>
+                            router.push({
+                              pathname: "/reports/[report]",
+                              params: {
+                                report: "production",
+                                product_id: product.id,
+                              },
+                            } as Href)
+                          }
+                          hitSlop={8}
+                        >
+                          <AppText
+                            size="small"
+                            weight="semibold"
+                            style={{ color: theme.primary }}
+                          >
+                            Production records
+                          </AppText>
+                        </Pressable>
+                      </View>
+                      <EggStockBreakdownRow
+                        label="Opening stock"
+                        value={eggProduct.opening_stock_quantity_in_base_unit}
+                        unit={eggUnit}
+                        color={theme.success}
+                        prefix="+"
+                      />
+                      <EggStockBreakdownRow
+                        label="Eggs collected"
+                        value={eggProduct.collected_quantity_in_base_unit}
+                        unit={eggUnit}
+                        color={theme.success}
+                        prefix="+"
+                      />
+                      <EggStockBreakdownRow
+                        label="Sales and orders"
+                        value={eggProduct.sold_quantity_in_base_unit}
+                        unit={eggUnit}
+                        color={theme.danger}
+                        prefix="−"
+                      />
+                      <EggStockBreakdownRow
+                        label="Egg losses"
+                        value={eggProduct.lost_quantity_in_base_unit}
+                        unit={eggUnit}
+                        color={theme.danger}
+                        prefix="−"
+                      />
+                      {Number(eggProduct.stock_adjustment_quantity_in_base_unit) !== 0 ? (
+                        <EggStockBreakdownRow
+                          label="Stock adjustments"
+                          value={eggProduct.stock_adjustment_quantity_in_base_unit}
+                          unit={eggUnit}
+                          color={theme.text}
+                          signed
+                        />
+                      ) : null}
+                      {Number(eggProduct.reserved_quantity_in_base_unit) > 0 ? (
+                        <View
+                          style={[
+                            styles.eggReserved,
+                            {
+                              backgroundColor: theme.background,
+                              borderColor: theme.border,
+                            },
+                          ]}
+                        >
+                          <View style={styles.eggReservedCopy}>
+                            <AppText size="small" weight="semibold">
+                              Reserved for orders
+                            </AppText>
+                            <AppText size="small" tone="secondary">
+                              Not yet delivered
+                            </AppText>
+                          </View>
+                          <AppText size="small" weight="semibold">
+                            {formatStockQuantity(eggProduct.reserved_quantity_in_base_unit)}{" "}
+                            {eggUnit}
+                          </AppText>
+                        </View>
+                      ) : null}
+                      <AppText size="small" tone="secondary">
+                        Sales and orders include quantities reserved for delivery.
+                      </AppText>
+                    </View>
+                  </>
                 ) : (
                   <AppText size="small" tone="secondary">
-                    {eggProduct
-                      ? `${eggProduct.name} · collected and not yet sold or lost`
-                      : "No collected egg stock is available for this product."}
+                    No egg stock records are available for this product.
                   </AppText>
                 )}
+                {hasEggReportReconciliation ? (
+                  <View
+                      style={[
+                        styles.reportReconciliation,
+                        {
+                          backgroundColor: theme.background,
+                          borderColor: theme.border,
+                        },
+                      ]}
+                  >
+                      <AppText size="small" weight="semibold">
+                        Profitability check · {reportAsOf}
+                      </AppText>
+                      <AppText size="small" tone="secondary">
+                        Egg stock records support {Number(reportSupportedQuantity).toLocaleString()} eggs; the inventory ledger recorded {Number(reportLedgerQuantity).toLocaleString()} eggs on that date.
+                        {" "}Review the dated records before changing current stock.
+                      </AppText>
+                      <Button
+                        label="Review egg collection records"
+                        variant="secondary"
+                        onPress={() =>
+                          router.push({
+                            pathname: "/reports/[report]",
+                            params: {
+                              report: "production",
+                              product_id: product.id,
+                              from_date: reportFromDate ?? reportAsOf,
+                              to_date: reportAsOf,
+                            },
+                          } as Href)
+                        }
+                      />
+                  </View>
+                ) : null}
                 <View style={styles.poultryActions}>
                   {product.product_type === "chickens" ? (
                     <>
@@ -307,13 +492,35 @@ function ProductInventoryContent() {
                     <>
                       <Button
                         label="Record egg collection"
-                        variant="secondary"
                         onPress={() => router.push("/egg-collection")}
                       />
-                      <Button
-                        label="View egg sales"
+                      <Pressable
+                        accessibilityRole="button"
                         onPress={() => router.push("/(tabs)/eggs")}
-                      />
+                        style={({ pressed }) => [
+                          styles.eggSalesAction,
+                          {
+                            borderColor: theme.border,
+                            backgroundColor: pressed
+                              ? theme.backgroundSelected
+                              : "transparent",
+                          },
+                        ]}
+                      >
+                        <Ionicons
+                          name="cart-outline"
+                          size={18}
+                          color={theme.textSecondary}
+                        />
+                        <AppText size="small" weight="semibold">
+                          View egg sales
+                        </AppText>
+                        <Ionicons
+                          name="chevron-forward"
+                          size={16}
+                          color={theme.textSecondary}
+                        />
+                      </Pressable>
                     </>
                   )}
                 </View>
@@ -351,9 +558,9 @@ function ProductInventoryContent() {
                   </View>
                   <View style={styles.balanceCopy}>
                     <AppText size="small" weight="semibold" tone="secondary">
-                      CURRENT STOCK
+                      CURRENT BALANCE
                     </AppText>
-                    <AppText size="small" weight="semibold" numberOfLines={1}>
+                    <AppText size="body" weight="semibold" numberOfLines={1}>
                       {product.name}
                     </AppText>
                   </View>
@@ -405,9 +612,9 @@ function ProductInventoryContent() {
                       ?.unit_abbreviation}
                 </AppText>
               </View>
-              <View style={[styles.balanceFooter, { borderTopColor: theme.border }]}>
+              <View style={[styles.purchaseAction, { borderTopColor: theme.border }]}>
                 <AppText size="small" tone="secondary">
-                  {canSetOpeningStock ? "Opening count not set" : "Recorded balance"}
+                  Add stock from a supplier purchase
                 </AppText>
                 <Pressable
                   accessibilityRole="button"
@@ -418,7 +625,7 @@ function ProductInventoryContent() {
                     })
                   }
                   style={({ pressed }) => [
-                    styles.purchaseLink,
+                    styles.purchaseButton,
                     {
                       backgroundColor: theme.primary,
                       opacity: pressed ? 0.78 : 1,
@@ -427,7 +634,7 @@ function ProductInventoryContent() {
                 >
                   <Ionicons name="add" size={17} color={theme.onPrimary} />
                   <AppText
-                    size="small"
+                    size="body"
                     weight="semibold"
                     style={{ color: theme.onPrimary }}
                   >
@@ -436,121 +643,187 @@ function ProductInventoryContent() {
                 </Pressable>
               </View>
             </Card>
-            <Card style={styles.section}>
-              <AppText size="heading" weight="semibold">
-                {canSetOpeningStock ? "Set opening stock" : "Record a stock change"}
-              </AppText>
-              <AppText size="small" tone="secondary">
-                {canSetOpeningStock
-                  ? "Enter the amount physically counted. This can only be set once."
-                  : "For corrections and stock changes outside supplier purchases."}
-              </AppText>
-              {!canSetOpeningStock && currentQuantity > 0 ? (
-                <View style={styles.choiceRow}>
-                {(["in", "out"] as const).map((item) => {
-                  const selected = item === direction;
-                  return (
-                    <Pressable
-                      key={item}
-                      accessibilityRole="button"
-                      accessibilityState={{ selected }}
-                      onPress={() => setDirection(item)}
-                      style={[
-                        styles.choice,
-                        {
-                          backgroundColor: selected
-                            ? theme.backgroundSelected
-                            : theme.backgroundElement,
-                          borderColor: selected ? theme.primary : theme.border,
-                        },
-                      ]}
-                    >
-                      <AppText size="small" weight="semibold">
-                        {item === "in" ? "Add stock" : "Remove stock"}
+            <Card
+              style={[
+                styles.section,
+                styles.correctionSection,
+                correctionOpen && styles.correctionSectionOpen,
+              ]}
+            >
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ expanded: correctionOpen }}
+                onPress={() => setCorrectionOpen((open) => !open)}
+                style={styles.correctionTrigger}
+              >
+                <View
+                  style={[
+                    styles.correctionIcon,
+                    { backgroundColor: theme.backgroundSelected },
+                  ]}
+                >
+                  <Ionicons name="options-outline" size={18} color={theme.textSecondary} />
+                </View>
+                <View style={styles.correctionTriggerCopy}>
+                  <AppText size="body" weight="semibold">
+                    {canSetOpeningStock ? "Set starting stock" : "Correct inventory count"}
+                  </AppText>
+                  <AppText size="small" tone="secondary">
+                    {canSetOpeningStock
+                      ? "Enter the amount currently on hand."
+                      : "For damaged, missing, or found stock."}
+                  </AppText>
+                </View>
+                <Ionicons
+                  name={correctionOpen ? "chevron-up" : "chevron-down"}
+                  size={20}
+                  color={theme.textSecondary}
+                />
+              </Pressable>
+              {correctionOpen ? (
+                <View
+                  style={[
+                    styles.correctionForm,
+                    { borderTopColor: theme.border },
+                  ]}
+                >
+                  {canSetOpeningStock ? (
+                    <AppText size="small" tone="secondary">
+                      Set the actual quantity on hand. This starting count can
+                      only be recorded once.
+                    </AppText>
+                  ) : (
+                    <View style={styles.correctionHint}>
+                      <Ionicons
+                        name="information-circle-outline"
+                        size={16}
+                        color={theme.textSecondary}
+                      />
+                      <AppText
+                        size="small"
+                        tone="secondary"
+                        style={styles.correctionHintText}
+                      >
+                        Supplier purchases belong in Record purchase above.
                       </AppText>
-                    </Pressable>
-                  );
-                })}
+                    </View>
+                  )}
+                  {!canSetOpeningStock && currentQuantity > 0 ? (
+                    <View style={styles.choiceRow}>
+                      {(["in", "out"] as const).map((item) => {
+                        const selected = item === direction;
+                        return (
+                          <Pressable
+                            key={item}
+                            accessibilityRole="button"
+                            accessibilityState={{ selected }}
+                            onPress={() => setDirection(item)}
+                            style={[
+                              styles.choice,
+                              {
+                                backgroundColor: selected
+                                  ? theme.backgroundSelected
+                                  : theme.backgroundElement,
+                                borderColor: selected
+                                  ? theme.primary
+                                  : theme.border,
+                              },
+                            ]}
+                          >
+                            <AppText size="small" weight="semibold">
+                              {item === "in"
+                                ? "Increase recorded count"
+                                : "Decrease recorded count"}
+                            </AppText>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  ) : null}
+                  {!canSetOpeningStock && currentQuantity <= 0 ? (
+                    <AppText
+                      size="small"
+                      weight="semibold"
+                      style={{ color: theme.primary }}
+                    >
+                      Increase recorded count
+                    </AppText>
+                  ) : null}
+                  <View style={styles.unitChoices}>
+                    {product.product_units.map((unit) => {
+                      const selected =
+                        unit.unit_id ===
+                        (unitId ||
+                          product.product_units.find(
+                            (item) => item.is_base_unit,
+                          )?.unit_id);
+                      return (
+                        <Pressable
+                          key={unit.id}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected }}
+                          onPress={() => setUnitId(unit.unit_id)}
+                          style={[
+                            styles.unitChoice,
+                            {
+                              borderColor: selected
+                                ? theme.primary
+                                : theme.border,
+                              backgroundColor: selected
+                                ? theme.backgroundSelected
+                                : theme.backgroundElement,
+                            },
+                          ]}
+                        >
+                          <AppText size="small">
+                            {unit.unit_name} ({unit.unit_abbreviation})
+                          </AppText>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                  <TextField
+                    label="Quantity"
+                    value={quantity}
+                    onChangeText={setQuantity}
+                    keyboardType="decimal-pad"
+                    placeholder="0"
+                    returnKeyType="done"
+                  />
+                  <DatePickerField
+                    label="Stock date"
+                    value={occurredOn}
+                    onChange={setOccurredOn}
+                  />
+                  <TextField
+                    label={
+                      canSetOpeningStock
+                        ? "Opening count note"
+                        : "Reason for correction"
+                    }
+                    value={reason}
+                    onChangeText={setReason}
+                    placeholder={
+                      canSetOpeningStock
+                        ? "Optional note about this starting count"
+                        : "For example, damaged, missing, or stock found"
+                    }
+                    maxLength={500}
+                    multiline
+                    returnKeyType="done"
+                    blurOnSubmit
+                  />
+                  <Button
+                    label={
+                      canSetOpeningStock
+                        ? "Save starting count"
+                        : "Save inventory correction"
+                    }
+                    loading={recordMovement.isPending}
+                    onPress={() => void submit()}
+                  />
                 </View>
               ) : null}
-              {!canSetOpeningStock && currentQuantity <= 0 ? (
-                <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
-                  Add stock
-                </AppText>
-              ) : null}
-              <View style={styles.unitChoices}>
-                {product.product_units.map((unit) => {
-                  const selected =
-                    unit.unit_id ===
-                    (unitId ||
-                      product.product_units.find((item) => item.is_base_unit)
-                        ?.unit_id);
-                  return (
-                    <Pressable
-                      key={unit.id}
-                      accessibilityRole="button"
-                      accessibilityState={{ selected }}
-                      onPress={() => setUnitId(unit.unit_id)}
-                      style={[
-                        styles.unitChoice,
-                        {
-                          borderColor: selected ? theme.primary : theme.border,
-                          backgroundColor: selected
-                            ? theme.backgroundSelected
-                            : theme.backgroundElement,
-                        },
-                      ]}
-                    >
-                      <AppText size="small">
-                        {unit.unit_name} ({unit.unit_abbreviation})
-                      </AppText>
-                    </Pressable>
-                  );
-                })}
-              </View>
-              <TextField
-                label="Quantity"
-                value={quantity}
-                onChangeText={setQuantity}
-                keyboardType="decimal-pad"
-                placeholder="0"
-              />
-              <DatePickerField
-                label="Stock date"
-                value={occurredOn}
-                onChange={setOccurredOn}
-              />
-              <TextField
-                label={
-                  canSetOpeningStock
-                    ? "Opening count note"
-                    : effectiveDirection === "out"
-                      ? "Reason for removing stock"
-                      : "Reason for adding stock"
-                }
-                value={reason}
-                onChangeText={setReason}
-                placeholder={
-                  canSetOpeningStock
-                    ? "Optional note about this starting count"
-                    : effectiveDirection === "out"
-                      ? "For example, used, damaged, or missing"
-                      : "For example, stock found or correction"
-                }
-                maxLength={500}
-                multiline
-              />
-              <Button
-                label={
-                  canSetOpeningStock
-                    ? "Save opening count"
-                    : effectiveDirection === "out"
-                      ? "Record stock removed"
-                      : "Record stock added"
-                }
-                loading={recordMovement.isPending}
-                onPress={() => void submit()}
-              />
             </Card>
             <Card style={styles.section}>
               <AppText size="heading" weight="semibold">
@@ -628,6 +901,46 @@ function today() {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
+function formatStockQuantity(value: number | string): string {
+  return Number(value).toLocaleString(undefined, {
+    maximumFractionDigits: 3,
+  });
+}
+
+function EggStockBreakdownRow({
+  label,
+  value,
+  unit,
+  color,
+  prefix,
+  signed = false,
+}: {
+  label: string;
+  value: number | string;
+  unit: string;
+  color: string;
+  prefix?: string;
+  signed?: boolean;
+}) {
+  const quantity = Number(value);
+  const displayValue = signed && quantity > 0
+    ? `+${formatStockQuantity(quantity)}`
+    : signed && quantity < 0
+      ? `−${formatStockQuantity(Math.abs(quantity))}`
+      : `${prefix ?? ""}${formatStockQuantity(quantity)}`;
+
+  return (
+    <View style={styles.eggBreakdownRow}>
+      <AppText size="small" tone="secondary" style={styles.eggBreakdownLabel}>
+        {label}
+      </AppText>
+      <AppText size="small" weight="semibold" style={{ color }}>
+        {displayValue} {unit}
+      </AppText>
+    </View>
+  );
+}
+
 function withOpacity(color: string, opacity: number): string {
   const hex = color.replace("#", "");
   const expanded =
@@ -650,15 +963,41 @@ const styles = StyleSheet.create({
     width: "100%",
     maxWidth: 760,
     alignSelf: "center",
-    padding: 20,
-    paddingBottom: 36,
-    gap: 16,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 48,
+    gap: 12,
   },
-  section: { gap: 14, borderRadius: 17 },
+  section: { gap: 12, borderRadius: 15, padding: 14 },
+  correctionSection: { gap: 0, paddingVertical: 8, paddingHorizontal: 13 },
+  correctionSectionOpen: { gap: 0 },
+  correctionTrigger: {
+    minHeight: 58,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  correctionIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  correctionTriggerCopy: { flex: 1, gap: 3 },
+  correctionForm: {
+    gap: 13,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 14,
+    paddingBottom: 5,
+  },
+  correctionHint: { flexDirection: "row", alignItems: "flex-start", gap: 7 },
+  correctionHintText: { flex: 1 },
   balanceCard: {
-    gap: 14,
-    padding: 17,
-    borderRadius: 19,
+    gap: 12,
+    padding: 16,
+    borderRadius: 16,
     borderWidth: 1,
   },
   balanceHeading: {
@@ -695,27 +1034,23 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "baseline",
     gap: 8,
-    minHeight: 55,
+    minHeight: 48,
   },
-  balanceFooter: {
-    minHeight: 50,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
+  purchaseAction: {
+    gap: 8,
     borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: 11,
+    paddingTop: 12,
   },
-  purchaseLink: {
-    minHeight: 38,
+  purchaseButton: {
+    minHeight: 46,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 4,
-    borderRadius: 11,
-    paddingHorizontal: 12,
+    gap: 7,
+    borderRadius: 10,
+    paddingHorizontal: 14,
   },
-  poultryCard: { gap: 12, padding: 14, borderWidth: 1 },
+  poultryCard: { gap: 14, padding: 16, borderWidth: 1, borderRadius: 16 },
   poultryHeading: { flexDirection: "row", alignItems: "center", gap: 10 },
   poultryIcon: {
     width: 40,
@@ -725,6 +1060,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   poultryCopy: { flex: 1, gap: 3 },
+  poultryBalance: { gap: 4, borderRadius: 14, paddingHorizontal: 16, paddingVertical: 14 },
   poultryBlockRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -733,6 +1069,53 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
   },
   poultryActions: { gap: 8, marginTop: 2 },
+  eggBreakdown: {
+    gap: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 13,
+  },
+  eggBreakdownHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    marginBottom: 1,
+  },
+  eggBreakdownRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    minHeight: 24,
+  },
+  eggBreakdownLabel: { flex: 1 },
+  eggReserved: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+  },
+  eggReservedCopy: { flex: 1, gap: 2 },
+  eggSalesAction: {
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+  },
+  reportReconciliation: {
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+  },
   choiceRow: { flexDirection: "row", gap: 8 },
   choice: {
     flex: 1,

@@ -61,7 +61,7 @@ export default function TabLayout() {
             <Ionicons
               name={getTabIcon(route.name, focused)}
               size={focused ? 21 : 20}
-              color={color}
+              color={typeof color === "number" ? theme.text : color ?? theme.text}
             />
           ),
         })}

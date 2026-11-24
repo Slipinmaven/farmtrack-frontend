@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -48,10 +48,14 @@ export function ReportExportActions({
   data,
   resolveData,
   label,
+  onFeedback,
+  compact = false,
 }: {
   data: ReportExportData;
   resolveData?: () => Promise<ReportExportData>;
   label?: string;
+  onFeedback?: (message: string | null, isError?: boolean) => void;
+  compact?: boolean;
 }) {
   const { theme } = useTheme();
   const [busy, setBusy] = useState<ReportExportFormat | null>(null);
@@ -59,34 +63,43 @@ export function ReportExportActions({
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (!status) return;
+    const timeout = setTimeout(() => setStatus(null), 3000);
+    return () => clearTimeout(timeout);
+  }, [status]);
+
   async function handleExport(format: ReportExportFormat) {
     setMenuOpen(false);
     setBusy(format);
     setError(null);
     setStatus(null);
+    onFeedback?.(null);
     try {
       const exportData = resolveData ? await resolveData() : data;
       await exportReport(exportData, format);
-      setStatus(
+      const message =
         format === "pdf"
           ? Platform.OS === "web"
             ? "PDF download started."
             : "PDF is ready to share."
-          : `${format === "xlsx" ? "Excel workbook" : "CSV file"} download started.`,
-      );
+          : `${format === "xlsx" ? "Excel workbook" : "CSV file"} download started.`;
+      setStatus(message);
+      onFeedback?.(message, false);
     } catch (cause) {
-      setError(
+      const message =
         cause instanceof Error
           ? `Could not create the ${format.toUpperCase()} report: ${cause.message}`
-          : `Could not create the ${format.toUpperCase()} report. Please try again.`,
-      );
+          : `Could not create the ${format.toUpperCase()} report. Please try again.`;
+      setError(message);
+      onFeedback?.(message, true);
     } finally {
       setBusy(null);
     }
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, compact && styles.compactContainer]}>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={label ?? `Export ${data.title}`}
@@ -99,6 +112,7 @@ export function ReportExportActions({
         }}
         style={({ pressed }) => [
           styles.trigger,
+          compact && styles.compactTrigger,
           {
             borderColor: theme.border,
             backgroundColor: theme.backgroundElement,
@@ -118,12 +132,12 @@ export function ReportExportActions({
         ) : null}
         <Ionicons name="chevron-down" size={15} color={theme.textSecondary} />
       </Pressable>
-      {status ? (
+      {!onFeedback && status ? (
         <AppText size="small" style={[styles.feedback, { color: theme.success }]}>
           {status}
         </AppText>
       ) : null}
-      {error ? (
+      {!onFeedback && error ? (
         <AppText size="small" style={[styles.feedback, { color: theme.danger }]}>
           {error}
         </AppText>
@@ -222,6 +236,7 @@ export function ReportExportActions({
 
 const styles = StyleSheet.create({
   container: { alignItems: "flex-end", gap: 5 },
+  compactContainer: { alignItems: "center" },
   trigger: {
     minHeight: 38,
     flexDirection: "row",
@@ -232,6 +247,7 @@ const styles = StyleSheet.create({
     borderRadius: 9,
     paddingHorizontal: 10,
   },
+  compactTrigger: { minHeight: 36, paddingHorizontal: 9, gap: 4 },
   feedback: { maxWidth: "100%", textAlign: "right" },
   modalRoot: {
     flex: 1,

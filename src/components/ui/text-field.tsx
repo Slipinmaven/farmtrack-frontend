@@ -5,7 +5,10 @@ import {
   StyleSheet,
   TextInput,
   View,
+  type StyleProp,
   type TextInputProps,
+  type TextInputInstance,
+  type ViewStyle,
 } from "react-native";
 
 import { AppText } from "@/components/ui/app-text";
@@ -13,7 +16,9 @@ import { useTheme } from "@/providers/theme-provider";
 
 type TextFieldProps = TextInputProps & {
   label: string;
+  hideLabel?: boolean;
   error?: string;
+  inputContainerStyle?: StyleProp<ViewStyle>;
   leadingIcon?: keyof typeof Ionicons.glyphMap;
   trailingAction?: {
     icon: keyof typeof Ionicons.glyphMap;
@@ -22,17 +27,28 @@ type TextFieldProps = TextInputProps & {
   };
 };
 
-export const TextField = forwardRef<TextInput, TextFieldProps>(
+export const TextField = forwardRef<TextInputInstance, TextFieldProps>(
   function TextField(
-    { label, error, leadingIcon, trailingAction, style, ...props },
+    {
+      label,
+      hideLabel = false,
+      error,
+      inputContainerStyle,
+      leadingIcon,
+      trailingAction,
+      style,
+      ...props
+    },
     ref,
   ) {
     const { theme } = useTheme();
     return (
-      <View style={styles.container}>
-        <AppText size="small" weight="semibold">
-          {label}
-        </AppText>
+      <View style={[styles.container, hideLabel && styles.containerWithoutLabel]}>
+        {!hideLabel ? (
+          <AppText size="small" weight="semibold">
+            {label}
+          </AppText>
+        ) : null}
         {leadingIcon || trailingAction ? (
           <View
             style={[
@@ -42,6 +58,7 @@ export const TextField = forwardRef<TextInput, TextFieldProps>(
                 borderColor: error ? theme.danger : theme.border,
               },
               props.multiline && styles.multilineWithIcon,
+              inputContainerStyle,
             ]}
           >
             {leadingIcon ? (
@@ -115,6 +132,7 @@ export const TextField = forwardRef<TextInput, TextFieldProps>(
 
 const styles = StyleSheet.create({
   container: { gap: 7 },
+  containerWithoutLabel: { gap: 0 },
   input: {
     minHeight: 48,
     borderWidth: 1,

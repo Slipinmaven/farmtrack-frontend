@@ -1,7 +1,4 @@
 import { Ionicons } from "@expo/vector-icons";
-import * as Application from "expo-application";
-import { File, Paths } from "expo-file-system";
-import * as IntentLauncher from "expo-intent-launcher";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -24,6 +21,19 @@ import { readSession } from "@/lib/storage/session";
 import { useAppLockBlocksUpdates } from "@/providers/app-lock-guard";
 import { useAuth } from "@/providers/auth-provider";
 import { useTheme } from "@/providers/theme-provider";
+
+const Application =
+  Platform.OS === "android"
+    ? (require("expo-application") as typeof import("expo-application"))
+    : null;
+const FileSystem =
+  Platform.OS === "android"
+    ? (require("expo-file-system") as typeof import("expo-file-system"))
+    : null;
+const IntentLauncher =
+  Platform.OS === "android"
+    ? (require("expo-intent-launcher") as typeof import("expo-intent-launcher"))
+    : null;
 
 const APK_MIME_TYPE = "application/vnd.android.package-archive";
 const INSTALL_PACKAGE_ACTION = "android.intent.action.INSTALL_PACKAGE";
@@ -53,16 +63,22 @@ export function AndroidAppUpdateChecker() {
       setDownloading(true);
       setDownloadProgress(0);
       try {
-        const session = await readSession();
-        if (!session) {
-          throw new Error("Please sign in again before downloading the update.");
+        if (!FileSystem || !IntentLauncher) {
+          throw new Error("Android update support is unavailable on this device.");
         }
 
-        const destination = new File(
-          Paths.cache,
+        const session = await readSession();
+        if (!session) {
+          throw new Error(
+            "Please sign in again before downloading the update.",
+          );
+        }
+
+        const destination = new FileSystem.File(
+          FileSystem.Paths.cache,
           `farmtrack-update-${update.version_code}.apk`,
         );
-        const downloadedFile = await File.downloadFileAsync(
+        const downloadedFile = await FileSystem.File.downloadFileAsync(
           getAppUpdateDownloadUrl(update.id),
           destination,
           {
@@ -112,6 +128,7 @@ export function AndroidAppUpdateChecker() {
 
   const checkAndOfferUpdate = useCallback(
     async (isActive: () => boolean): Promise<void> => {
+      if (!Application) return;
       const installedBuild = Number(Application.nativeBuildVersion);
       if (!Number.isSafeInteger(installedBuild) || installedBuild <= 0) return;
 

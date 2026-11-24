@@ -147,6 +147,7 @@ export function FarmSelector() {
                   const selected = item.id === farm.selectedFarm?.id;
                   const switching = switchingFarmId === item.id;
                   const enabling = enablingFarmId === item.id;
+                  const canEnable = item.owner_id === user?.id;
                   const content = (
                     <>
                       <View style={styles.farmCopy}>
@@ -199,11 +200,15 @@ export function FarmSelector() {
                         {content}
                         <View style={styles.inactiveControl}>
                           <AppText size="small" tone="secondary">
-                            {enabling ? "Enabling" : "Enable to select"}
+                            {enabling
+                              ? "Enabling"
+                              : canEnable
+                                ? "Enable to select"
+                                : "Paused by farm owner"}
                           </AppText>
                           {enabling ? (
                             <ActivityIndicator color={theme.primary} />
-                          ) : (
+                          ) : canEnable ? (
                             <Switch
                               value={false}
                               disabled={Boolean(
@@ -219,8 +224,17 @@ export function FarmSelector() {
                               thumbColor={theme.backgroundElement}
                               accessibilityLabel={`Enable ${item.name} so it can be selected`}
                             />
-                          )}
+                          ) : null}
                         </View>
+                        {!canEnable ? (
+                          <AppText
+                            size="small"
+                            tone="secondary"
+                            style={styles.inactiveMemberNote}
+                          >
+                            Ask the owner to reactivate this farm.
+                          </AppText>
+                        ) : null}
                       </View>
                     );
                   }
@@ -359,6 +373,10 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingHorizontal: 8,
     borderRadius: 8,
+  },
+  inactiveMemberNote: {
+    paddingHorizontal: 2,
+    paddingBottom: 2,
   },
   addFarmCopy: { gap: 1 },
 });

@@ -115,7 +115,7 @@ function ProductDetailsContent() {
                 >
                   <Ionicons
                     name={productTypeIcon(product.product_type)}
-                    size={25}
+                    size={21}
                     color={theme.primary}
                   />
                 </View>
@@ -123,7 +123,7 @@ function ProductDetailsContent() {
                   <AppText size="small" tone="secondary" numberOfLines={1}>
                     {farm.selectedFarm?.name ?? "Farm"} · {getProductTypeLabel(product.product_type)}
                   </AppText>
-                  <AppText size="title" weight="semibold" style={styles.productName}>
+                  <AppText size="heading" weight="semibold" style={styles.productName}>
                     {product.name}
                   </AppText>
                   {product.description ? (
@@ -158,11 +158,8 @@ function ProductDetailsContent() {
                   <Ionicons name="resize-outline" size={18} color={theme.primary} />
                 </View>
                 <View style={styles.sectionHeadingCopy}>
-                  <AppText size="heading" weight="semibold">
+                  <AppText size="body" weight="semibold">
                     Stock units
-                  </AppText>
-                  <AppText size="small" tone="secondary">
-                    How this product is counted
                   </AppText>
                 </View>
               </View>
@@ -200,7 +197,7 @@ function ProductDetailsContent() {
                     </AppText>
                   </View>
                   <View style={styles.measureCopy}>
-                    <AppText weight="semibold">
+                    <AppText size="small" weight="semibold">
                       {unit.unit_name}
                     </AppText>
                     <AppText size="small" tone="secondary">
@@ -239,14 +236,11 @@ function ProductDetailsContent() {
               ]}
             >
               <View style={styles.stockIcon}>
-                <Ionicons name="layers-outline" size={21} color={theme.onPrimary} />
+                <Ionicons name="layers-outline" size={18} color={theme.onPrimary} />
               </View>
               <View style={styles.stockCopy}>
-                <AppText size="body" weight="semibold" style={{ color: theme.onPrimary }}>
+                <AppText size="small" weight="semibold" style={{ color: theme.onPrimary }}>
                   Stock & movement history
-                </AppText>
-                <AppText size="small" style={{ color: theme.onPrimary, opacity: 0.82 }}>
-                  Opening balance, receipts and adjustments
                 </AppText>
               </View>
               <Ionicons name="arrow-forward" size={19} color={theme.onPrimary} />
@@ -262,7 +256,7 @@ function ProductDetailsContent() {
                 >
                   <Ionicons name="information-circle-outline" size={18} color={theme.primary} />
                 </View>
-                <AppText size="heading" weight="semibold">
+                <AppText size="body" weight="semibold">
                   Product information
                 </AppText>
               </View>
@@ -408,96 +402,96 @@ const styles = StyleSheet.create({
     width: "100%",
     maxWidth: 760,
     alignSelf: "center",
-    paddingHorizontal: 18,
-    paddingTop: 12,
-    paddingBottom: 34,
-    gap: 14,
+    paddingHorizontal: 14,
+    paddingTop: 8,
+    paddingBottom: 24,
+    gap: 10,
   },
-  state: { gap: 10, borderRadius: 10 },
+  state: { gap: 8, borderRadius: 10 },
   hero: {
-    gap: 12,
-    borderRadius: 12,
-    padding: 15,
+    gap: 8,
+    borderRadius: 11,
+    padding: 12,
   },
-  heroMain: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
+  heroMain: { flexDirection: "row", alignItems: "flex-start", gap: 9 },
   heroIcon: {
-    width: 46,
-    height: 46,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 11,
-  },
-  heroCopy: { flex: 1, minWidth: 0, gap: 3 },
-  productName: { fontSize: 27, lineHeight: 34 },
-  badges: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginLeft: 58 },
-  status: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    borderRadius: 12,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  section: { gap: 10, borderRadius: 11, padding: 15 },
-  sectionHeading: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 2 },
-  sectionIcon: {
-    width: 34,
-    height: 34,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 9,
-  },
-  sectionHeadingCopy: { flex: 1, gap: 0 },
-  stockCard: {
-    minHeight: 76,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 11,
-    borderRadius: 11,
-    paddingHorizontal: 13,
-    paddingVertical: 12,
-  },
-  stockIcon: {
     width: 38,
     height: 38,
     alignItems: "center",
     justifyContent: "center",
     borderRadius: 9,
-    backgroundColor: "rgba(255,255,255,0.14)",
   },
-  stockCopy: { flex: 1, gap: 2 },
-  measureRow: {
-    minHeight: 62,
+  heroCopy: { flex: 1, minWidth: 0, gap: 1 },
+  productName: { fontSize: 21, lineHeight: 27 },
+  badges: { flexDirection: "row", flexWrap: "wrap", gap: 5, marginLeft: 47 },
+  status: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 5,
+    borderRadius: 12,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  section: { gap: 7, borderRadius: 11, padding: 12 },
+  sectionHeading: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 1 },
+  sectionIcon: {
+    width: 29,
+    height: 29,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 8,
+  },
+  sectionHeadingCopy: { flex: 1, gap: 0 },
+  stockCard: {
+    minHeight: 54,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: 10,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+  },
+  stockIcon: {
+    width: 32,
+    height: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.14)",
+  },
+  stockCopy: { flex: 1, gap: 1 },
+  measureRow: {
+    minHeight: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderRadius: 7,
     paddingHorizontal: 8,
-    paddingVertical: 7,
+    paddingVertical: 5,
   },
-  measureCopy: { flex: 1, gap: 2 },
+  measureCopy: { flex: 1, gap: 1 },
   unitAbbreviation: {
-    minWidth: 38,
-    height: 34,
+    minWidth: 34,
+    height: 30,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
     borderRadius: 7,
     paddingHorizontal: 6,
   },
-  baseBadge: { borderRadius: 4, paddingHorizontal: 6, paddingVertical: 3 },
+  baseBadge: { borderRadius: 4, paddingHorizontal: 5, paddingVertical: 2 },
   detailRow: {
-    minHeight: 40,
+    minHeight: 34,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  actions: { gap: 8 },
+  actions: { gap: 7 },
   editAction: {
-    minHeight: 50,
+    minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -505,7 +499,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   deleteAction: {
-    minHeight: 44,
+    minHeight: 40,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",

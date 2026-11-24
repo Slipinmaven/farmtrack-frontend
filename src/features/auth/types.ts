@@ -1,6 +1,7 @@
 export type User = {
   id: string;
   email: string;
+  role: "USER" | "SUPER_ADMIN";
 };
 
 export type AuthenticationResponse = {

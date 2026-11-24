@@ -206,7 +206,7 @@ function ContactsContent() {
                 color={theme.primary}
                 style={styles.listFooter}
               />
-            ) : null
+            ) : undefined
           }
           ListEmptyComponent={
             !contacts.isError ? (
@@ -233,7 +233,7 @@ function ContactsContent() {
                   />
                 ) : null}
               </Card>
-            ) : null
+            ) : undefined
           }
           renderItem={({ item }) => (
             <Pressable

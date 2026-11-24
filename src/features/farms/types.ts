@@ -1,4 +1,28 @@
 export type ThemeMode = "light" | "dark" | "system";
+export type FarmRole = "owner" | "manager" | "worker";
+export type FarmMembershipStatus = "invited" | "active" | "revoked";
+export type FarmInvitationEmailStatus =
+  | "not_configured"
+  | "queued"
+  | "sent"
+  | "failed"
+  | "cancelled";
+
+export type FarmMembership = {
+  id: string;
+  farm_id: string;
+  user_id: string;
+  email: string | null;
+  farm_name: string | null;
+  role: FarmRole;
+  status: FarmMembershipStatus;
+  invited_by_id: string | null;
+  invited_at: string;
+  accepted_at: string | null;
+  revoked_at: string | null;
+  invitation_email_status: FarmInvitationEmailStatus;
+  invitation_email_sent_at: string | null;
+};
 
 export type FarmSettings = {
   id: string;
@@ -26,9 +50,23 @@ export type Farm = {
   maximum_chicken_capacity: number | null;
   is_active: boolean;
   setup_completed_at: string | null;
+  deletion_requested_at: string | null;
   created_at: string;
   updated_at: string;
   settings: FarmSettings | null;
+};
+
+export type PendingFarmDeletion = {
+  id: string;
+  name: string;
+  deletion_requested_at: string;
+  scheduled_for: string;
+  notification_sent?: boolean | null;
+};
+
+export type FarmLeaveEmailStatus = {
+  member_email_sent: boolean;
+  owner_email_sent: boolean;
 };
 
 export type CreateFarmPayload = {

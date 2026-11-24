@@ -23,7 +23,12 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { DatePickerField } from "@/components/ui/date-picker-field";
 import { TextField } from "@/components/ui/text-field";
-import { useBlockSearch } from "@/features/blocks/hooks";
+import {
+  SmsPaymentPicker,
+  type SelectedSmsPayment,
+} from "@/features/payment-message-import/components/SmsPaymentPicker";
+import { PaymentMessageImportAction } from "@/features/payment-message-import/components/PaymentMessageImportAction";
+import { useBlockSearch, useBlocks } from "@/features/blocks/hooks";
 import {
   getExpenseDisplayName,
   type ExpenseRecord,
@@ -40,6 +45,8 @@ import { normalizeApiError } from "@/lib/api/errors";
 import { useAuth } from "@/providers/auth-provider";
 import { useFarm } from "@/providers/farm-provider";
 import { useTheme } from "@/providers/theme-provider";
+import { usePaymentMessageImport } from "@/features/payment-message-import/PaymentMessageImportProvider";
+import { parseMoneyToCents } from "@/features/chickens/purchase-pricing";
 
 const categoryIcons: Record<string, keyof typeof Ionicons.glyphMap> = {
   feed_and_nutrition: "leaf-outline",
@@ -76,6 +83,7 @@ function ExpensesContent() {
   const { user } = useAuth();
   const farm = useFarm();
   const { theme } = useTheme();
+  const { sharedMessage } = usePaymentMessageImport();
   const dialog = useAppDialog();
   const farmId = farm.selectedFarm?.id;
   const categoriesQuery = useExpenseCategories(user?.id, farmId);
@@ -92,6 +100,7 @@ function ExpensesContent() {
   const [paymentMethod, setPaymentMethod] =
     useState<SettlementPaymentMethod>("cash");
   const [referenceNumber, setReferenceNumber] = useState("");
+  const [paymentImportOpen, setPaymentImportOpen] = useState(false);
   const [notes, setNotes] = useState("");
   const [contactId, setContactId] = useState("");
   const [contactName, setContactName] = useState("");
@@ -101,11 +110,11 @@ function ExpensesContent() {
   const [contactPickerOpen, setContactPickerOpen] = useState(false);
   const [contactSearch, setContactSearch] = useState("");
   const [debouncedContactSearch, setDebouncedContactSearch] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState<string>("all");
+  const [categoryFilter, setCategoryFilter] = useState<string[]>([]);
   const [blockFilter, setBlockFilter] = useState("");
   const [blockFilterName, setBlockFilterName] = useState("");
   const [paymentStatusFilter, setPaymentStatusFilter] = useState("all");
-  const [draftCategoryFilter, setDraftCategoryFilter] = useState("all");
+  const [draftCategoryFilter, setDraftCategoryFilter] = useState<string[]>([]);
   const [draftBlockFilter, setDraftBlockFilter] = useState("");
   const [draftBlockFilterName, setDraftBlockFilterName] = useState("");
   const [draftPaymentStatusFilter, setDraftPaymentStatusFilter] = useState("all");
@@ -130,7 +139,7 @@ function ExpensesContent() {
   });
   const expensesQuery = useInfiniteExpenses(user?.id, farmId, {
     search: debouncedSearch || undefined,
-    category: categoryFilter === "all" ? undefined : categoryFilter,
+    category: categoryFilter.length ? categoryFilter : undefined,
     block_id: blockFilter || undefined,
     payment_status: paymentStatusFilter,
     from_date: fromDate || undefined,
@@ -147,6 +156,11 @@ function ExpensesContent() {
     farmId,
     debouncedPickerSearch,
     pickerMode?.includes("block") ?? false,
+  );
+  const blocksQuery = useBlocks(
+    user?.id,
+    farmId,
+    Boolean(pickerMode?.includes("block") && !debouncedPickerSearch),
   );
   const createExpense = useCreateExpense(user?.id ?? "", farmId ?? "");
 
@@ -177,6 +191,23 @@ function ExpensesContent() {
   const contacts = contactsQuery.data?.pages.flatMap((page) => page) ?? [];
   const amountValue = Number(amount);
   const paidNowValue = paidNow.trim() ? Number(paidNow) : 0;
+  const expenseTotalCents = parseMoneyToCents(amount) ?? 0n;
+
+  function applyImportedInitialPayment(payments: SelectedSmsPayment[]) {
+    const imported = payments[0]?.payment;
+    if (!imported?.amount) return;
+    const importedCents = parseMoneyToCents(imported.amount);
+    if (importedCents === null || importedCents > expenseTotalCents) {
+      setError("The M-Pesa payment cannot exceed the expense total.");
+      return;
+    }
+    setPaymentMethod("mpesa");
+    setPaidNow(imported.amount);
+    setReferenceNumber(imported.transactionReference ?? "");
+    if (imported.transactionDate) setExpenseDate(imported.transactionDate);
+    setError("");
+    setPaymentImportOpen(false);
+  }
   const isLoading = expensesQuery.isLoading;
   const availablePickerOptions = useMemo(() => {
     const query = pickerSearch.trim().toLocaleLowerCase();
@@ -186,23 +217,41 @@ function ExpensesContent() {
         .map((item) => ({ id: item.key, name: item.name }));
     }
     if (pickerMode === "block" || pickerMode === "filter_block") {
-      return (blockSearchQuery.data?.pages.flatMap((page) => page) ?? [])
+      const blockResults = pickerSearch.trim()
+        ? pickerSearch.trim() === debouncedPickerSearch
+          ? blockSearchQuery.data?.pages.flatMap((page) => page) ?? []
+          : blocksQuery.data ?? []
+        : blocksQuery.data ?? [];
+      return blockResults
         .filter((item) => !query || item.name.toLocaleLowerCase().includes(query))
         .map((item) => ({ id: item.id, name: item.name }));
     }
     return [];
-  }, [allCategoriesQuery.data, blockSearchQuery.data, categories, pickerMode, pickerSearch]);
+  }, [
+    allCategoriesQuery.data,
+    blockSearchQuery.data,
+    blocksQuery.data,
+    categories,
+    debouncedPickerSearch,
+    pickerMode,
+    pickerSearch,
+  ]);
   const activeFilterCount =
-    Number(categoryFilter !== "all") +
+    Number(categoryFilter.length > 0) +
     Number(Boolean(blockFilter)) +
     Number(paymentStatusFilter !== "all") +
     Number(Boolean(fromDate)) +
     Number(Boolean(toDate));
   const hasAppliedFilters = Boolean(debouncedSearch || activeFilterCount);
-  const activeCategoryName =
-    (allCategoriesQuery.data ?? categories).find((item) => item.key === categoryFilter)?.name;
+  const activeCategoryNames = categoryFilter
+    .map((key) =>
+      (allCategoriesQuery.data ?? categories).find((item) => item.key === key)?.name,
+    )
+    .filter((name): name is string => Boolean(name));
   const activeFilterSummary = [
-    activeCategoryName,
+    activeCategoryNames.length > 1
+      ? `${activeCategoryNames.length} categories`
+      : activeCategoryNames[0],
     blockFilterName || undefined,
     paymentStatusFilter === "all" ? undefined : humanize(paymentStatusFilter),
     fromDate || toDate ? `${fromDate || "Any date"} – ${toDate || "Today"}` : undefined,
@@ -214,7 +263,7 @@ function ExpensesContent() {
   }
 
   function openFilters() {
-    setDraftCategoryFilter(categoryFilter);
+    setDraftCategoryFilter([...categoryFilter]);
     setDraftBlockFilter(blockFilter);
     setDraftBlockFilterName(blockFilterName);
     setDraftPaymentStatusFilter(paymentStatusFilter);
@@ -247,8 +296,16 @@ function ExpensesContent() {
         setBlockName(name);
         break;
       case "filter_category":
-        setDraftCategoryFilter(id);
-        break;
+        if (id === "all") {
+          setDraftCategoryFilter([]);
+          return;
+        }
+        setDraftCategoryFilter((current) =>
+          current.includes(id)
+            ? current.filter((categoryId) => categoryId !== id)
+            : [...current, id],
+        );
+        return;
       case "filter_block":
         setDraftBlockFilter(id);
         setDraftBlockFilterName(name);
@@ -260,7 +317,7 @@ function ExpensesContent() {
   }
 
   function clearFilters() {
-    setDraftCategoryFilter("all");
+    setDraftCategoryFilter([]);
     setDraftBlockFilter("");
     setDraftBlockFilterName("");
     setDraftPaymentStatusFilter("all");
@@ -566,6 +623,58 @@ function ExpensesContent() {
                 />
               </View>
             </View>
+            {summaryQuery.data.categories.length > 0 ? (
+              <View style={styles.categorySpending}>
+                <AppText size="small" weight="semibold">
+                  Spending by category
+                </AppText>
+                {summaryQuery.data.categories
+                  .filter((item) => Number(item.total_amount) > 0)
+                  .sort(
+                    (left, right) =>
+                      Number(right.total_amount) - Number(left.total_amount),
+                  )
+                  .map((item) => {
+                    const share =
+                      Number(summaryQuery.data.total_amount) > 0
+                        ? (Number(item.total_amount) /
+                            Number(summaryQuery.data.total_amount)) *
+                          100
+                        : 0;
+                    return (
+                      <View key={item.key} style={styles.categorySpendingRow}>
+                        <View style={styles.categorySpendingLabels}>
+                          <AppText size="small" weight="semibold" numberOfLines={1}>
+                            {item.name}
+                          </AppText>
+                          <AppText size="small" tone="secondary">
+                            {share.toFixed(1)}% · {formatMoney(Number(item.total_amount), theme.currency)}
+                          </AppText>
+                        </View>
+                        <View
+                          accessibilityRole="progressbar"
+                          accessibilityLabel={`${item.name} share of expenses`}
+                          accessibilityValue={{ min: 0, max: 100, now: share }}
+                          style={[
+                            styles.categoryMeterTrack,
+                            { backgroundColor: theme.border },
+                          ]}
+                        >
+                          <View
+                            style={[
+                              styles.categoryMeterFill,
+                              {
+                                width: `${Math.min(share, 100)}%`,
+                                backgroundColor: theme.primary,
+                              },
+                            ]}
+                          />
+                        </View>
+                      </View>
+                    );
+                  })}
+              </View>
+            ) : null}
           </View>
         ) : (
           <View style={styles.summaryLoading}>
@@ -672,6 +781,12 @@ function ExpensesContent() {
               }}
               placeholder="Enter transaction or receipt reference if available"
               autoCapitalize="characters"
+            />
+          ) : null}
+          {paymentMethod === "mpesa" ? (
+            <PaymentMessageImportAction
+              label="Import initial M-Pesa payment"
+              onPress={() => setPaymentImportOpen(true)}
             />
           ) : null}
 
@@ -821,7 +936,7 @@ function ExpensesContent() {
               onPress={() => {
                 setSearch("");
                 setDebouncedSearch("");
-                setCategoryFilter("all");
+                setCategoryFilter([]);
                 setBlockFilter("");
                 setBlockFilterName("");
                 setPaymentStatusFilter("all");
@@ -878,6 +993,24 @@ function ExpensesContent() {
         </Card>
       </ScrollView>
       </KeyboardAvoidingView>
+      {paymentImportOpen ? (
+        <SmsPaymentPicker
+          visible
+          fromDate={expenseDate}
+          currency={theme.currency}
+          existingReferences={[]}
+          existingSmsMessageIds={[]}
+          maxSelections={1}
+          hasExistingPayments={false}
+          transactionLabel="expense"
+          expectedDirection="OUTGOING"
+          purchaseTotalCents={expenseTotalCents.toString()}
+          currentPaidCents="0"
+          sharedMessage={sharedMessage}
+          onClose={() => setPaymentImportOpen(false)}
+          onSelect={applyImportedInitialPayment}
+        />
+      ) : null}
 
       <Modal
         visible={filtersOpen}
@@ -927,10 +1060,12 @@ function ExpensesContent() {
               <SelectorButton
                 title="Category"
                 label={
-                  draftCategoryFilter === "all"
+                  draftCategoryFilter.length === 0
                     ? "All categories"
-                    : (allCategoriesQuery.data ?? categories)
-                        .find((item) => item.key === draftCategoryFilter)?.name ?? "Category"
+                    : draftCategoryFilter.length === 1
+                      ? (allCategoriesQuery.data ?? categories)
+                          .find((item) => item.key === draftCategoryFilter[0])?.name ?? "1 category"
+                      : `${draftCategoryFilter.length} categories selected`
                 }
                 onPress={() => openPicker("filter_category")}
               />
@@ -1023,10 +1158,16 @@ function ExpensesContent() {
             <View style={styles.modalHeading}>
               <View style={styles.grow}>
                 <AppText size="heading" weight="semibold">
-                  {pickerMode?.includes("category") ? "Choose a category" : "Choose a block"}
+                  {pickerMode === "filter_category"
+                    ? "Choose categories"
+                    : pickerMode === "category"
+                      ? "Choose a category"
+                      : "Choose a block"}
                 </AppText>
                 <AppText size="small" tone="secondary">
-                  Search the farm’s {pickerMode?.includes("category") ? "expense categories" : "blocks"}.
+                  {pickerMode === "filter_category"
+                    ? "Select one or more categories to include."
+                    : `Search the farm’s ${pickerMode?.includes("category") ? "expense categories" : "blocks"}.`}
                 </AppText>
               </View>
               <Pressable
@@ -1053,14 +1194,15 @@ function ExpensesContent() {
               {(pickerMode === "category" && categoriesQuery.isLoading) ||
               (pickerMode === "filter_category" && allCategoriesQuery.isLoading) ||
               (pickerMode?.includes("block") &&
-                (blockSearchQuery.isFetching ||
+                (blocksQuery.isLoading ||
+                  (Boolean(pickerSearch.trim()) && blockSearchQuery.isFetching) ||
                   (pickerSearch.trim() !== debouncedPickerSearch && Boolean(pickerSearch.trim())))) ? (
                 <ActivityIndicator size="small" color={theme.primary} />
               ) : null}
               {pickerMode === "filter_category" ? (
                 <PickerOption
                   label="All categories"
-                  selected={draftCategoryFilter === "all"}
+                  selected={draftCategoryFilter.length === 0}
                   onPress={() => selectPickerOption("all")}
                 />
               ) : null}
@@ -1078,7 +1220,7 @@ function ExpensesContent() {
                   selected={
                     (pickerMode === "category" && category === option.id) ||
                     (pickerMode === "block" && blockId === option.id) ||
-                    (pickerMode === "filter_category" && draftCategoryFilter === option.id) ||
+                    (pickerMode === "filter_category" && draftCategoryFilter.includes(option.id)) ||
                     (pickerMode === "filter_block" && draftBlockFilter === option.id)
                   }
                   onPress={() => selectPickerOption(option.id, option.name)}
@@ -1095,11 +1237,12 @@ function ExpensesContent() {
               {!availablePickerOptions.length &&
               !pickerSearch.trim() &&
               !categoriesQuery.isLoading &&
-              !allCategoriesQuery.isLoading ? (
+              !allCategoriesQuery.isLoading &&
+              !blocksQuery.isLoading ? (
                 <AppText size="small" tone="secondary" style={styles.centerText}>
                   {pickerMode?.includes("category")
                     ? "No expense categories are available."
-                    : "Search by block name to find a block."}
+                    : "No blocks are available for this farm."}
                 </AppText>
               ) : !availablePickerOptions.length &&
                 pickerSearch.trim() &&
@@ -1119,6 +1262,14 @@ function ExpensesContent() {
                   <Button label="Retry" variant="quiet" onPress={() => void blockSearchQuery.refetch()} />
                 </View>
               ) : null}
+              {pickerMode?.includes("block") && blocksQuery.isError ? (
+                <View style={styles.contactError}>
+                  <AppText size="small" style={{ color: theme.danger }}>
+                    Couldn’t load blocks: {normalizeApiError(blocksQuery.error).message}
+                  </AppText>
+                  <Button label="Retry" variant="quiet" onPress={() => void blocksQuery.refetch()} />
+                </View>
+              ) : null}
               {pickerMode === "category" && categoriesQuery.isError ? (
                 <View style={styles.contactError}>
                   <AppText size="small" style={{ color: theme.danger }}>
@@ -1136,6 +1287,12 @@ function ExpensesContent() {
                 </View>
               ) : null}
             </ScrollView>
+            {pickerMode === "filter_category" ? (
+              <Button
+                label={`Done${draftCategoryFilter.length ? ` · ${draftCategoryFilter.length} selected` : ""}`}
+                onPress={() => setPickerMode(null)}
+              />
+            ) : null}
           </SafeAreaView>
         </KeyboardAvoidingView>
       </Modal>
@@ -1569,6 +1726,20 @@ const styles = StyleSheet.create({
     borderLeftWidth: 1,
     paddingLeft: 9,
   },
+  categorySpending: { gap: 10, paddingTop: 6 },
+  categorySpendingRow: { gap: 5 },
+  categorySpendingLabels: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+  },
+  categoryMeterTrack: {
+    height: 7,
+    overflow: "hidden",
+    borderRadius: 4,
+  },
+  categoryMeterFill: { height: "100%", borderRadius: 4 },
   summaryLoading: {
     minHeight: 48,
     flexDirection: "row",

@@ -20,6 +20,13 @@ import { Card } from "@/components/ui/card";
 import { DatePickerField } from "@/components/ui/date-picker-field";
 import { TextField } from "@/components/ui/text-field";
 import {
+  SmsPaymentPicker,
+  type SelectedSmsPayment,
+} from "@/features/payment-message-import/components/SmsPaymentPicker";
+import { PaymentMessageImportAction } from "@/features/payment-message-import/components/PaymentMessageImportAction";
+import { usePaymentMessageImport } from "@/features/payment-message-import/PaymentMessageImportProvider";
+import { parseMoneyToCents } from "@/features/chickens/purchase-pricing";
+import {
   getExpenseDisplayName,
   type SettlementPaymentMethod,
 } from "@/features/management/api";
@@ -63,6 +70,7 @@ function ExpenseDetailsContent() {
   const { user } = useAuth();
   const farm = useFarm();
   const { theme } = useTheme();
+  const { sharedMessage } = usePaymentMessageImport();
   const dialog = useAppDialog();
   const farmId = farm.selectedFarm?.id;
   const expenseQuery = useExpense(user?.id, farmId, expenseId);
@@ -86,6 +94,34 @@ function ExpenseDetailsContent() {
   const [reference, setReference] = useState("");
   const [reason, setReason] = useState("");
   const [error, setError] = useState("");
+  const [paymentImportOpen, setPaymentImportOpen] = useState(false);
+
+  function applyImportedPayment(payments: SelectedSmsPayment[]) {
+    const imported = payments[0]?.payment;
+    if (!imported?.amount || !expense) return;
+    const importedCents = parseMoneyToCents(imported.amount);
+    const maximumCents = parseMoneyToCents(
+      mode === "refund" ? expense.amount_paid : expense.balance_due,
+    );
+    if (
+      importedCents === null ||
+      maximumCents === null ||
+      importedCents > maximumCents
+    ) {
+      setError(
+        mode === "refund"
+          ? "The imported refund exceeds the amount paid on this expense."
+          : "The imported payment exceeds the remaining expense balance.",
+      );
+      return;
+    }
+    setPaymentMethod("mpesa");
+    setActionAmount(imported.amount);
+    setReference(imported.transactionReference ?? "");
+    if (imported.transactionDate) setActionDate(imported.transactionDate);
+    setError("");
+    setPaymentImportOpen(false);
+  }
 
   function startEditing() {
     if (!expense) return;
@@ -485,6 +521,12 @@ function ExpenseDetailsContent() {
                         />
                       ))}
                     </View>
+                    {paymentMethod === "mpesa" ? (
+                      <PaymentMessageImportAction
+                        label={`Import M-Pesa ${mode}`}
+                        onPress={() => setPaymentImportOpen(true)}
+                      />
+                    ) : null}
                     {paymentMethod !== "cash" ? (
                       <TextField label="Reference (optional)" value={reference} onChangeText={setReference} autoCapitalize="characters" />
                     ) : null}
@@ -525,6 +567,30 @@ function ExpenseDetailsContent() {
         )}
       </ScrollView>
       </KeyboardAvoidingView>
+      {paymentImportOpen && expense && (mode === "payment" || mode === "refund") ? (
+        <SmsPaymentPicker
+          visible
+          fromDate={actionDate}
+          currency={theme.currency}
+          existingReferences={expense.payments
+            .map((payment) => payment.reference_number ?? "")
+            .filter(Boolean)}
+          existingSmsMessageIds={[]}
+          maxSelections={1}
+          hasExistingPayments={false}
+          transactionLabel={mode === "refund" ? "expense refund" : "expense"}
+          expectedDirection={mode === "refund" ? "INCOMING" : "OUTGOING"}
+          purchaseTotalCents={
+            parseMoneyToCents(
+              mode === "refund" ? expense.amount_paid : expense.balance_due,
+            )?.toString() ?? "0"
+          }
+          currentPaidCents="0"
+          sharedMessage={sharedMessage}
+          onClose={() => setPaymentImportOpen(false)}
+          onSelect={applyImportedPayment}
+        />
+      ) : null}
     </SafeAreaView>
   );
 }

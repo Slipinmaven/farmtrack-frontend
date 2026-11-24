@@ -1,6 +1,7 @@
 import { Redirect, Stack } from "expo-router";
 
 import { LoadingState } from "@/components/feedback/loading-state";
+import { useAccountDeletionStatus } from "@/features/auth/hooks";
 import { useAuth } from "@/providers/auth-provider";
 import { useFarm } from "@/providers/farm-provider";
 import { useTheme } from "@/providers/theme-provider";
@@ -9,9 +10,21 @@ export default function AuthLayout() {
   const auth = useAuth();
   const farm = useFarm();
   const { theme } = useTheme();
+  const accountDeletionStatus = useAccountDeletionStatus(
+    auth.status === "authenticated" ? auth.user?.id : undefined,
+  );
   if (auth.status === "loading") return <LoadingState />;
   if (auth.status === "blocked") return <Redirect href="/device-blocked" />;
   if (auth.status === "authenticated") {
+    if (
+      accountDeletionStatus.isLoading &&
+      !accountDeletionStatus.data
+    ) {
+      return <LoadingState label="Checking your account recovery status" />;
+    }
+    if (accountDeletionStatus.data?.status === "scheduled") {
+      return <Redirect href="/account-details" />;
+    }
     if (farm.status === "initializing")
       return <LoadingState label="Loading your farm" />;
     if (farm.status === "empty") return <Redirect href="/farm-setup" />;

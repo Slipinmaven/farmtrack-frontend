@@ -1,5 +1,5 @@
 import { router } from "expo-router";
-import { KeyboardAvoidingView, Platform } from "react-native";
+import { KeyboardAvoidingView, Platform, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { FarmPageHeader } from "@/components/layout/farm-page-header";
@@ -30,7 +30,7 @@ export function BlockCreateScreen({
     >
       <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
         <FarmPageHeader
-          title="New block"
+          title={isSetupFlow ? "Housing setup" : "New block"}
           showBack
           backHref={
             isSetupFlow
@@ -41,9 +41,20 @@ export function BlockCreateScreen({
               : "/(tabs)/blocks"
           }
         />
-        <AppText size="small" tone="secondary" style={styles.intro}>
-          Add a housing area for {farm.selectedFarm?.name ?? "your farm"}.
-        </AppText>
+        {isSetupFlow ? (
+          <View style={styles.setupHeading}>
+            <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+              STEP 3 OF 7 · REQUIRED
+            </AppText>
+            <AppText size="title" weight="semibold" style={styles.setupTitle}>
+              Create a housing block
+            </AppText>
+          </View>
+        ) : (
+          <AppText size="small" tone="secondary" style={styles.intro}>
+            Add a housing area for {farm.selectedFarm?.name ?? "your farm"}.
+          </AppText>
+        )}
         <BlockForm
           submitLabel="Create block"
           onSubmit={async (payload) => {
@@ -68,4 +79,9 @@ export function BlockCreateScreen({
   );
 }
 
-const styles = { screen: { flex: 1 }, intro: { paddingHorizontal: 18 } };
+const styles = {
+  screen: { flex: 1 },
+  intro: { paddingHorizontal: 18 },
+  setupHeading: { gap: 2, paddingHorizontal: 18, paddingTop: 4, paddingBottom: 8 },
+  setupTitle: { fontSize: 22, lineHeight: 28 },
+};

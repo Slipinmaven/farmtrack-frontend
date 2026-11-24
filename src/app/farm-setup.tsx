@@ -2,29 +2,36 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Ionicons } from "@expo/vector-icons";
 import { Redirect, router, useLocalSearchParams } from "expo-router";
 import { useAppDialog } from "@/components/ui/app-dialog";
-import { Controller, useForm } from "react-hook-form";
-import { useState } from "react";
+import { Controller, useForm, useWatch } from "react-hook-form";
+import { useRef, useState, type ReactNode } from "react";
 import {
+  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
+  TextInput,
+  type TextInputInstance,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { z } from "zod";
 
 import { SessionGate } from "@/components/layout/session-gate";
+import { FarmTrackMark } from "@/components/branding/farmtrack-mark";
+import { FarmPageHeader } from "@/components/layout/farm-page-header";
 import { AppText } from "@/components/ui/app-text";
 import { Button } from "@/components/ui/button";
-import { TextField } from "@/components/ui/text-field";
+import { Card } from "@/components/ui/card";
 import { useBlocks } from "@/features/blocks/hooks";
 import type { ProductType } from "@/features/management/api";
 import { useDeleteProduct, useProducts } from "@/features/management/hooks";
 import {
   useCompleteFarmSetup,
   useCreateFarm,
+  useFarmInvitations,
+  usePendingFarmDeletions,
 } from "@/features/farms/hooks";
 import { normalizeApiError } from "@/lib/api/errors";
 import { useAuth } from "@/providers/auth-provider";
@@ -32,9 +39,19 @@ import { useFarm } from "@/providers/farm-provider";
 import { useTheme } from "@/providers/theme-provider";
 
 const schema = z.object({
-  name: z.string().trim().min(1, "Enter a farm name.").max(150),
+  name: z
+    .string()
+    .trim()
+    .min(2, "Use at least 2 characters.")
+    .max(40, "Use 40 characters or fewer.")
+    .regex(/[a-z0-9]/i, "Include at least one letter or number."),
 });
 type FormValues = z.infer<typeof schema>;
+const farmNameSuggestions = [
+  "Green Valley Farm",
+  "Family Poultry",
+  "Mixed Livestock",
+];
 
 const steps = [
   { title: "Chicken product", kind: "required" },
@@ -72,7 +89,7 @@ function FarmSetupContent({
   isAdditionalFarm: boolean;
 }) {
   const params = useLocalSearchParams<{ step?: string }>();
-  const { user } = useAuth();
+  const { user, signOut } = useAuth();
   const farm = useFarm();
   const { theme } = useTheme();
   const dialog = useAppDialog();
@@ -134,7 +151,10 @@ function FarmSetupContent({
     setSetupError(null);
     router.replace({
       pathname: "/farm-setup",
-      params: { step: String(nextStep) },
+      params: {
+        step: String(nextStep),
+        ...(isAdditionalFarm ? { additional: "true" } : {}),
+      },
     });
   }
 
@@ -146,8 +166,16 @@ function FarmSetupContent({
           const created = await createFarm.mutateAsync({ name });
           await farm.selectFarm(created.id);
           await farm.refreshFarms();
-          router.replace({ pathname: "/farm-setup", params: { step: "0" } });
         }}
+        onContinue={() =>
+          router.replace({
+            pathname: "/farm-setup",
+            params: {
+              step: "0",
+              ...(isAdditionalFarm ? { additional: "true" } : {}),
+            },
+          })
+        }
       />
     );
   }
@@ -159,6 +187,7 @@ function FarmSetupContent({
         setupFlow: "true",
         setupStep: String(step),
         setupType: type,
+        ...(isAdditionalFarm ? { setupAdditional: "true" } : {}),
         ...(name ? { setupName: name } : {}),
       },
     });
@@ -204,19 +233,35 @@ function FarmSetupContent({
     >
       <KeyboardAvoidingView
         style={styles.screen}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
         <ScrollView
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
           automaticallyAdjustKeyboardInsets
         >
+          <FarmPageHeader
+            title="Farm setup"
+            showNotifications={false}
+            rightAction={
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => void signOut()}
+                hitSlop={8}
+                style={styles.setupSignOut}
+              >
+                <AppText size="small" weight="semibold" tone="secondary">
+                  Sign out
+                </AppText>
+              </Pressable>
+            }
+          />
           <View style={styles.farmHeading}>
             <AppText size="small" weight="semibold" style={{ color: primary }}>
-              FARMTRACK  /  FIRST-TIME SETUP
+              FIRST-TIME SETUP
             </AppText>
-            <AppText size="heading" weight="semibold" style={styles.farmName}>
-              {farm.selectedFarm.name}
+            <AppText size="title" weight="semibold" style={styles.farmName}>
+              Set up {farm.selectedFarm.name}
             </AppText>
           </View>
 
@@ -251,47 +296,40 @@ function FarmSetupContent({
               ]}
             />
           </View>
-          <View style={styles.essentials}>
-            <AppText size="small" weight="semibold">
-              To unlock your farm
-            </AppText>
-            <View style={styles.essentialItems}>
-              <EssentialStatus label="Chicken product" complete={chickenReady} />
-              <View style={[styles.statusDivider, { backgroundColor: border }]} />
-              <EssentialStatus label="Housing block" complete={housingReady} />
-            </View>
-          </View>
         </View>
 
         <View style={styles.stepContent}>
-          <View style={styles.stepEyebrow}>
+          <View style={styles.stepContentHeader}>
             <View
               style={[
-                styles.stepMarker,
-                {
-                  backgroundColor:
-                    steps[step].kind === "required" ? primary : secondary,
-                },
+                styles.stepKindBadge,
+                { backgroundColor: backgroundSelected },
               ]}
-            />
-            <AppText
-              size="small"
-              weight="semibold"
-              style={{
-                color: steps[step].kind === "required" ? primary : secondary,
-              }}
             >
-              {steps[step].kind === "required"
-                ? "REQUIRED"
-                : steps[step].kind === "finish"
-                  ? "READY WHEN YOU ARE"
-                  : "OPTIONAL"}
-            </AppText>
+              <AppText
+                size="small"
+                weight="semibold"
+                style={{
+                  color:
+                    steps[step].kind === "required"
+                      ? primary
+                      : steps[step].kind === "finish"
+                        ? secondary
+                        : textSecondary,
+                }}
+              >
+                {steps[step].kind === "required"
+                  ? "REQUIRED"
+                  : steps[step].kind === "finish"
+                    ? "FINAL STEP"
+                    : "OPTIONAL"}
+              </AppText>
+            </View>
           </View>
           <AppText size="title" weight="semibold" style={styles.stepTitle}>
             {stepTitle(step)}
           </AppText>
-          <AppText size="body" tone="secondary" style={styles.stepDescription}>
+          <AppText size="small" tone="secondary" style={styles.stepDescription}>
             {stepDescription(step)}
           </AppText>
 
@@ -318,25 +356,70 @@ function FarmSetupContent({
           ) : (
             <View style={styles.actions}>
               {step === 0 ? (
-                chickenReady ? (
-                  activeChickenProducts.map((product) => (
+                <>
+                  {activeChickenProducts.map((product) => (
                     <SetupRow
                       key={product.id}
                       icon="checkmark-circle"
                       title={product.name}
-                      detail="Active chicken product"
+                      detail="Chicken product · ready to use"
                       status="Added"
                       complete
+                      action={
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={`Edit ${product.name}`}
+                          onPress={() =>
+                            router.push({
+                              pathname: "/products/[productId]/edit",
+                              params: {
+                                productId: product.id,
+                                fromSetup: "true",
+                                setupStep: "0",
+                                ...(isAdditionalFarm
+                                  ? { setupAdditional: "true" }
+                                  : {}),
+                              },
+                            })
+                          }
+                          style={[
+                            styles.productEditAction,
+                            {
+                              backgroundColor: backgroundSelected,
+                              borderColor: border,
+                            },
+                          ]}
+                        >
+                          <Ionicons name="create-outline" size={15} color={primary} />
+                          <AppText size="small" weight="semibold" style={{ color: primary }}>
+                            Edit
+                          </AppText>
+                        </Pressable>
+                      }
                     />
-                  ))
-                ) : (
+                  ))}
                   <SetupRow
                     icon="add-circle-outline"
-                    title="Create chicken product"
-                    detail="Set its name and counting units"
-                    onPress={() => openProduct("chickens", "Chickens")}
+                    title={
+                      chickenReady
+                        ? "Add another chicken product"
+                        : "Create chicken product"
+                    }
+                    detail={
+                      chickenReady
+                        ? "Track another type of bird"
+                        : "We’ll set up its name and counting unit"
+                    }
+                    onPress={() =>
+                      openProduct(
+                        "chickens",
+                        activeChickenProducts.length
+                          ? `Chickens ${activeChickenProducts.length + 1}`
+                          : "Chickens",
+                      )
+                    }
                   />
-                )
+                </>
               ) : null}
 
               {step === 1 ? (
@@ -363,6 +446,9 @@ function FarmSetupContent({
                                 productId: product.id,
                                 fromSetup: "true",
                                 setupStep: "1",
+                                ...(isAdditionalFarm
+                                  ? { setupAdditional: "true" }
+                                  : {}),
                               },
                             })
                           }
@@ -616,34 +702,13 @@ function stepDescription(step: number): string {
   ][step];
 }
 
-function EssentialStatus({
-  label,
-  complete,
-}: {
-  label: string;
-  complete: boolean;
-}) {
-  const { theme } = useTheme();
-  return (
-    <View style={styles.essentialStatus}>
-      <Ionicons
-        name={complete ? "checkmark-circle" : "ellipse-outline"}
-        size={15}
-        color={complete ? theme.primary : theme.textSecondary}
-      />
-      <AppText size="small" tone={complete ? "primary" : "secondary"}>
-        {label}
-      </AppText>
-    </View>
-  );
-}
-
 function SetupRow({
   icon,
   title,
   detail,
   status,
   complete = false,
+  action,
   onPress,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
@@ -651,6 +716,7 @@ function SetupRow({
   detail: string;
   status?: string;
   complete?: boolean;
+  action?: ReactNode;
   onPress?: () => void;
 }) {
   const { theme } = useTheme();
@@ -676,6 +742,7 @@ function SetupRow({
       ) : onPress ? (
         <Ionicons name="chevron-forward" size={18} color={theme.textSecondary} />
       ) : null}
+      {action}
     </>
   );
   const style = [
@@ -721,22 +788,49 @@ function ReviewRow({
 function CreateFarmForm({
   isSubmitting,
   onCreate,
+  onContinue,
 }: {
   isSubmitting: boolean;
   onCreate: (name: string) => Promise<void>;
+  onContinue: () => void;
 }) {
   const { theme } = useTheme();
+  const { signOut, user } = useAuth();
+  const pendingFarmDeletions = usePendingFarmDeletions(user?.id);
+  const farmInvitations = useFarmInvitations(user?.id);
+  const inputRef = useRef<TextInputInstance>(null);
+  const [createdFarmName, setCreatedFarmName] = useState<string | null>(null);
+  const [isFocused, setIsFocused] = useState(false);
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: { name: "" },
+    mode: "onChange",
+    reValidateMode: "onChange",
   });
+  const name = useWatch({ control: form.control, name: "name" }) ?? "";
+  const normalizedName = name.trim();
+  const isNameValid =
+    normalizedName.length >= 2 &&
+    normalizedName.length <= 40 &&
+    /[a-z0-9]/i.test(normalizedName);
+  const isBusy = form.formState.isSubmitting || isSubmitting;
 
   async function submit(values: FormValues) {
     try {
       await onCreate(values.name);
+      setCreatedFarmName(values.name.trim());
     } catch (error) {
       form.setError("root", { message: normalizeApiError(error).message });
     }
+  }
+
+  function chooseSuggestion(suggestion: string) {
+    form.setValue("name", suggestion, {
+      shouldDirty: true,
+      shouldTouch: true,
+      shouldValidate: true,
+    });
+    inputRef.current?.focus();
   }
 
   return (
@@ -745,49 +839,420 @@ function CreateFarmForm({
       edges={["top", "bottom"]}
     >
       <KeyboardAvoidingView
-        style={styles.screen}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={[styles.screen, { backgroundColor: theme.background }]}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
-        <ScrollView
-          contentContainerStyle={styles.createContent}
-          keyboardShouldPersistTaps="handled"
-          automaticallyAdjustKeyboardInsets
-        >
-          <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
-            FARMTRACK  /  NEW FARM
-          </AppText>
-          <AppText size="title" weight="semibold">
-            Name your farm
-          </AppText>
-          <AppText tone="secondary">
-            We’ll then set up your products, housing, and any opening stock.
-          </AppText>
-          <Controller
-            control={form.control}
-            name="name"
-            render={({ field, fieldState }) => (
-              <TextField
-                label="Farm name"
-                autoCapitalize="words"
-                maxLength={150}
-                value={field.value}
-                onChangeText={field.onChange}
-                onBlur={field.onBlur}
-                error={fieldState.error?.message}
-              />
-            )}
-          />
-          {form.formState.errors.root?.message ? (
-            <AppText style={{ color: theme.danger }}>
-              {form.formState.errors.root.message}
-            </AppText>
-          ) : null}
-          <Button
-            label="Create farm"
-            loading={form.formState.isSubmitting || isSubmitting}
-            onPress={form.handleSubmit(submit)}
-          />
-        </ScrollView>
+        <View style={styles.createShell}>
+          <View style={styles.createTopBar}>
+            <View style={styles.createBrand}>
+              <View
+                style={[
+                  styles.createLogo,
+                  {
+                    backgroundColor:
+                      theme.mode === "dark"
+                        ? "#FFFFFF"
+                        : theme.backgroundSelected,
+                  },
+                ]}
+              >
+                <FarmTrackMark size={30} />
+              </View>
+              <AppText size="body" weight="semibold">Farm setup</AppText>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              disabled={isBusy}
+              onPress={() => void signOut()}
+              hitSlop={8}
+              style={({ pressed }) => [
+                styles.signOutAction,
+                pressed && !isBusy ? styles.pressed : null,
+              ]}
+            >
+              <AppText
+                size="small"
+                weight="semibold"
+                style={{ color: theme.textSecondary }}
+              >
+                Sign out
+              </AppText>
+            </Pressable>
+          </View>
+
+          {!createdFarmName ? (
+            <>
+              <View
+                style={styles.createProgress}
+                accessibilityRole="progressbar"
+                accessibilityValue={{
+                  min: 1,
+                  max: 2,
+                  now: 1,
+                  text: "Step 1 of 2: Create your farm",
+                }}
+              >
+                <View
+                  style={[
+                    styles.createProgressSegment,
+                    { backgroundColor: theme.primary },
+                  ]}
+                />
+                <View
+                  style={[
+                    styles.createProgressSegment,
+                    { backgroundColor: theme.backgroundSelected },
+                  ]}
+                />
+              </View>
+              <ScrollView
+                style={styles.createMain}
+                contentContainerStyle={styles.createContent}
+                keyboardShouldPersistTaps="handled"
+                automaticallyAdjustKeyboardInsets
+              >
+                <View style={styles.createIntro}>
+                  <AppText size="title" weight="semibold" style={styles.createTitle}>
+                    What’s your farm called?
+                  </AppText>
+                  <AppText tone="secondary" style={styles.createLead}>
+                    This name appears on your records and reports.
+                  </AppText>
+                </View>
+                <View
+                  style={[
+                    styles.invitationPrompt,
+                    {
+                      backgroundColor: theme.backgroundElement,
+                      borderColor: `${theme.primary}55`,
+                    },
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.invitationPromptIcon,
+                      { backgroundColor: `${theme.primary}18` },
+                    ]}
+                  >
+                    <Ionicons
+                      name="mail-open-outline"
+                      size={20}
+                      color={theme.primary}
+                    />
+                  </View>
+                  <View style={styles.invitationPromptCopy}>
+                    <AppText weight="semibold">
+                      Were you invited to a farm?
+                    </AppText>
+                    <AppText size="small" tone="secondary">
+                      Accept the invitation instead of creating a separate
+                      workspace.
+                    </AppText>
+                  </View>
+                  {farmInvitations.data?.length ? (
+                    <View
+                      style={[
+                        styles.invitationCount,
+                        { backgroundColor: theme.primary },
+                      ]}
+                    >
+                      <AppText
+                        size="small"
+                        weight="semibold"
+                        style={{ color: theme.onPrimary }}
+                      >
+                        {farmInvitations.data.length}
+                      </AppText>
+                    </View>
+                  ) : null}
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => router.push("/farm-team")}
+                    style={({ pressed }) => [
+                      styles.invitationPromptAction,
+                      {
+                        backgroundColor: pressed
+                          ? theme.backgroundSelected
+                          : `${theme.primary}12`,
+                      },
+                    ]}
+                  >
+                    <AppText
+                      size="small"
+                      weight="semibold"
+                      style={{ color: theme.primary }}
+                    >
+                      Check invitations
+                    </AppText>
+                    <Ionicons
+                      name="arrow-forward"
+                      size={16}
+                      color={theme.primary}
+                    />
+                  </Pressable>
+                </View>
+                {pendingFarmDeletions.data?.length ? (
+                  <Card style={{ gap: 10, borderColor: `${theme.danger}70` }}>
+                    <AppText weight="semibold">
+                      {pendingFarmDeletions.data.length === 1
+                        ? "A farm is awaiting deletion"
+                        : `${pendingFarmDeletions.data.length} farms are awaiting deletion`}
+                    </AppText>
+                    <AppText size="small" tone="secondary">
+                      You can restore a farm instead of creating a new one.
+                      Review the remaining time and confirm with your password.
+                    </AppText>
+                    <Button
+                      label="Review and restore a farm"
+                      variant="secondary"
+                      onPress={() => router.push("/account-details")}
+                    />
+                  </Card>
+                ) : null}
+
+                <Controller
+                  control={form.control}
+                  name="name"
+                  render={({ field, fieldState }) => {
+                    const showError = Boolean(
+                      fieldState.error &&
+                      (fieldState.isTouched || field.value.length > 0),
+                    );
+                    return (
+                      <View style={styles.nameField}>
+                        <AppText size="small" weight="semibold">
+                          Farm name
+                        </AppText>
+                        <View
+                          style={[
+                            styles.nameInputFrame,
+                            {
+                              backgroundColor: theme.backgroundElement,
+                              borderColor: showError
+                                ? theme.danger
+                                : fieldState.isTouched && fieldState.isDirty
+                                  ? theme.primary
+                                  : theme.border,
+                              borderWidth: isFocused ? 2 : 1,
+                            },
+                            isFocused && {
+                              borderColor: showError ? theme.danger : theme.primary,
+                            },
+                          ]}
+                        >
+                          <TextInput
+                            ref={(input) => {
+                              field.ref(input);
+                              inputRef.current = input;
+                            }}
+                            accessibilityLabel="Farm name"
+                            accessibilityHint={
+                              showError
+                                ? fieldState.error?.message
+                                : "You can change this later in Settings."
+                            }
+                            autoCapitalize="words"
+                            autoComplete="off"
+                            enterKeyHint="done"
+                            maxLength={40}
+                            onBlur={() => {
+                              setIsFocused(false);
+                              field.onBlur();
+                              if (!field.value.trim()) {
+                                void form.trigger("name");
+                              }
+                            }}
+                            onChangeText={field.onChange}
+                            onFocus={() => setIsFocused(true)}
+                            onSubmitEditing={() => {
+                              if (!isBusy && isNameValid) {
+                                void form.handleSubmit(submit)();
+                              }
+                            }}
+                            placeholder="e.g. Green Valley Farm"
+                            placeholderTextColor={theme.textSecondary}
+                            returnKeyType="done"
+                            selectionColor={theme.primary}
+                            style={[
+                              styles.nameInput,
+                              { color: theme.text, fontFamily: theme.fontFamily },
+                            ]}
+                            value={field.value}
+                          />
+                          {field.value.length > 0 ? (
+                            <Pressable
+                              accessibilityRole="button"
+                              accessibilityLabel="Clear farm name"
+                              disabled={isBusy}
+                              hitSlop={8}
+                              onPress={() => {
+                                field.onChange("");
+                                field.onBlur();
+                                inputRef.current?.focus();
+                              }}
+                              style={[
+                                styles.clearName,
+                                { backgroundColor: theme.backgroundSelected },
+                              ]}
+                            >
+                              <Ionicons
+                                name="close"
+                                size={17}
+                                color={theme.text}
+                              />
+                            </Pressable>
+                          ) : null}
+                        </View>
+                        <View style={styles.nameMeta}>
+                          <AppText
+                            size="small"
+                            style={{
+                              flex: 1,
+                              color: showError ? theme.danger : theme.textSecondary,
+                            }}
+                            accessibilityLiveRegion="polite"
+                          >
+                            {showError
+                              ? fieldState.error?.message
+                              : "You can change this later in Settings."}
+                          </AppText>
+                          <AppText size="small" tone="secondary">
+                            {field.value.length}/40
+                          </AppText>
+                        </View>
+                      </View>
+                    );
+                  }}
+                />
+
+                <View style={styles.suggestions}>
+                  <AppText size="small" tone="secondary">
+                    Need a starting point?
+                  </AppText>
+                  <View style={styles.suggestionList}>
+                    {farmNameSuggestions.map((suggestion) => (
+                      <Pressable
+                        key={suggestion}
+                        accessibilityRole="button"
+                        disabled={isBusy}
+                        onPress={() => chooseSuggestion(suggestion)}
+                        style={({ pressed }) => [
+                          styles.suggestionChip,
+                          {
+                            borderColor: theme.border,
+                            backgroundColor: theme.backgroundElement,
+                          },
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <AppText size="small">{suggestion}</AppText>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+
+                {form.formState.errors.root?.message ? (
+                  <AppText
+                    accessibilityLiveRegion="assertive"
+                    size="small"
+                    style={{ color: theme.danger }}
+                  >
+                    {form.formState.errors.root.message}
+                  </AppText>
+                ) : null}
+              </ScrollView>
+              <View
+                style={[
+                  styles.createFooter,
+                  { backgroundColor: theme.background },
+                ]}
+              >
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{
+                    disabled: !isNameValid || isBusy,
+                    busy: isBusy,
+                  }}
+                  disabled={!isNameValid || isBusy}
+                  onPress={() => void form.handleSubmit(submit)()}
+                  style={({ pressed }) => [
+                    styles.createButton,
+                    {
+                      backgroundColor: isNameValid
+                        ? theme.primary
+                        : theme.backgroundSelected,
+                    },
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  {isBusy ? (
+                    <ActivityIndicator color={theme.onPrimary} />
+                  ) : (
+                    <AppText
+                      size="body"
+                      weight="semibold"
+                      style={{
+                        color: isNameValid ? theme.onPrimary : theme.textSecondary,
+                      }}
+                    >
+                      Create farm
+                    </AppText>
+                  )}
+                  {isBusy ? (
+                    <AppText
+                      size="body"
+                      weight="semibold"
+                      style={{ color: theme.onPrimary }}
+                    >
+                      Creating…
+                    </AppText>
+                  ) : null}
+                </Pressable>
+                <AppText size="small" tone="secondary" style={styles.createFootnote}>
+                  Takes about a minute to finish setup.
+                </AppText>
+              </View>
+            </>
+          ) : (
+            <View style={styles.createSuccess}>
+              <View
+                style={[
+                  styles.successMark,
+                  { backgroundColor: theme.backgroundSelected },
+                ]}
+              >
+                <Ionicons
+                  name="checkmark"
+                  size={34}
+                  color={theme.success}
+                />
+              </View>
+              <AppText size="title" weight="semibold" style={styles.createTitle}>
+                {createdFarmName} is ready
+              </AppText>
+              <AppText tone="secondary" style={styles.createLead}>
+                Next, add your first chicken product or housing block.
+              </AppText>
+              <Pressable
+                accessibilityRole="button"
+                onPress={onContinue}
+                style={({ pressed }) => [
+                  styles.createButton,
+                  { backgroundColor: theme.primary },
+                  pressed && styles.pressed,
+                ]}
+              >
+                <AppText
+                  size="body"
+                  weight="semibold"
+                  style={{ color: theme.onPrimary }}
+                >
+                  Continue setup
+                </AppText>
+              </Pressable>
+            </View>
+          )}
+        </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -801,42 +1266,182 @@ const styles = StyleSheet.create({
     maxWidth: 680,
     alignSelf: "center",
     paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 24,
+    paddingTop: 24,
+    paddingBottom: 28,
+    gap: 26,
+  },
+  setupSignOut: {
+    minHeight: 40,
+    justifyContent: "center",
+    paddingHorizontal: 4,
   },
   createContent: {
     flexGrow: 1,
-    width: "100%",
-    maxWidth: 560,
-    alignSelf: "center",
-    justifyContent: "center",
-    padding: 24,
-    gap: 16,
+    paddingTop: 14,
+    paddingBottom: 20,
+    gap: 20,
   },
-  farmHeading: { gap: 3, marginBottom: 20 },
-  farmName: { fontSize: 23, lineHeight: 29 },
-  progressArea: { gap: 10, marginBottom: 34 },
+  createShell: {
+    flex: 1,
+    width: "100%",
+    maxWidth: 430,
+    alignSelf: "center",
+    paddingHorizontal: 20,
+  },
+  createTopBar: {
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  createBrand: { flexDirection: "row", alignItems: "center", gap: 10 },
+  createLogo: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  signOutAction: {
+    minHeight: 40,
+    justifyContent: "center",
+    paddingHorizontal: 4,
+  },
+  createProgress: { flexDirection: "row", gap: 6, marginTop: 14 },
+  createProgressSegment: { flex: 1, height: 4, borderRadius: 2 },
+  createMain: { flex: 1, minHeight: 0 },
+  createIntro: { gap: 5 },
+  createTitle: { fontSize: 24, lineHeight: 30, letterSpacing: -0.35 },
+  createLead: { lineHeight: 20 },
+  invitationPrompt: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 12,
+  },
+  invitationPromptIcon: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 13,
+  },
+  invitationPromptCopy: { flex: 1, minWidth: 170, gap: 3 },
+  invitationCount: {
+    minWidth: 26,
+    height: 26,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 13,
+    paddingHorizontal: 6,
+  },
+  invitationPromptAction: {
+    minHeight: 38,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+  },
+  nameField: { gap: 6 },
+  nameInputFrame: {
+    minHeight: 50,
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderRadius: 11,
+    paddingLeft: 13,
+    paddingRight: 10,
+  },
+  nameInput: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 48,
+    paddingVertical: 8,
+    paddingHorizontal: 0,
+    borderWidth: 0,
+    fontSize: 17,
+    outlineWidth: 0,
+    outlineColor: "transparent",
+    outlineStyle: "solid",
+  },
+  clearName: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  nameMeta: {
+    minHeight: 20,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  suggestions: { gap: 8 },
+  suggestionList: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  suggestionChip: {
+    minHeight: 36,
+    justifyContent: "center",
+    borderWidth: 1,
+    borderRadius: 18,
+    paddingHorizontal: 13,
+  },
+  createFooter: {
+    paddingTop: 12,
+    paddingBottom: 14,
+  },
+  createButton: {
+    minHeight: 50,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 9,
+    borderRadius: 11,
+    paddingHorizontal: 18,
+  },
+  createFootnote: { textAlign: "center", marginTop: 10 },
+  createSuccess: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 14,
+    paddingVertical: 28,
+  },
+  successMark: {
+    width: 72,
+    height: 72,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 6,
+  },
+  farmHeading: { gap: 4 },
+  farmName: { fontSize: 25, lineHeight: 31 },
+  progressArea: { gap: 10 },
   progressMeta: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
   },
-  progressTrack: { height: 4, borderRadius: 2, overflow: "hidden" },
+  progressTrack: { height: 5, borderRadius: 3, overflow: "hidden" },
   progressFill: { height: "100%", borderRadius: 2 },
-  essentials: { gap: 7, marginTop: 2 },
-  essentialItems: {
-    flexDirection: "row",
-    alignItems: "center",
-    flexWrap: "wrap",
-    gap: 10,
-  },
-  essentialStatus: { flexDirection: "row", alignItems: "center", gap: 5 },
-  statusDivider: { width: 1, height: 14 },
   stepContent: { gap: 12, flex: 1 },
-  stepEyebrow: { flexDirection: "row", alignItems: "center", gap: 7 },
-  stepMarker: { width: 7, height: 7, borderRadius: 4 },
-  stepTitle: { fontSize: 25, lineHeight: 31, maxWidth: 520 },
-  stepDescription: { maxWidth: 520, marginBottom: 6, lineHeight: 22 },
+  stepContentHeader: { flexDirection: "row", alignItems: "center" },
+  stepKindBadge: {
+    minHeight: 26,
+    justifyContent: "center",
+    paddingHorizontal: 10,
+    borderRadius: 6,
+  },
+  stepTitle: { fontSize: 22, lineHeight: 28, maxWidth: 520 },
+  stepDescription: { maxWidth: 520, marginBottom: 6, lineHeight: 19 },
   actions: { gap: 0, marginTop: 6 },
   actionRow: {
     minHeight: 62,
@@ -858,6 +1463,15 @@ const styles = StyleSheet.create({
     paddingBottom: 9,
   },
   eggAction: { minHeight: 32, flexDirection: "row", alignItems: "center", gap: 5 },
+  productEditAction: {
+    minHeight: 34,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    borderWidth: 1,
+    borderRadius: 7,
+    paddingHorizontal: 8,
+  },
   rowCopy: { flex: 1, gap: 1 },
   pressed: { opacity: 0.72 },
   inlineNote: { marginTop: 8 },
@@ -879,6 +1493,7 @@ const styles = StyleSheet.create({
   },
   reviewLabel: { flex: 1 },
   reviewNote: { marginTop: 10, lineHeight: 19 },
+  createForm: { gap: 16 },
   footer: {
     borderTopWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 20,

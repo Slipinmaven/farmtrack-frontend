@@ -14,9 +14,13 @@ export type EggCollectionProduct = {
   product_type: "eggs";
   is_sellable: boolean;
   units: EggCollectionUnit[];
+  opening_stock_quantity_in_base_unit: number | string;
   collected_quantity_in_base_unit: number | string;
   lost_quantity_in_base_unit: number | string;
   sold_quantity_in_base_unit: number | string;
+  stock_adjustment_quantity_in_base_unit: number | string;
+  on_hand_quantity_in_base_unit: number | string;
+  reserved_quantity_in_base_unit: number | string;
   available_quantity_in_base_unit: number | string;
 };
 
@@ -144,7 +148,12 @@ export async function getEggCollectionOptions(
 
 export async function getEggCollections(
   farmId: string,
-  filters: { from_datetime?: string; to_datetime?: string } = {},
+  filters: {
+    product_id?: string;
+    block_id?: string;
+    from_datetime?: string;
+    to_datetime?: string;
+  } = {},
 ): Promise<EggCollectionResult[]> {
   const { data } = await apiClient.get<EggCollectionResult[]>(
     `/farms/${farmId}/egg-collections`,

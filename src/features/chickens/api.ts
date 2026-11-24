@@ -366,8 +366,23 @@ export type ChickenPurchaseItemInput = {
 export type ChickenPurchasePaymentInput = {
   amount: number | string;
   payment_date: string;
+  payment_time?: string | null;
   payment_method: ChickenPaymentMethod;
   reference_number?: string;
+};
+
+export type ChickenPurchasePaymentResponse = {
+  payment: {
+    id: string;
+    amount: number | string;
+    payment_date: string;
+    payment_time: string | null;
+    payment_method: ChickenPaymentMethod;
+    reference_number: string | null;
+  };
+  amount_paid: number | string;
+  balance_due: number | string;
+  credit_balance: number | string;
 };
 
 export type ChickenPurchaseInput = {
@@ -570,6 +585,17 @@ export async function createChickenLoss(
   return data;
 }
 
+export async function getChickenLosses(
+  farmId: string,
+  filters: { from_date?: string; to_date?: string },
+): Promise<ChickenLossResult[]> {
+  const { data } = await apiClient.get<ChickenLossResult[]>(
+    `/farms/${farmId}/chicken-losses`,
+    { params: filters },
+  );
+  return data;
+}
+
 export async function createChickenMovement(
   farmId: string,
   payload: ChickenMovementInput,
@@ -663,6 +689,18 @@ export async function createChickenPurchase(
 ): Promise<ChickenPurchaseResult> {
   const { data } = await apiClient.post<ChickenPurchaseResult>(
     `/farms/${farmId}/chicken-purchases`,
+    payload,
+  );
+  return data;
+}
+
+export async function recordChickenPurchasePayment(
+  farmId: string,
+  transactionId: string,
+  payload: ChickenPurchasePaymentInput,
+): Promise<ChickenPurchasePaymentResponse> {
+  const { data } = await apiClient.post<ChickenPurchasePaymentResponse>(
+    `/farms/${farmId}/transactions/${transactionId}/payments`,
     payload,
   );
   return data;

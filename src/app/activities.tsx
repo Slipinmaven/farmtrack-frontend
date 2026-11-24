@@ -90,6 +90,11 @@ export default function ActivitiesScreen() {
   const [showDateFilters, setShowDateFilters] = useState(
     () => Boolean(initialDate),
   );
+  const [showActivityOverview, setShowActivityOverview] = useState(false);
+  const [pagination, setPagination] = useState({
+    filterKey: "",
+    pageIndex: 0,
+  });
   const [appliedDateRange, setAppliedDateRange] =
     useState<ActivityDateRange>(initialDateRange);
   const activities = useFarmActivities(
@@ -103,16 +108,52 @@ export default function ActivitiesScreen() {
   const summary = useFarmActivitySummary(
     auth.user?.id,
     farm.selectedFarm?.id,
+    showActivityOverview,
   );
-  const items = activities.data?.pages.flatMap((page) => page.items) ?? [];
+  const pages = activities.data?.pages ?? [];
+  const paginationKey = JSON.stringify([
+    debouncedSearch,
+    category,
+    appliedDateRange.from_datetime,
+    appliedDateRange.to_datetime,
+  ]);
+  const pageIndex =
+    pagination.filterKey === paginationKey ? pagination.pageIndex : 0;
+  const items = pages[pageIndex]?.items ?? [];
+  const totalCount = pages[0]?.total_count ?? 0;
+  const pageCount = Math.max(1, Math.ceil(totalCount / 20));
+  const firstItemNumber = items.length > 0 ? pageIndex * 20 + 1 : 0;
+  const lastItemNumber = pageIndex * 20 + items.length;
+  const hasActiveFilters = Boolean(
+    search.trim() ||
+      category ||
+      appliedDateRange.from_datetime ||
+      appliedDateRange.to_datetime,
+  );
   const hasDateFilter = Boolean(
     fromDate || toDate || appliedDateRange.from_datetime || appliedDateRange.to_datetime,
+  );
+  const hasAppliedDateFilter = Boolean(
+    appliedDateRange.from_datetime || appliedDateRange.to_datetime,
   );
 
   useEffect(() => {
     const timeout = setTimeout(() => setDebouncedSearch(search.trim()), 300);
     return () => clearTimeout(timeout);
   }, [search]);
+
+  async function goToNextPage() {
+    if (pageIndex + 1 < pages.length) {
+      setPagination({ filterKey: paginationKey, pageIndex: pageIndex + 1 });
+      return;
+    }
+    if (activities.hasNextPage && !activities.isFetchingNextPage) {
+      const result = await activities.fetchNextPage();
+      if (result.data?.pages[pageIndex + 1]) {
+        setPagination({ filterKey: paginationKey, pageIndex: pageIndex + 1 });
+      }
+    }
+  }
 
   function applyDateRange() {
     const from = fromDate ? parseLocalDate(fromDate) : null;
@@ -148,8 +189,18 @@ export default function ActivitiesScreen() {
     setAppliedDateRange({});
   }
 
+  function clearAllFilters() {
+    setSearch("");
+    setDebouncedSearch("");
+    setCategory(undefined);
+    clearDateRange();
+  }
+
   async function refreshActivities() {
-    await Promise.all([activities.refetch(), summary.refetch()]);
+    await Promise.all([
+      activities.refetch(),
+      ...(showActivityOverview ? [summary.refetch()] : []),
+    ]);
   }
 
   return (
@@ -172,36 +223,7 @@ export default function ActivitiesScreen() {
       >
         <FarmPageHeader title="Activities" showBack />
 
-        {farm.selectedFarm ? (
-          <ActivitySnapshot
-            summary={summary.data}
-            loading={summary.isLoading}
-            error={
-              summary.isError
-                ? normalizeApiError(summary.error).message
-                : null
-            }
-            onRetry={() => void summary.refetch()}
-          />
-        ) : null}
-
         <Card style={styles.filterCard}>
-          <View style={styles.filterCardHeading}>
-            <View
-              style={[
-                styles.filterHeadingIcon,
-                { backgroundColor: theme.backgroundSelected },
-              ]}
-            >
-              <Ionicons name="search-outline" size={18} color={theme.primary} />
-            </View>
-            <View style={styles.filterHeadingCopy}>
-              <AppText weight="semibold">Find an activity</AppText>
-              <AppText size="small" tone="secondary">
-                Search or browse by area
-              </AppText>
-            </View>
-          </View>
           <TextField
             label="Search activities"
             placeholder="Name, action, or details"
@@ -211,7 +233,7 @@ export default function ActivitiesScreen() {
           />
           <View style={styles.filterSubheading}>
             <AppText size="small" weight="semibold" tone="secondary">
-              Browse by area
+              Filter by area
             </AppText>
             {category ? (
               <Pressable
@@ -278,12 +300,12 @@ export default function ActivitiesScreen() {
                 <Ionicons
                   name="calendar-outline"
                   size={17}
-                  color={hasDateFilter ? theme.primary : theme.textSecondary}
+                  color={hasAppliedDateFilter ? theme.primary : theme.textSecondary}
                 />
                 <AppText size="small" weight="semibold">
                   Date range
                 </AppText>
-                {hasDateFilter ? (
+                {hasAppliedDateFilter ? (
                   <View
                     style={[
                       styles.activeDateBadge,
@@ -371,36 +393,35 @@ export default function ActivitiesScreen() {
         items.length === 0 ? (
           <Card style={styles.state}>
             <AppText weight="semibold">
-              {debouncedSearch || category
+              {hasActiveFilters
                 ? "No matching activities"
                 : "No activities yet"}
             </AppText>
             <AppText size="small" tone="secondary">
-              {debouncedSearch || category
+              {hasActiveFilters
                 ? "Try a different search or activity type."
                 : "Actions recorded for this farm will appear here."}
             </AppText>
+            {hasActiveFilters ? (
+              <Button
+                label="Clear all filters"
+                variant="secondary"
+                onPress={clearAllFilters}
+              />
+            ) : null}
           </Card>
         ) : null}
 
         {items.length > 0 ? (
           <View style={styles.resultsHeading}>
             <View style={styles.resultsTitleCopy}>
-              <AppText size="title" weight="semibold">
-                Recent activity
+              <AppText size="body" weight="semibold">
+                Activity history
               </AppText>
               <AppText size="small" tone="secondary">
-                Your farm’s latest recorded actions
-              </AppText>
-            </View>
-            <View
-              style={[
-                styles.resultsCount,
-                { backgroundColor: theme.backgroundSelected },
-              ]}
-            >
-              <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
-                {items.length}
+                Showing {new Intl.NumberFormat().format(firstItemNumber)}–
+                {new Intl.NumberFormat().format(lastItemNumber)} of{" "}
+                {new Intl.NumberFormat().format(totalCount)} records
               </AppText>
             </View>
           </View>
@@ -409,14 +430,111 @@ export default function ActivitiesScreen() {
           <ActivityCard key={activity.id} activity={activity} />
         ))}
 
-        {activities.hasNextPage ? (
-          <Button
-            label="Load 20 more"
-            variant="secondary"
-            loading={activities.isFetchingNextPage}
-            disabled={activities.isFetchingNextPage}
-            onPress={() => void activities.fetchNextPage()}
-          />
+        {items.length > 0 ? (
+          <View style={[styles.pagination, { borderTopColor: theme.border }]}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Previous activity page"
+              accessibilityState={{ disabled: pageIndex === 0 }}
+              disabled={pageIndex === 0}
+              onPress={() =>
+                setPagination({
+                  filterKey: paginationKey,
+                  pageIndex: Math.max(0, pageIndex - 1),
+                })
+              }
+              style={({ pressed }) => [
+                styles.pageButton,
+                {
+                  borderColor: theme.border,
+                  opacity: pageIndex === 0 ? 0.45 : pressed ? 0.7 : 1,
+                },
+              ]}
+            >
+              <Ionicons name="chevron-back" size={17} color={theme.text} />
+              <AppText size="small" weight="semibold">Previous</AppText>
+            </Pressable>
+            <AppText size="small" weight="semibold" tone="secondary">
+              Page {Math.min(pageIndex + 1, pageCount)} of {pageCount}
+            </AppText>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Next activity page"
+              accessibilityState={{
+                disabled:
+                  pageIndex + 1 >= pageCount ||
+                  (pageIndex + 1 >= pages.length && !activities.hasNextPage),
+              }}
+              disabled={
+                activities.isFetchingNextPage ||
+                pageIndex + 1 >= pageCount ||
+                (pageIndex + 1 >= pages.length && !activities.hasNextPage)
+              }
+              onPress={() => void goToNextPage()}
+              style={({ pressed }) => [
+                styles.pageButton,
+                {
+                  borderColor: theme.border,
+                  opacity:
+                    activities.isFetchingNextPage ||
+                    pageIndex + 1 >= pageCount
+                      ? 0.45
+                      : pressed
+                        ? 0.7
+                        : 1,
+                },
+              ]}
+            >
+              <AppText size="small" weight="semibold">
+                {activities.isFetchingNextPage ? "Loading" : "Next"}
+              </AppText>
+              <Ionicons name="chevron-forward" size={17} color={theme.text} />
+            </Pressable>
+          </View>
+        ) : null}
+        {farm.selectedFarm ? (
+          <View style={styles.overviewDisclosure}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ expanded: showActivityOverview }}
+              onPress={() =>
+                setShowActivityOverview((isVisible) => !isVisible)
+              }
+              style={({ pressed }) => [
+                styles.overviewToggle,
+                {
+                  borderTopColor: theme.border,
+                  opacity: pressed ? 0.7 : 1,
+                },
+              ]}
+            >
+              <View style={styles.overviewToggleCopy}>
+                <AppText size="small" weight="semibold">
+                  Activity overview
+                </AppText>
+                <AppText size="small" tone="secondary">
+                  Optional summary · last 7 days
+                </AppText>
+              </View>
+              <Ionicons
+                name={showActivityOverview ? "chevron-up" : "chevron-down"}
+                size={18}
+                color={theme.textSecondary}
+              />
+            </Pressable>
+            {showActivityOverview ? (
+              <ActivitySnapshot
+                summary={summary.data}
+                loading={summary.isLoading}
+                error={
+                  summary.isError
+                    ? normalizeApiError(summary.error).message
+                    : null
+                }
+                onRetry={() => void summary.refetch()}
+              />
+            ) : null}
+          </View>
         ) : null}
       </ScrollView>
     </SafeAreaView>
@@ -510,7 +628,7 @@ function ActivitySnapshot({
   if (error || !summary) {
     return (
       <Card style={styles.snapshotError}>
-        <AppText weight="semibold">Activity snapshot unavailable</AppText>
+        <AppText weight="semibold">Activity overview unavailable</AppText>
         <AppText size="small" tone="secondary">
           {error ?? "The activity summary could not be loaded."}
         </AppText>
@@ -540,23 +658,9 @@ function ActivitySnapshot({
           <Ionicons name="pulse-outline" size={20} color={theme.onPrimary} />
         </View>
         <View style={styles.snapshotHeadingCopy}>
-          <AppText weight="semibold">Activity snapshot</AppText>
+          <AppText weight="semibold">Activity overview</AppText>
           <AppText size="small" tone="secondary">
-            A quick look at your farm this week
-          </AppText>
-        </View>
-        <View
-          style={[
-            styles.snapshotPeriodBadge,
-            { backgroundColor: theme.backgroundSelected },
-          ]}
-        >
-          <AppText
-            size="small"
-            weight="semibold"
-            style={{ color: theme.primary }}
-          >
-            7 DAYS
+            Activity records from the last 7 days
           </AppText>
         </View>
       </View>
@@ -569,13 +673,13 @@ function ActivitySnapshot({
           ]}
         >
           <AppText size="small" weight="semibold" tone="secondary">
-            TOTAL ACTIVITY
+            ACTIVITY RECORDS
           </AppText>
           <AppText style={styles.snapshotValue}>
             {new Intl.NumberFormat().format(summary.last_7_days_count)}
           </AppText>
           <AppText size="small" tone="secondary">
-            records this week
+            records in the last 7 days
           </AppText>
         </View>
         <View
@@ -622,18 +726,18 @@ function ActivitySnapshot({
               color={theme.primary}
             />
             <AppText size="small" weight="semibold">
-              Week over week
+              Compared with previous 7 days
             </AppText>
           </View>
         </View>
         {[
           {
-            label: "This week",
+            label: "Last 7 days",
             count: summary.last_7_days_count,
             color: theme.primary,
           },
           {
-            label: "Previous week",
+            label: "Previous 7 days",
             count: summary.previous_7_days_count,
             color: theme.textSecondary,
           },
@@ -676,7 +780,7 @@ function ActivitySnapshot({
           <View>
             <AppText weight="semibold">Activity by area</AppText>
             <AppText size="small" tone="secondary">
-              Where this week’s activity happened
+              Records by area
             </AppText>
           </View>
           {breakdown.length ? (
@@ -836,7 +940,7 @@ function ActivityCard({ activity }: { activity: FarmActivity }) {
               { backgroundColor: theme.backgroundSelected },
             ]}
           >
-            <AppText size="small" numberOfLines={2}>
+            <AppText size="small">
               {detail}
             </AppText>
           </View>
@@ -847,7 +951,7 @@ function ActivityCard({ activity }: { activity: FarmActivity }) {
             {formatRelativeDate(activity.created_at)}
           </AppText>
           <View style={[styles.timestampDot, { backgroundColor: theme.border }]} />
-          <AppText size="small" tone="secondary" numberOfLines={1}>
+          <AppText size="small" tone="secondary">
             {fullDate}
           </AppText>
         </View>
@@ -889,11 +993,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   snapshotHeadingCopy: { flex: 1, gap: 1 },
-  snapshotPeriodBadge: {
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    borderRadius: 10,
-  },
   snapshotStats: { flexDirection: "row", gap: 9 },
   snapshotMainMetric: {
     flex: 1,
@@ -953,8 +1052,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 9,
   },
-  comparisonLabel: { width: 88 },
-  comparisonTrack: { height: 8, borderRadius: 5, overflow: "hidden" },
+  comparisonLabel: { width: 104 },
+  comparisonTrack: { flex: 1, height: 8, borderRadius: 5, overflow: "hidden" },
   comparisonFill: { height: "100%", borderRadius: 5 },
   comparisonCount: { width: 28, textAlign: "right" },
   comparisonFooter: {
@@ -1004,15 +1103,6 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   filterCard: { gap: 15, borderRadius: 16, padding: 15 },
-  filterCardHeading: { flexDirection: "row", alignItems: "center", gap: 11 },
-  filterHeadingIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  filterHeadingCopy: { flex: 1, gap: 1 },
   filterSubheading: {
     flexDirection: "row",
     alignItems: "center",
@@ -1054,12 +1144,36 @@ const styles = StyleSheet.create({
     paddingTop: 2,
   },
   resultsTitleCopy: { flex: 1, gap: 1 },
-  resultsCount: {
-    minWidth: 34,
-    height: 34,
-    borderRadius: 17,
+  overviewDisclosure: { gap: 12, marginTop: 4 },
+  overviewToggle: {
+    minHeight: 54,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 10,
+  },
+  overviewToggleCopy: { flex: 1, gap: 2 },
+  pagination: {
+    minHeight: 54,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    marginTop: 4,
+    paddingTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  pageButton: {
+    minHeight: 38,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    gap: 3,
+    paddingHorizontal: 9,
+    borderWidth: 1,
+    borderRadius: 10,
   },
   activityPressable: { borderRadius: 15 },
   activityCard: {

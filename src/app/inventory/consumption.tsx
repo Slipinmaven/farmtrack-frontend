@@ -288,7 +288,6 @@ function ProductConsumptionContent() {
           showBack
           fallbackHref={"/inventory" as Href}
         />
-
         {(productsQuery.isError || inventoryQuery.isError) ? (
           <Card style={styles.section}>
             <View style={styles.errorHeading}>

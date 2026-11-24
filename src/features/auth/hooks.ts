@@ -7,10 +7,13 @@ import {
 
 import {
   blockLoginSession,
+  cancelAccountDeletion,
   changePassword,
+  getAccountDeletionStatus,
   getLoginSessions,
   getSessionActivities,
   revokeLoginSession,
+  scheduleAccountDeletion,
   unblockDevice,
   type ChangePasswordPayload,
   type SessionHistoryFilters,
@@ -46,6 +49,40 @@ export function useChangePassword(userId: string) {
     mutationFn: (payload: ChangePasswordPayload) => changePassword(payload),
     onSuccess: () =>
       client.invalidateQueries({ queryKey: ["login-sessions", userId] }),
+  });
+}
+
+export function useScheduleAccountDeletion() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (currentPassword: string) =>
+      scheduleAccountDeletion(currentPassword),
+    onSuccess: () =>
+      client.invalidateQueries({ queryKey: ["account-deletion-status"] }),
+  });
+}
+
+export function useAccountDeletionStatus(userId: string | undefined) {
+  return useQuery({
+    queryKey: ["account-deletion-status", userId],
+    queryFn: getAccountDeletionStatus,
+    enabled: Boolean(userId),
+  });
+}
+
+export function useCancelAccountDeletion(userId: string | undefined) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ email, password }: { email: string; password: string }) =>
+      cancelAccountDeletion(email, password),
+    onSuccess: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["account-deletion-status"] }),
+        ...(userId
+          ? [client.invalidateQueries({ queryKey: ["farms", userId] })]
+          : []),
+      ]);
+    },
   });
 }
 

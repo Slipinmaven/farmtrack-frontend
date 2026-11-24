@@ -72,6 +72,50 @@ export type ChangePasswordPayload = {
   new_password: string;
 };
 
+export type AccountDeletion = {
+  status: "scheduled";
+  scheduled_for: string | null;
+  notification_sent: boolean;
+};
+
+export type AccountDeletionStatus = {
+  status: "none" | "confirmation_pending" | "scheduled";
+  confirmation_expires_at: string | null;
+  scheduled_for: string | null;
+};
+
+export async function scheduleAccountDeletion(
+  currentPassword: string,
+): Promise<AccountDeletion> {
+  const { data } = await apiClient.delete<AccountDeletion>("/auth/account", {
+    data: { current_password: currentPassword },
+  });
+  return data;
+}
+
+export async function getAccountDeletionStatus(): Promise<AccountDeletionStatus> {
+  const { data } =
+    await apiClient.get<AccountDeletionStatus>("/auth/account/deletion");
+  return data;
+}
+
+export async function cancelAccountDeletion(
+  email: string,
+  currentPassword: string,
+): Promise<void> {
+  await apiClient.post("/auth/account-deletion/cancel", {
+    email,
+    password: currentPassword,
+  });
+}
+
+export async function restoreAccountDeletion(
+  email: string,
+  password: string,
+): Promise<void> {
+  await apiClient.post("/auth/account-deletion/restore", { email, password });
+}
+
 export async function login(
   payload: LoginPayload,
 ): Promise<AuthenticationResponse> {

@@ -152,6 +152,7 @@ export default function ActivityDetailsScreen() {
                     color="#FFFFFF"
                   />
                 </View>
+
                 <View style={styles.heroCopy}>
                   <AppText size="small" weight="semibold" tone="secondary">
                     {getEntityLabel(activity.entity_type).toUpperCase()}
@@ -164,10 +165,26 @@ export default function ActivityDetailsScreen() {
                     {getActivityLabel(activity.type)}
                   </AppText>
                 </View>
+
+                <View
+                  style={[
+                    styles.heroStatus,
+                    {
+                      backgroundColor: `${actionColor}22`,
+                      borderColor: `${actionColor}44`,
+                    },
+                  ]}
+                >
+                  <AppText size="small" weight="semibold" style={{ color: actionColor }}>
+                    Delivered
+                  </AppText>
+                </View>
               </View>
+
               {activitySummary ? (
                 <AppText style={styles.heroSummary}>{activitySummary}</AppText>
               ) : null}
+
               <View
                 style={[
                   styles.timestamp,
@@ -207,6 +224,7 @@ export default function ActivityDetailsScreen() {
                     </AppText>
                   </View>
                 </View>
+
                 <View style={styles.changeList}>
                   {changes.map((change, index) => (
                     <View key={`${change.field}-${index}`} style={styles.changeItem}>
@@ -227,6 +245,7 @@ export default function ActivityDetailsScreen() {
                             {change.from}
                           </AppText>
                         </View>
+
                         <View
                           style={[
                             styles.changeArrow,
@@ -239,6 +258,7 @@ export default function ActivityDetailsScreen() {
                             color={theme.primary}
                           />
                         </View>
+
                         <View
                           style={[
                             styles.changeValueBlock,
@@ -285,6 +305,7 @@ export default function ActivityDetailsScreen() {
                     </AppText>
                   </View>
                 </View>
+
                 <View style={styles.productTotals}>
                   {productTotals.map((total) => (
                     <View
@@ -334,6 +355,7 @@ export default function ActivityDetailsScreen() {
                     </AppText>
                   </View>
                 </View>
+
                 <View style={styles.collectionEntries}>
                   {activityEntries.map((entry) => (
                     <View
@@ -353,6 +375,7 @@ export default function ActivityDetailsScreen() {
                           ) : null}
                         </View>
                       </View>
+
                       {entry.fields.length ? (
                         <View
                           style={[
@@ -378,6 +401,7 @@ export default function ActivityDetailsScreen() {
                           ))}
                         </View>
                       ) : null}
+
                       {entry.note ? (
                         <View style={styles.collectionNote}>
                           <Ionicons
@@ -420,6 +444,7 @@ export default function ActivityDetailsScreen() {
                     </AppText>
                   </View>
                 </View>
+
                 <View style={styles.detailRows}>
                   {detailFields.map((field, index) => (
                     <View
@@ -490,26 +515,59 @@ const styles = StyleSheet.create({
   },
   state: { gap: 9 },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  hero: { gap: 16, borderRadius: 16, padding: 18 },
-  heroTopline: { flexDirection: "row", alignItems: "center", gap: 13 },
-  heroCopy: { flex: 1, gap: 3 },
+  hero: {
+    gap: 14,
+    borderRadius: 18,
+    padding: 18,
+    shadowColor: "#000000",
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
+  },
+  heroTopline: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+  },
+  heroCopy: { flex: 1, gap: 4 },
+  heroStatus: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
   heroIcon: {
-    width: 50,
-    height: 50,
-    borderRadius: 15,
+    width: 52,
+    height: 52,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
   },
-  title: { lineHeight: 30 },
-  heroSummary: { fontSize: 16, lineHeight: 23 },
+  title: { lineHeight: 34, letterSpacing: -0.4 },
+  heroSummary: {
+    fontSize: 16,
+    lineHeight: 23,
+    color: "#D8E5D7",
+  },
   timestamp: {
     borderTopWidth: StyleSheet.hairlineWidth,
     paddingTop: 12,
     flexDirection: "row",
     alignItems: "center",
-    gap: 7,
+    gap: 8,
   },
-  detailsCard: { gap: 16, borderRadius: 16, padding: 16 },
+  detailsCard: {
+    gap: 16,
+    borderRadius: 18,
+    padding: 16,
+    shadowColor: "#000000",
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 1,
+  },
   sectionHeader: { flexDirection: "row", alignItems: "center", gap: 11 },
   sectionIcon: {
     width: 38,
@@ -543,7 +601,7 @@ const styles = StyleSheet.create({
   afterValue: { borderWidth: 1, borderColor: "#71A88A" },
   changeValue: { flexShrink: 1, fontSize: 14, lineHeight: 19 },
   afterText: { fontWeight: "600" },
-  productTotals: { flexDirection: "row", flexWrap: "wrap", gap: 9 },
+  productTotals: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
   productTotal: {
     flexGrow: 1,
     flexBasis: "44%",
@@ -554,7 +612,13 @@ const styles = StyleSheet.create({
   },
   totalQuantity: { fontSize: 20, lineHeight: 26 },
   collectionEntries: { gap: 10 },
-  collectionEntry: { gap: 11, padding: 13, borderRadius: 13 },
+  collectionEntry: {
+    gap: 11,
+    padding: 13,
+    borderRadius: 13,
+    borderWidth: 1,
+    borderColor: "transparent",
+  },
   collectionEntryHeading: { flexDirection: "row", alignItems: "center" },
   collectionEntryTitle: { flex: 1, gap: 3 },
   entryFields: {
@@ -575,5 +639,10 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   detailLabel: { width: "38%" },
-  detailValue: { flex: 1, textAlign: "right", fontSize: 14, lineHeight: 19 },
+  detailValue: {
+    flex: 1,
+    textAlign: "right",
+    fontSize: 15,
+    lineHeight: 21,
+  },
 });

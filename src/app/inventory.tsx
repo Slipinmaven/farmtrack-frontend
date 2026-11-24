@@ -15,7 +15,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { FarmPageHeader } from "@/components/layout/farm-page-header";
 import { SessionGate } from "@/components/layout/session-gate";
 import { AppText } from "@/components/ui/app-text";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useChickenSaleOptions } from "@/features/chickens/hooks";
 import type { ChickenType } from "@/features/chickens/api";
@@ -86,6 +85,12 @@ function InventoryContent() {
     useState<ChickenType | "all">("all");
 
   const products = productsQuery.data ?? [];
+  const hasActiveChickenProduct = products.some(
+    (product) => product.is_active && product.product_type === "chickens",
+  );
+  const hasActiveEggProduct = products.some(
+    (product) => product.is_active && product.product_type === "eggs",
+  );
   const balanceByProduct = useMemo(
     () => new Map((inventory.data?.items ?? []).map((item) => [item.product_id, item])),
     [inventory.data?.items],
@@ -548,24 +553,51 @@ function InventoryContent() {
             <View style={styles.emptyCardMessage}>
               {openingStatus.data?.chickens.eligible ? (
                 <>
-                  <AppText size="small" tone="secondary">
-                    Set the farm’s opening flock and assign every batch to housing blocks.
-                  </AppText>
-                  <Button
-                    label="Set opening flock"
-                    variant="secondary"
+                  <AppText size="small" tone="secondary">No stock recorded</AppText>
+                  <View style={styles.emptyActionRow}>
+                    {hasActiveChickenProduct ? (
+                      <CompactAction
+                        label="Opening flock"
+                        onPress={() =>
+                          router.push({
+                            pathname: "/inventory/opening-stock",
+                            params: { species: "chickens" },
+                          })
+                        }
+                      />
+                    ) : productsQuery.isSuccess ? (
+                      <CompactAction
+                        label="Add chicken product"
+                        primary
+                        onPress={() =>
+                          router.push({
+                            pathname: "/products/new",
+                            params: {
+                              setupType: "chickens",
+                              returnToInventory: "true",
+                            },
+                          })
+                        }
+                      />
+                    ) : null}
+                    <CompactAction
+                      label="Purchase"
+                      primary={hasActiveChickenProduct}
+                      onPress={() => router.push("/chicken-purchase" as Href)}
+                    />
+                  </View>
+                </>
+              ) : (
+                <>
+                  <AppText size="small" tone="secondary">No birds assigned to housing</AppText>
+                  <CompactAction
+                    label="Record purchase"
+                    primary
                     onPress={() =>
-                      router.push({
-                        pathname: "/inventory/opening-stock",
-                        params: { species: "chickens" },
-                      })
+                      router.push("/chicken-purchase" as Href)
                     }
                   />
                 </>
-              ) : (
-                <AppText size="small" tone="secondary">
-                  No birds are assigned to blocks yet. Record a flock purchase or manage existing housing.
-                </AppText>
               )}
             </View>
           )}
@@ -585,39 +617,98 @@ function InventoryContent() {
           onPress={() => router.push("/(tabs)/eggs" as Href)}
         >
           {eggs.length ? (
-            eggs.map((product) => (
-              <View
-                key={product.id}
-                style={[styles.detailRow, { borderBottomColor: theme.border }]}
-              >
-                <View style={styles.grow}>
-                  <AppText size="small" weight="semibold">{product.name}</AppText>
-                  <AppText size="small" tone="secondary">
-                    {product.is_sellable ? "Available for sale" : "Not marked for sale"}
-                  </AppText>
-                  <AppText size="small" tone="secondary">
-                    {eggConversionSummary(product.units)}
+            <>
+              {eggCount <= 0 ? (
+                <View style={styles.emptyCardMessage}>
+                  <AppText size="small" tone="secondary">No stock recorded</AppText>
+                  <View style={styles.emptyActionRow}>
+                    {openingStatus.data?.eggs.eligible && hasActiveEggProduct ? (
+                      <CompactAction
+                        label="Opening stock"
+                        onPress={() =>
+                          router.push({
+                            pathname: "/inventory/opening-stock",
+                            params: { species: "eggs" },
+                          })
+                        }
+                      />
+                    ) : null}
+                      {!hasActiveEggProduct && productsQuery.isSuccess ? (
+                        <CompactAction
+                          label="Add egg product"
+                          primary
+                          onPress={() =>
+                            router.push({
+                              pathname: "/products/new",
+                              params: {
+                                setupType: "eggs",
+                                returnToInventory: "true",
+                              },
+                            })
+                          }
+                        />
+                      ) : null}
+                      <CompactAction
+                        label="Collect eggs"
+                        primary={hasActiveEggProduct}
+                        onPress={() => router.push("/egg-collection" as Href)}
+                      />
+                  </View>
+                </View>
+              ) : null}
+              {eggs.map((product) => (
+                <View
+                  key={product.id}
+                  style={[styles.detailRow, { borderBottomColor: theme.border }]}
+                >
+                  <View style={styles.grow}>
+                    <AppText size="small" weight="semibold">{product.name}</AppText>
+                    <AppText size="small" tone="secondary">
+                      {product.is_sellable ? "Available for sale" : "Not marked for sale"}
+                    </AppText>
+                    <AppText size="small" tone="secondary">
+                      {eggConversionSummary(product.units)}
+                    </AppText>
+                  </View>
+                  <AppText size="small" weight="semibold">
+                    {formatCount(Number(product.available_quantity_in_base_unit))}{" "}
+                    {product.units.find((unit) => unit.is_base_unit)?.abbreviation ?? "eggs"}
                   </AppText>
                 </View>
-                <AppText size="small" weight="semibold">
-                  {formatCount(Number(product.available_quantity_in_base_unit))}{" "}
-                  {product.units.find((unit) => unit.is_base_unit)?.abbreviation ?? "eggs"}
-                </AppText>
-              </View>
-            ))
+              ))}
+            </>
           ) : eggOptions.isLoading || eggOptions.isError ? null : (
-            openingStatus.data?.eggs.eligible ? (
+            openingStatus.data?.eggs.eligible && hasActiveEggProduct ? (
               <View style={styles.emptyCardMessage}>
-                <AppText size="small" tone="secondary">
-                  Record eggs already on hand once, tied to an egg product and housing block.
-                </AppText>
-                <Button
-                  label="Set opening egg stock"
-                  variant="secondary"
+                <AppText size="small" tone="secondary">No unsold eggs currently available.</AppText>
+                <CompactAction
+                  label="Set up egg stock"
+                  primary
                   onPress={() =>
                     router.push({
                       pathname: "/inventory/opening-stock",
                       params: { species: "eggs" },
+                    })
+                  }
+                />
+              </View>
+            ) : openingStatus.data?.eggs.eligible &&
+              !hasActiveEggProduct &&
+              productsQuery.isSuccess ? (
+              <View style={styles.emptyCardMessage}>
+                <AppText size="small" tone="secondary">
+                  Add an active egg product before recording opening stock.
+                </AppText>
+                <CompactAction
+                  label="Add egg product"
+                  primary
+                  onPress={() =>
+                    router.push({
+                      pathname: "/products/new",
+                      params: {
+                        setupType: "eggs",
+                        returnToInventory: "true",
+                      },
                     })
                   }
                 />
@@ -716,6 +807,38 @@ function InventoryContent() {
                         }
                       />
                     ))}
+                    {groupedProducts.every(
+                      (product) =>
+                        Number(balanceByProduct.get(product.id)?.quantity ?? 0) <= 0,
+                    ) ? (
+                      <View style={styles.emptySupplyActions}>
+                        <AppText size="small" tone="secondary">No stock</AppText>
+                        <View style={styles.emptyActionRow}>
+                          <CompactAction
+                            label="Opening count"
+                            onPress={() =>
+                              groupedProducts.length === 1
+                                ? router.push(
+                                    `/products/${groupedProducts[0].id}/inventory` as Href,
+                                  )
+                                : router.push("/products")
+                            }
+                          />
+                          <CompactAction
+                            label="Purchase"
+                            primary
+                            onPress={() =>
+                              groupedProducts.length === 1
+                                ? router.push({
+                                    pathname: "/inventory/purchase",
+                                    params: { productId: groupedProducts[0].id },
+                                  })
+                                : router.push("/inventory/purchase" as Href)
+                            }
+                          />
+                        </View>
+                      </View>
+                    ) : null}
                   </View>
                 </View>
               );
@@ -723,16 +846,31 @@ function InventoryContent() {
           ) : (
             <View style={styles.emptyState}>
               <AppText weight="semibold">
-                No {supplyHeading.toLowerCase()} tracked yet
+                No {supplyHeading.toLowerCase()} yet
               </AppText>
-              <AppText size="small" tone="secondary">
-                Add products like feed, medicine, or equipment to see their stock here.
-              </AppText>
-              <Button
-                label="Add products"
-                variant="secondary"
-                onPress={() => router.push("/products")}
-              />
+              <View style={styles.emptyActionRow}>
+                <CompactAction
+                  label={categoryFilter === "feed" ? "Opening stock" : "Add supply"}
+                  onPress={() => {
+                    if (categoryFilter === "feed") {
+                      router.push({
+                        pathname: "/products/new",
+                        params: {
+                          setupType: "feed",
+                          returnToInventory: "true",
+                        },
+                      });
+                    } else {
+                      router.push("/products");
+                    }
+                  }}
+                />
+                <CompactAction
+                  label={categoryFilter === "feed" ? "Buy feed" : "Purchase"}
+                  primary
+                  onPress={() => router.push("/inventory/purchase" as Href)}
+                />
+              </View>
             </View>
           )}
 
@@ -801,7 +939,7 @@ function StockOverviewCard({
         </View>
       ) : null}
       <View style={styles.stockDetails}>
-        <AppText size="heading" weight="semibold">{title}</AppText>
+        <AppText size="body" weight="semibold">{title}</AppText>
         <AppText size="small" tone="secondary">{subtitle}</AppText>
         <Pressable
           accessibilityRole="button"
@@ -824,7 +962,7 @@ function StockOverviewCard({
         ]}
       >
         <AppText
-          size="title"
+          size="heading"
           weight="semibold"
           style={{ color: theme.primary }}
         >
@@ -838,6 +976,41 @@ function StockOverviewCard({
         </View>
       ) : null}
     </Card>
+  );
+}
+
+function CompactAction({
+  label,
+  primary = false,
+  onPress,
+}: {
+  label: string;
+  primary?: boolean;
+  onPress: () => void;
+}) {
+  const { theme } = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.compactAction,
+        {
+          backgroundColor: primary ? theme.primary : theme.backgroundSelected,
+          borderColor: primary ? theme.primary : theme.border,
+          opacity: pressed ? 0.82 : 1,
+        },
+      ]}
+    >
+      <AppText
+        size="small"
+        weight="semibold"
+        numberOfLines={1}
+        style={{ color: primary ? theme.onPrimary : theme.text }}
+      >
+        {label}
+      </AppText>
+    </Pressable>
   );
 }
 
@@ -1080,9 +1253,9 @@ const styles = StyleSheet.create({
     maxWidth: 760,
     alignSelf: "center",
     paddingHorizontal: 18,
-    paddingTop: 14,
-    paddingBottom: 42,
-    gap: 16,
+    paddingTop: 12,
+    paddingBottom: 32,
+    gap: 12,
   },
   intro: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 2 },
   snapshotCard: {
@@ -1131,19 +1304,19 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     alignItems: "center",
-    gap: 12,
-    padding: 17,
+    gap: 10,
+    padding: 13,
     borderWidth: 1,
-    borderRadius: 19,
+    borderRadius: 16,
   },
   stockIcon: {
-    width: 43,
-    height: 43,
-    borderRadius: 14,
+    width: 37,
+    height: 37,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
   },
-  stockDetails: { flex: 1, minWidth: 0, gap: 3 },
+  stockDetails: { flex: 1, minWidth: 0, gap: 1 },
   viewLink: {
     minHeight: 30,
     flexDirection: "row",
@@ -1156,12 +1329,12 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   quantityBox: {
-    minWidth: 68,
+    minWidth: 58,
     alignItems: "flex-end",
     gap: 1,
     borderRadius: 13,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
   },
   stockBreakdown: {
     flexBasis: "100%",
@@ -1279,6 +1452,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 9,
   },
+  emptySupplyActions: { gap: 6, paddingHorizontal: 10, paddingBottom: 8 },
+  emptyActionRow: { flexDirection: "row", alignSelf: "stretch", gap: 8 },
+  compactAction: {
+    minHeight: 38,
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderRadius: 9,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
   supplyActions: { flexDirection: "row", gap: 9 },
   supplyActionButton: {
     minHeight: 42,
@@ -1327,11 +1512,8 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   stockStatusDot: { width: 6, height: 6, borderRadius: 3 },
-  emptyCardMessage: {
-    borderRadius: 10,
-    padding: 10,
-  },
-  emptyState: { gap: 8, alignItems: "flex-start", paddingVertical: 8 },
+  emptyCardMessage: { flexBasis: "100%", gap: 7, paddingTop: 4 },
+  emptyState: { gap: 8, alignItems: "stretch", paddingVertical: 8 },
   loadingRow: { flexDirection: "row", alignItems: "center", gap: 9, paddingVertical: 14 },
   errorCard: { flexDirection: "row", gap: 10, alignItems: "flex-start" },
   errorIcon: { paddingTop: 2 },

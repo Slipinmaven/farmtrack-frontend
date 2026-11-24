@@ -1,5 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
+import Animated, { FadeInDown, Layout } from "react-native-reanimated";
 import {
   Pressable,
   RefreshControl,
@@ -36,7 +37,6 @@ export default function BlockDetailsRoute() {
     farm.selectedFarm?.id ?? "",
   );
   const block = blockQuery.data;
-  const maximum = block ? block.capacity + block.over_capacity_limit : 0;
   const canDelete = Boolean(block && block.occupied_chickens === 0);
 
   async function confirmDelete() {
@@ -83,6 +83,8 @@ export default function BlockDetailsRoute() {
         <FarmPageHeader
           title="Block details"
           showBack
+          compact
+          showNotifications={false}
           backHref="/(tabs)/blocks"
         />
         {blockQuery.isError ? (
@@ -100,12 +102,13 @@ export default function BlockDetailsRoute() {
         ) : null}
         {block ? (
           <>
+            <Animated.View
+              entering={FadeInDown.duration(260)}
+              style={styles.identitySection}
+            >
             <View style={styles.titleRow}>
               <View style={styles.titleCopy}>
-                <AppText size="small" tone="secondary">
-                  {farm.selectedFarm?.name ?? "Farm"}
-                </AppText>
-                <AppText size="title" weight="semibold">
+                <AppText size="heading" weight="semibold">
                   {block.name}
                 </AppText>
               </View>
@@ -132,58 +135,95 @@ export default function BlockDetailsRoute() {
               </View>
             </View>
             {block.description ? (
-              <AppText tone="secondary">{block.description}</AppText>
+              <AppText size="small" tone="secondary">
+                {block.description}
+              </AppText>
             ) : null}
+            </Animated.View>
 
-            <Card style={styles.capacityCard}>
-              <AppText size="heading" weight="semibold">
-                Occupancy
-              </AppText>
-              <BlockCapacityMeter block={block} />
-              <View
-                style={[
-                  styles.capacityDivider,
-                  { borderTopColor: theme.border },
-                ]}
-              />
-              <View style={styles.statRow}>
-                <Stat
-                  label="Base capacity"
-                  value={block.capacity.toLocaleString()}
-                />
-                <Stat
-                  label="Extra allowance"
-                  value={block.over_capacity_limit.toLocaleString()}
-                />
-                <Stat
-                  label="Maximum occupancy"
-                  value={maximum.toLocaleString()}
-                />
-              </View>
-            </Card>
+            <Animated.View
+              entering={FadeInDown.delay(45).duration(280)}
+              layout={Layout.springify().damping(22)}
+            >
+              <Card style={styles.capacityCard}>
+                <View style={styles.sectionHeading}>
+                  <View style={styles.sectionHeadingCopy}>
+                    <AppText size="body" weight="semibold">
+                      Capacity
+                    </AppText>
+                    <AppText size="small" tone="secondary">
+                      Current flock and room remaining
+                    </AppText>
+                  </View>
+                  <View
+                    style={[
+                      styles.sectionIcon,
+                      { backgroundColor: `${theme.primary}14` },
+                    ]}
+                  >
+                    <Ionicons
+                      name="speedometer-outline"
+                      size={18}
+                      color={theme.primary}
+                    />
+                  </View>
+                </View>
+                <BlockCapacityMeter block={block} />
+                {block.over_capacity_limit > 0 ? (
+                  <AppText size="small" tone="secondary">
+                    Base {block.capacity.toLocaleString()} · Extra allowance{" "}
+                    {block.over_capacity_limit.toLocaleString()}
+                  </AppText>
+                ) : null}
+              </Card>
+            </Animated.View>
 
+            <Animated.View
+              entering={FadeInDown.delay(90).duration(280)}
+              layout={Layout.springify().damping(22)}
+            >
             <Card style={styles.detailsCard}>
-              <AppText size="heading" weight="semibold">
-                Chickens in this block
-              </AppText>
-              <View style={styles.batchSummary}>
-                <AppText size="heading" weight="semibold">
-                  {block.occupied_chickens.toLocaleString()}
-                </AppText>
-                <AppText size="small" tone="secondary">
-                  chickens across {block.batches.length}{" "}
-                  {block.batches.length === 1 ? "batch" : "batches"}
-                </AppText>
+              <View style={styles.sectionHeading}>
+                <View style={styles.sectionHeadingCopy}>
+                  <AppText size="body" weight="semibold">
+                    Current flock
+                  </AppText>
+                  <AppText size="small" tone="secondary">
+                    {block.batches.length}{" "}
+                    {block.batches.length === 1 ? "batch" : "batches"}
+                  </AppText>
+                </View>
+                <View
+                  style={[
+                    styles.flockTotal,
+                    { backgroundColor: `${theme.primary}14` },
+                  ]}
+                >
+                  <AppText
+                    size="body"
+                    weight="semibold"
+                    style={{ color: theme.primary }}
+                  >
+                    {block.occupied_chickens.toLocaleString()}
+                  </AppText>
+                </View>
               </View>
               {block.batches.length ? (
-                block.batches.map((batch) => (
-                  <View
+                block.batches.map((batch, batchIndex) => (
+                  <Animated.View
                     key={batch.batch_id}
+                    entering={FadeInDown.delay(
+                      Math.min(130 + batchIndex * 45, 320),
+                    ).duration(240)}
+                    layout={Layout.springify().damping(22)}
                     style={[
                       styles.batchCard,
                       {
-                        backgroundColor: theme.background,
-                        borderColor: theme.border,
+                        borderBottomColor: theme.border,
+                        borderBottomWidth:
+                          batchIndex < block.batches.length - 1
+                            ? StyleSheet.hairlineWidth
+                            : 0,
                       },
                     ]}
                   >
@@ -215,28 +255,22 @@ export default function BlockDetailsRoute() {
                         label="Current age"
                         value={
                           batch.age_days === null
-                            ? "Unknown"
+                            ? "Age not recorded"
                             : formatAge(batch.age_days)
-                        }
-                      />
-                      <BatchFact
-                        label="Hatch date"
-                        value={
-                          batch.hatch_date
-                            ? new Date(
-                                `${batch.hatch_date}T00:00:00`,
-                              ).toLocaleDateString()
-                            : "Not recorded"
                         }
                       />
                       <BatchFact label="Status" value={batch.status} />
                     </View>
                     {batch.notes ? (
-                      <AppText size="small" tone="secondary">
+                      <AppText
+                        size="small"
+                        tone="secondary"
+                        numberOfLines={2}
+                      >
                         {batch.notes}
                       </AppText>
                     ) : null}
-                  </View>
+                  </Animated.View>
                 ))
               ) : (
                 <AppText size="small" tone="secondary">
@@ -244,6 +278,7 @@ export default function BlockDetailsRoute() {
                 </AppText>
               )}
             </Card>
+            </Animated.View>
 
             <BlockMovementHistory
               userId={user?.id}
@@ -251,8 +286,14 @@ export default function BlockDetailsRoute() {
               blockId={block.id}
             />
 
-            <Card style={styles.detailsCard}>
-              <AppText size="heading" weight="semibold">
+            <Animated.View
+              entering={FadeInDown.delay(150).duration(260)}
+              style={[
+                styles.blockMetadata,
+                { borderTopColor: theme.border },
+              ]}
+            >
+              <AppText size="small" weight="semibold" tone="secondary">
                 Block information
               </AppText>
               <DetailRow
@@ -263,76 +304,179 @@ export default function BlockDetailsRoute() {
                 label="Last updated"
                 value={formatRelativeDate(block.updated_at)}
               />
-            </Card>
+            </Animated.View>
 
-            <View style={styles.actions}>
-              <Button
-                label="Edit block"
+            <Animated.View
+              entering={FadeInDown.delay(190).duration(260)}
+              style={styles.actions}
+            >
+              <Pressable
+                accessibilityRole="button"
                 onPress={() =>
                   router.push({
                     pathname: "/(tabs)/blocks/[blockId]/edit",
                     params: { blockId: block.id },
                   })
                 }
-              />
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{
-                  disabled: !canDelete || deleteMutation.isPending,
-                }}
-                disabled={!canDelete || deleteMutation.isPending}
-                onPress={confirmDelete}
                 style={({ pressed }) => [
-                  styles.deleteAction,
+                  styles.editAction,
                   {
-                    borderColor: theme.border,
-                    opacity: !canDelete ? 0.5 : pressed ? 0.7 : 1,
+                    backgroundColor: theme.primary,
+                    opacity: pressed ? 0.86 : 1,
                   },
                 ]}
               >
-                {deleteMutation.isPending ? (
-                  <AppText size="small" style={{ color: theme.danger }}>
-                    Deleting…
+                <View
+                  style={[
+                    styles.actionIcon,
+                    { backgroundColor: `${theme.onPrimary}20` },
+                  ]}
+                >
+                  <Ionicons
+                    name="create-outline"
+                    size={20}
+                    color={theme.onPrimary}
+                  />
+                </View>
+                <View style={styles.actionCopy}>
+                  <AppText
+                    weight="semibold"
+                    style={{ color: theme.onPrimary }}
+                  >
+                    Edit block
                   </AppText>
-                ) : (
-                  <>
-                    <Ionicons
-                      name="trash-outline"
-                      size={17}
-                      color={theme.danger}
-                    />
-                    <AppText
-                      size="small"
-                      weight="semibold"
-                      style={{ color: theme.danger }}
-                    >
-                      Delete block
-                    </AppText>
-                  </>
-                )}
+                  <AppText
+                    size="small"
+                    style={{ color: `${theme.onPrimary}CC` }}
+                  >
+                    Update name, capacity or status
+                  </AppText>
+                </View>
+                <Ionicons
+                  name="chevron-forward"
+                  size={19}
+                  color={theme.onPrimary}
+                />
               </Pressable>
-            </View>
+              {canDelete ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{
+                    disabled: deleteMutation.isPending,
+                  }}
+                  disabled={deleteMutation.isPending}
+                  onPress={confirmDelete}
+                  style={({ pressed }) => [
+                    styles.deleteAction,
+                    {
+                      borderColor: theme.border,
+                      backgroundColor: `${theme.danger}08`,
+                      opacity: pressed ? 0.7 : 1,
+                    },
+                  ]}
+                >
+                  {deleteMutation.isPending ? (
+                    <AppText size="small" style={{ color: theme.danger }}>
+                      Deleting…
+                    </AppText>
+                  ) : (
+                    <>
+                      <View
+                        style={[
+                          styles.deleteIcon,
+                          { backgroundColor: `${theme.danger}14` },
+                        ]}
+                      >
+                        <Ionicons
+                          name="trash-outline"
+                          size={17}
+                          color={theme.danger}
+                        />
+                      </View>
+                      <AppText
+                        size="small"
+                        weight="semibold"
+                        style={{ color: theme.danger }}
+                      >
+                        Delete block
+                      </AppText>
+                    </>
+                  )}
+                </Pressable>
+              ) : null}
+            </Animated.View>
             {!canDelete ? (
-              <AppText size="small" tone="secondary">
-                Move the {block.occupied_chickens} assigned chickens before
-                deleting this block.
-              </AppText>
+              <Animated.View
+                entering={FadeInDown.delay(230).duration(260)}
+                style={[
+                  styles.deleteGuidance,
+                  {
+                    backgroundColor: theme.backgroundElement,
+                    borderColor: theme.border,
+                  },
+                ]}
+              >
+                <View
+                  style={[
+                    styles.moveIcon,
+                    { backgroundColor: `${theme.primary}18` },
+                  ]}
+                >
+                  <Ionicons
+                    name="swap-horizontal-outline"
+                    size={20}
+                    color={theme.primary}
+                  />
+                </View>
+                <View style={styles.deleteCopy}>
+                  <AppText weight="semibold">
+                    Move chickens before deleting
+                  </AppText>
+                  <AppText size="small" tone="secondary">
+                    {block.occupied_chickens.toLocaleString()} birds are still
+                    assigned to this block.
+                  </AppText>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() =>
+                    router.push({
+                      pathname: "/chicken-movement",
+                      params: { sourceBlockId: block.id },
+                    })
+                  }
+                  style={({ pressed }) => [
+                    styles.moveAction,
+                    {
+                      backgroundColor: theme.background,
+                      borderColor: theme.border,
+                      opacity: pressed ? 0.78 : 1,
+                    },
+                  ]}
+                >
+                  <Ionicons
+                    name="arrow-forward-circle-outline"
+                    size={19}
+                    color={theme.primary}
+                  />
+                  <AppText
+                    weight="semibold"
+                    style={{ color: theme.primary }}
+                  >
+                    Move chickens
+                  </AppText>
+                  <Ionicons
+                    name="chevron-forward"
+                    size={17}
+                    color={theme.textSecondary}
+                  />
+                </Pressable>
+              </Animated.View>
             ) : null}
           </>
         ) : null}
       </ScrollView>
     </SafeAreaView>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.stat}>
-      <AppText size="small" tone="secondary">
-        {label}
-      </AppText>
-      <AppText weight="semibold">{value}</AppText>
-    </View>
   );
 }
 
@@ -361,9 +505,8 @@ function formatAge(days: number): string {
 }
 
 function DetailRow({ label, value }: { label: string; value: string }) {
-  const { theme } = useTheme();
   return (
-    <View style={[styles.detailRow, { borderBottomColor: theme.border }]}>
+    <View style={styles.detailRow}>
       <AppText size="small" tone="secondary">
         {label}
       </AppText>
@@ -378,25 +521,49 @@ const styles = StyleSheet.create({
     width: "100%",
     maxWidth: 760,
     alignSelf: "center",
-    padding: 18,
+    padding: 16,
     paddingBottom: 36,
-    gap: 14,
+    gap: 12,
   },
   state: { gap: 12 },
+  identitySection: { gap: 4, paddingHorizontal: 2 },
   titleRow: { flexDirection: "row", alignItems: "center", gap: 12 },
   titleCopy: { flex: 1, gap: 3 },
-  status: { minWidth: 68, alignItems: "center", padding: 6, borderRadius: 6 },
-  capacityCard: { gap: 16 },
-  capacityDivider: { borderTopWidth: 1 },
-  statRow: { flexDirection: "row", flexWrap: "wrap", gap: 16 },
-  stat: { minWidth: 88, flex: 1, gap: 3 },
-  detailsCard: { gap: 12 },
-  batchSummary: { gap: 2 },
-  batchCard: {
-    gap: 10,
-    padding: 12,
-    borderWidth: 1,
+  status: {
+    minWidth: 70,
+    minHeight: 30,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 11,
+    borderRadius: 16,
+  },
+  capacityCard: { gap: 12, paddingVertical: 14, borderRadius: 13 },
+  detailsCard: { gap: 11, paddingVertical: 14, borderRadius: 13 },
+  sectionHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  sectionHeadingCopy: { flex: 1, minWidth: 0, gap: 1 },
+  sectionIcon: {
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
     borderRadius: 10,
+  },
+  flockTotal: {
+    minWidth: 44,
+    minHeight: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 10,
+    paddingHorizontal: 10,
+  },
+  batchCard: {
+    gap: 8,
+    paddingVertical: 11,
   },
   batchHeading: {
     flexDirection: "row",
@@ -405,24 +572,82 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   batchCopy: { flex: 1, gap: 3 },
-  batchQuantity: { paddingHorizontal: 9, paddingVertical: 5, borderRadius: 20 },
-  batchFacts: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
+  batchQuantity: {
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 9,
+  },
+  batchFacts: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   batchFact: { minWidth: 100, flex: 1, gap: 2 },
   detailRow: {
-    minHeight: 34,
+    minHeight: 28,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    borderBottomWidth: 1,
+    gap: 12,
   },
-  actions: { gap: 10 },
+  blockMetadata: {
+    gap: 3,
+    paddingHorizontal: 2,
+    paddingTop: 5,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  actions: { gap: 9 },
+  editAction: {
+    minHeight: 66,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+    borderRadius: 12,
+    paddingHorizontal: 13,
+    paddingVertical: 9,
+  },
+  actionIcon: {
+    width: 38,
+    height: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+  },
+  actionCopy: { flex: 1, minWidth: 0, gap: 1 },
+  deleteGuidance: {
+    gap: 9,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 12,
+    padding: 12,
+  },
+  moveIcon: {
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 10,
+  },
+  deleteCopy: { gap: 2 },
+  moveAction: {
+    minHeight: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+  },
   deleteAction: {
-    minHeight: 46,
+    minHeight: 50,
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
     gap: 7,
     borderWidth: 1,
-    borderRadius: 7,
+    borderRadius: 10,
+  },
+  deleteIcon: {
+    width: 28,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 8,
   },
 });

@@ -2,8 +2,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   createReminder,
+  cancelReminder,
+  completeReminder,
   getReminders,
   getReminder,
+  rescheduleReminder,
+  reopenReminder,
   type ReminderCreateInput,
 } from "@/features/reminders/api";
 
@@ -38,6 +42,107 @@ export function useCreateReminder(userId: string, farmId: string) {
     onSuccess: async () => {
       await Promise.all([
         client.invalidateQueries({ queryKey: ["reminders", userId, farmId] }),
+        client.invalidateQueries({
+          queryKey: ["notifications", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["notification-unread-count", userId, farmId],
+        }),
+      ]);
+    },
+  });
+}
+
+export function useRescheduleReminder(
+  userId: string,
+  farmId: string,
+  reminderId: string,
+) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (dueAt: string) =>
+      rescheduleReminder(farmId, reminderId, dueAt),
+    onSuccess: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["reminders", userId, farmId] }),
+        client.invalidateQueries({
+          queryKey: ["reminder", userId, farmId, reminderId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["notifications", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["notification-unread-count", userId, farmId],
+        }),
+      ]);
+    },
+  });
+}
+
+export function useCancelReminder(
+  userId: string,
+  farmId: string,
+  reminderId: string,
+) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => cancelReminder(farmId, reminderId),
+    onSuccess: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["reminders", userId, farmId] }),
+        client.invalidateQueries({
+          queryKey: ["reminder", userId, farmId, reminderId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["notifications", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["notification-unread-count", userId, farmId],
+        }),
+      ]);
+    },
+  });
+}
+
+export function useCompleteReminder(
+  userId: string,
+  farmId: string,
+  reminderId: string,
+) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => completeReminder(farmId, reminderId),
+    onSuccess: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["reminders", userId, farmId] }),
+        client.invalidateQueries({
+          queryKey: ["reminder", userId, farmId, reminderId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["notifications", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["notification-unread-count", userId, farmId],
+        }),
+      ]);
+    },
+  });
+}
+
+export function useReopenReminder(
+  userId: string,
+  farmId: string,
+  reminderId: string,
+) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => reopenReminder(farmId, reminderId),
+    onSuccess: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["reminders", userId, farmId] }),
+        client.invalidateQueries({
+          queryKey: ["reminder", userId, farmId, reminderId],
+        }),
         client.invalidateQueries({
           queryKey: ["notifications", userId, farmId],
         }),

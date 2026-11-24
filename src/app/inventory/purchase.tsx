@@ -21,6 +21,11 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { DatePickerField } from "@/components/ui/date-picker-field";
 import { TextField } from "@/components/ui/text-field";
+import {
+  SmsPaymentPicker,
+  type SelectedSmsPayment,
+} from "@/features/payment-message-import/components/SmsPaymentPicker";
+import { PaymentMessageImportAction } from "@/features/payment-message-import/components/PaymentMessageImportAction";
 import { ContactForm } from "@/features/management/components/contact-form";
 import { ProductForm } from "@/features/management/components/product-form";
 import {
@@ -38,9 +43,11 @@ import type {
 } from "@/features/management/api";
 import { getProductTypeLabel } from "@/features/management/product-options";
 import { normalizeApiError } from "@/lib/api/errors";
+import { parseMoneyToCents } from "@/features/chickens/purchase-pricing";
 import { useAuth } from "@/providers/auth-provider";
 import { useFarm } from "@/providers/farm-provider";
 import { useTheme } from "@/providers/theme-provider";
+import { usePaymentMessageImport } from "@/features/payment-message-import/PaymentMessageImportProvider";
 
 type PurchaseLine = {
   id: string;
@@ -80,6 +87,7 @@ function InventoryPurchaseContent() {
   const { user } = useAuth();
   const farm = useFarm();
   const { theme } = useTheme();
+  const { sharedMessage } = usePaymentMessageImport();
   const dialog = useAppDialog();
   const { productId: productIdParam } = useLocalSearchParams<{
     productId?: string;
@@ -133,6 +141,7 @@ function InventoryPurchaseContent() {
   const [paymentMethod, setPaymentMethod] =
     useState<SettlementPaymentMethod>("cash");
   const [paymentReference, setPaymentReference] = useState("");
+  const [paymentImportOpen, setPaymentImportOpen] = useState(false);
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
 
@@ -151,6 +160,23 @@ function InventoryPurchaseContent() {
       ? sum + quantity * price
       : sum;
   }, 0);
+  const totalCents = parseMoneyToCents(total.toFixed(2)) ?? 0n;
+
+  function applyImportedPayment(payments: SelectedSmsPayment[]) {
+    const imported = payments[0]?.payment;
+    if (!imported?.amount) return;
+    const importedCents = parseMoneyToCents(imported.amount);
+    if (importedCents === null || importedCents > totalCents) {
+      setError("The imported M-Pesa payment cannot exceed the purchase total.");
+      return;
+    }
+    setPaymentMethod("mpesa");
+    setPaymentAmount(imported.amount);
+    setPaymentReference(imported.transactionReference ?? "");
+    if (imported.transactionDate) setPurchaseDate(imported.transactionDate);
+    setError("");
+    setPaymentImportOpen(false);
+  }
 
   function updateLine(id: string, update: Partial<PurchaseLine>) {
     setLines((current) =>
@@ -706,6 +732,12 @@ function InventoryPurchaseContent() {
               />
             ))}
           </View>
+          {paymentMethod === "mpesa" ? (
+            <PaymentMessageImportAction
+              label="Import M-Pesa purchase payment"
+              onPress={() => setPaymentImportOpen(true)}
+            />
+          ) : null}
           {Number(paymentAmount) > 0 && paymentMethod !== "cash" ? (
             <TextField
               label="Payment reference (optional)"
@@ -756,6 +788,25 @@ function InventoryPurchaseContent() {
         </Card>
       </ScrollView>
       </KeyboardAvoidingView>
+
+      {paymentImportOpen ? (
+        <SmsPaymentPicker
+          visible
+          fromDate={purchaseDate}
+          currency={theme.currency}
+          existingReferences={[]}
+          existingSmsMessageIds={[]}
+          maxSelections={1}
+          hasExistingPayments={false}
+          transactionLabel="inventory purchase"
+          expectedDirection="OUTGOING"
+          purchaseTotalCents={totalCents.toString()}
+          currentPaidCents="0"
+          sharedMessage={sharedMessage}
+          onClose={() => setPaymentImportOpen(false)}
+          onSelect={applyImportedPayment}
+        />
+      ) : null}
 
       <Modal
         visible={productPickerLineId !== null}

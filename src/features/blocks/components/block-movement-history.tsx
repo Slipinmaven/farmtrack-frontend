@@ -1,11 +1,15 @@
 import { Ionicons } from "@expo/vector-icons";
+import Animated, {
+  FadeInDown,
+  FadeOutUp,
+  Layout,
+} from "react-native-reanimated";
 import { useEffect, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 
 import { LoadingState } from "@/components/feedback/loading-state";
 import { AppText } from "@/components/ui/app-text";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { TextField } from "@/components/ui/text-field";
 import type {
   ChickenMovementDirection,
@@ -19,11 +23,10 @@ const pageSize = 10;
 const directionFilters: {
   value: ChickenMovementDirection;
   label: string;
-  icon: keyof typeof Ionicons.glyphMap;
 }[] = [
-  { value: "all", label: "All moves", icon: "swap-horizontal-outline" },
-  { value: "incoming", label: "Moved in", icon: "arrow-down-outline" },
-  { value: "outgoing", label: "Moved out", icon: "arrow-up-outline" },
+  { value: "all", label: "All moves" },
+  { value: "incoming", label: "Moved in" },
+  { value: "outgoing", label: "Moved out" },
 ];
 const timeFilters = [
   { value: "all", label: "Any time" },
@@ -48,6 +51,7 @@ export function BlockMovementHistory({
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [offset, setOffset] = useState(0);
+  const [filtersExpanded, setFiltersExpanded] = useState(false);
   const fromDate =
     timeFilter === "all" ? undefined : daysAgo(Number(timeFilter));
   const toDate = timeFilter === "all" ? undefined : localToday();
@@ -79,7 +83,12 @@ export function BlockMovementHistory({
     direction !== "all" || timeFilter !== "all" || search.trim().length > 0;
 
   return (
-    <Card style={styles.container}>
+    <View
+      style={[
+        styles.container,
+        { borderTopColor: theme.border },
+      ]}
+    >
       <View style={styles.heading}>
         <View
           style={[
@@ -94,17 +103,24 @@ export function BlockMovementHistory({
           />
         </View>
         <View style={styles.headingCopy}>
-          <AppText size="heading" weight="semibold">
+          <AppText size="heading" weight="semibold" numberOfLines={1}>
             Movement history
           </AppText>
-          <AppText size="small" tone="secondary">
-            Chicken transfers into and out of this block
+          <AppText size="small" tone="secondary" numberOfLines={1}>
+            Transfers to and from this block
           </AppText>
         </View>
         {result ? (
-          <AppText size="small" weight="semibold" tone="secondary">
-            {result.total_count.toLocaleString()}
-          </AppText>
+          <View
+            style={[
+              styles.countBadge,
+              { backgroundColor: theme.backgroundElement },
+            ]}
+          >
+            <AppText size="small" weight="semibold">
+              {result.total_count.toLocaleString()}
+            </AppText>
+          </View>
         ) : null}
       </View>
 
@@ -119,50 +135,80 @@ export function BlockMovementHistory({
         returnKeyType="search"
       />
 
-      <View style={styles.filterGroup}>
-        <AppText size="small" weight="semibold">
-          Direction
-        </AppText>
-        <View style={styles.filterRow}>
-          {directionFilters.map((filter) => {
-            const selected = direction === filter.value;
-            return (
-              <FilterButton
-                key={filter.value}
-                selected={selected}
-                label={filter.label}
-                icon={filter.icon}
-                onPress={() => {
-                  setDirection(filter.value);
-                  setOffset(0);
-                }}
-              />
-            );
-          })}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: filtersExpanded }}
+        onPress={() => setFiltersExpanded((expanded) => !expanded)}
+        style={[
+          styles.filtersToggle,
+          {
+            backgroundColor: theme.backgroundElement,
+            borderColor: theme.border,
+          },
+        ]}
+      >
+        <View style={styles.filtersToggleCopy}>
+          <AppText size="small" weight="semibold">
+            Filters
+          </AppText>
+          <AppText size="small" tone="secondary">
+            {directionFilters.find((filter) => filter.value === direction)?.label}
+            {" · "}
+            {timeFilters.find((filter) => filter.value === timeFilter)?.label}
+          </AppText>
         </View>
-      </View>
-
-      <View style={styles.filterGroup}>
-        <AppText size="small" weight="semibold">
-          Date range
-        </AppText>
-        <View style={styles.filterRow}>
-          {timeFilters.map((filter) => {
-            const selected = timeFilter === filter.value;
-            return (
-              <FilterButton
-                key={filter.value}
-                selected={selected}
-                label={filter.label}
-                onPress={() => {
-                  setTimeFilter(filter.value);
-                  setOffset(0);
-                }}
-              />
-            );
-          })}
-        </View>
-      </View>
+        <Ionicons
+          name={filtersExpanded ? "chevron-up" : "chevron-down"}
+          size={18}
+          color={theme.textSecondary}
+        />
+      </Pressable>
+      {filtersExpanded ? (
+        <Animated.View
+          entering={FadeInDown.duration(180)}
+          exiting={FadeOutUp.duration(130)}
+          layout={Layout.springify().damping(22)}
+          style={styles.expandedFilters}
+        >
+          <View style={styles.filterGroup}>
+            <AppText size="small" weight="semibold">
+              Direction
+            </AppText>
+            <View style={styles.directionRow}>
+              {directionFilters.map((filter) => (
+                <FilterButton
+                  key={filter.value}
+                  selected={direction === filter.value}
+                  label={filter.label}
+                  compact
+                  onPress={() => {
+                    setDirection(filter.value);
+                    setOffset(0);
+                  }}
+                />
+              ))}
+            </View>
+          </View>
+          <View style={styles.filterGroup}>
+            <AppText size="small" weight="semibold">
+              Date range
+            </AppText>
+            <View style={styles.filterRow}>
+              {timeFilters.map((filter) => (
+                <FilterButton
+                  key={filter.value}
+                  selected={timeFilter === filter.value}
+                  label={filter.label}
+                  onPress={() => {
+                    setTimeFilter(filter.value);
+                    setOffset(0);
+                  }}
+                />
+              ))}
+            </View>
+          </View>
+        </Animated.View>
+      ) : null}
 
       {history.isLoading ? (
         <LoadingState label="Loading movement history" />
@@ -226,14 +272,19 @@ export function BlockMovementHistory({
         </View>
       ) : null}
 
-      {result?.items.map((item) => {
+      {result?.items.map((item, index) => {
         const incoming = item.to_block_id === blockId;
         return (
-          <View
+          <Animated.View
             key={item.id}
+            entering={FadeInDown.delay(Math.min(index * 45, 225)).duration(240)}
+            layout={Layout.springify().damping(22)}
             style={[
               styles.movementCard,
-              { backgroundColor: theme.background, borderColor: theme.border },
+              {
+                backgroundColor: theme.backgroundElement,
+                borderColor: theme.border,
+              },
             ]}
           >
             <View style={styles.movementTop}>
@@ -267,11 +318,10 @@ export function BlockMovementHistory({
                   weight="semibold"
                   style={{ color: incoming ? theme.success : theme.text }}
                 >
-                  {incoming ? "+" : "−"}
                   {item.quantity.toLocaleString()}
                 </AppText>
                 <AppText size="small" tone="secondary">
-                  birds
+                  {item.quantity === 1 ? "bird" : "birds"}
                 </AppText>
               </View>
             </View>
@@ -279,7 +329,7 @@ export function BlockMovementHistory({
             <View
               style={[
                 styles.route,
-                { borderTopColor: theme.border, borderBottomColor: theme.border },
+                { backgroundColor: theme.backgroundSelected },
               ]}
             >
               <AppText size="small" numberOfLines={2} style={styles.routeName}>
@@ -295,22 +345,40 @@ export function BlockMovementHistory({
               </AppText>
             </View>
 
-            <View style={styles.movementFacts}>
-              <MovementFact
-                label="Date"
-                value={formatMovementDate(item.movement_date)}
-              />
+            <View style={styles.movementMeta}>
+              <View style={styles.dateLine}>
+                <Ionicons
+                  name="calendar-outline"
+                  size={15}
+                  color={theme.textSecondary}
+                />
+                <AppText size="small" tone="secondary">
+                  {formatMovementDate(item.movement_date)}
+                </AppText>
+              </View>
+              {item.reason || item.notes ? (
+                <View style={styles.noteLine}>
+                  <Ionicons
+                    name="chatbubble-ellipses-outline"
+                    size={15}
+                    color={theme.textSecondary}
+                  />
+                  <AppText
+                    size="small"
+                    tone="secondary"
+                    numberOfLines={2}
+                    style={styles.noteText}
+                  >
+                    {[item.reason, item.notes].filter(Boolean).join(" · ")}
+                  </AppText>
+                </View>
+              ) : null}
             </View>
-            {item.reason || item.notes ? (
-              <AppText size="small" tone="secondary" numberOfLines={3}>
-                {[item.reason, item.notes].filter(Boolean).join(" · ")}
-              </AppText>
-            ) : null}
-          </View>
+          </Animated.View>
         );
       })}
 
-      {result && result.total_count > 0 ? (
+      {result && result.total_count > pageSize ? (
         <View style={styles.pagination}>
           <AppText size="small" tone="secondary">
             Showing {pageStart}–{pageEnd} of {result.total_count.toLocaleString()}
@@ -333,7 +401,7 @@ export function BlockMovementHistory({
           </View>
         </View>
       ) : null}
-    </Card>
+    </View>
   );
 }
 
@@ -341,11 +409,13 @@ function FilterButton({
   selected,
   label,
   icon,
+  compact = false,
   onPress,
 }: {
   selected: boolean;
   label: string;
   icon?: keyof typeof Ionicons.glyphMap;
+  compact?: boolean;
   onPress: () => void;
 }) {
   const { theme } = useTheme();
@@ -356,6 +426,7 @@ function FilterButton({
       onPress={onPress}
       style={[
         styles.filter,
+        compact && styles.directionFilter,
         {
           backgroundColor: selected ? theme.primary : theme.background,
           borderColor: selected ? theme.primary : theme.border,
@@ -377,19 +448,6 @@ function FilterButton({
         {label}
       </AppText>
     </Pressable>
-  );
-}
-
-function MovementFact({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.fact}>
-      <AppText size="small" tone="secondary">
-        {label}
-      </AppText>
-      <AppText size="small" weight="semibold">
-        {value}
-      </AppText>
-    </View>
   );
 }
 
@@ -416,18 +474,39 @@ function formatMovementDate(value: string): string {
 }
 
 const styles = StyleSheet.create({
-  container: { gap: 14 },
+  container: { gap: 11, paddingTop: 13, borderTopWidth: StyleSheet.hairlineWidth },
   heading: { flexDirection: "row", alignItems: "center", gap: 10 },
   headingIcon: {
-    width: 36,
-    height: 36,
+    width: 34,
+    height: 34,
     alignItems: "center",
     justifyContent: "center",
     borderRadius: 9,
   },
   headingCopy: { flex: 1, minWidth: 0, gap: 2 },
-  filterGroup: { gap: 7 },
+  countBadge: {
+    minWidth: 30,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 9,
+    paddingHorizontal: 8,
+  },
+  filterGroup: { gap: 6 },
   filterRow: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
+  directionRow: { flexDirection: "row", gap: 6 },
+  directionFilter: { flex: 1, paddingHorizontal: 5 },
+  filtersToggle: {
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 10,
+    borderRadius: 9,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  filtersToggleCopy: { gap: 2 },
+  expandedFilters: { gap: 10, paddingHorizontal: 4, paddingBottom: 2 },
   filter: {
     minHeight: 34,
     flexDirection: "row",
@@ -440,10 +519,10 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   movementCard: {
-    gap: 10,
-    padding: 12,
-    borderWidth: 1,
-    borderRadius: 10,
+    gap: 9,
+    padding: 11,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 11,
   },
   movementTop: {
     flexDirection: "row",
@@ -460,18 +539,20 @@ const styles = StyleSheet.create({
   movementTitle: { flex: 1, minWidth: 0, gap: 2 },
   quantity: { alignItems: "flex-end", flexShrink: 0 },
   route: {
-    minHeight: 42,
+    minHeight: 38,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 8,
-    borderTopWidth: 1,
-    borderBottomWidth: 1,
-    paddingVertical: 8,
+    borderRadius: 8,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
   },
   routeName: { flex: 1, minWidth: 0 },
-  movementFacts: { flexDirection: "row", flexWrap: "wrap", gap: 18 },
-  fact: { minWidth: 100, flex: 1, gap: 2 },
+  movementMeta: { gap: 6 },
+  dateLine: { flexDirection: "row", alignItems: "center", gap: 6 },
+  noteLine: { flexDirection: "row", alignItems: "flex-start", gap: 6 },
+  noteText: { flex: 1 },
   messageState: {
     alignItems: "flex-start",
     gap: 8,
@@ -479,7 +560,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 10,
   },
-  pagination: { gap: 10, alignItems: "center" },
+  pagination: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 8,
+  },
   pageButtons: {
     flexDirection: "row",
     justifyContent: "center",

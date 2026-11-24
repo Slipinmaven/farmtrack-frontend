@@ -2,6 +2,7 @@ import {
   ActivityIndicator,
   Pressable,
   StyleSheet,
+  View,
   type PressableProps,
 } from "react-native";
 
@@ -11,12 +12,14 @@ import { useTheme } from "@/providers/theme-provider";
 type ButtonProps = Omit<PressableProps, "children"> & {
   label: string;
   loading?: boolean;
+  loadingLabel?: string;
   variant?: "primary" | "secondary" | "quiet";
 };
 
 export function Button({
   label,
   loading = false,
+  loadingLabel,
   disabled,
   variant = "primary",
   style,
@@ -44,13 +47,20 @@ export function Button({
         {
           backgroundColor,
           borderColor: theme.border,
-          opacity: state.pressed ? 0.82 : 1,
+          opacity: disabled && !loading ? 0.48 : state.pressed ? 0.82 : 1,
         },
         variant === "quiet" && styles.quiet,
         typeof style === "function" ? style(state) : style,
       ]}
     >
-      {loading ? (
+      {loading && loadingLabel ? (
+        <View style={styles.loadingContent}>
+          <ActivityIndicator color={color} />
+          <AppText weight="semibold" style={{ color }}>
+            {loadingLabel}
+          </AppText>
+        </View>
+      ) : loading ? (
         <ActivityIndicator color={color} />
       ) : (
         <AppText weight="semibold" style={{ color, textAlign: "center" }}>
@@ -69,6 +79,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     alignItems: "center",
     justifyContent: "center",
+  },
+  loadingContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
   },
   quiet: { borderColor: "transparent" },
 });

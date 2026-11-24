@@ -151,37 +151,81 @@ function ChickenLossReviewContent() {
           keyboardShouldPersistTaps="handled"
           automaticallyAdjustKeyboardInsets
         >
-          <FarmPageHeader title="Review chicken losses" showBack />
+          <FarmPageHeader title="Flock" showBack />
           {draft ? (
             <>
-              <AppText tone="secondary">
-                Confirm each batch, block, quantity, and reason. Each selected
-                batch and block pair will be recorded separately.
-              </AppText>
-              <Card style={styles.summaryCard}>
-                <View style={styles.summaryMetric}>
-                  <AppText size="small" tone="secondary">
-                    Total lost
-                  </AppText>
-                  <AppText size="heading" weight="semibold">
-                    {totalQuantity}
-                  </AppText>
+              <Card
+                style={[
+                  styles.reviewHero,
+                  {
+                    backgroundColor: theme.backgroundElement,
+                    borderColor: theme.border,
+                    borderLeftColor: theme.danger,
+                  },
+                ]}
+              >
+                <View style={styles.reviewHeroTop}>
+                  <View
+                    style={[
+                      styles.reviewHeroIcon,
+                      { backgroundColor: `${theme.danger}16` },
+                    ]}
+                  >
+                    <Ionicons
+                      name="clipboard-outline"
+                      size={22}
+                      color={theme.danger}
+                    />
+                  </View>
+                  <View style={styles.reviewHeroCopy}>
+                    <AppText size="heading" weight="semibold">
+                      Review loss
+                    </AppText>
+                    <AppText size="small" tone="secondary">
+                      Check each batch before recording.
+                    </AppText>
+                  </View>
                 </View>
                 <View
-                  style={[styles.summaryDivider, { backgroundColor: theme.border }]}
-                />
-                <View style={styles.summaryMetric}>
-                  <AppText size="small" tone="secondary">
-                    Selected entries
-                  </AppText>
+                  style={[
+                    styles.reviewTotal,
+                    { borderTopColor: theme.border },
+                  ]}
+                >
                   <AppText size="heading" weight="semibold">
-                    {draft.items.length}
+                    {totalQuantity}{" "}
+                    <AppText size="body">
+                      {totalQuantity === 1 ? "bird" : "birds"}
+                    </AppText>
+                  </AppText>
+                  <AppText size="small" tone="secondary">
+                    {draft.items.length}{" "}
+                    {draft.items.length === 1 ? "entry" : "entries"}
                   </AppText>
                 </View>
               </Card>
 
               <Card style={styles.section}>
-                <AppText weight="semibold">Date of loss</AppText>
+                <View style={styles.sectionHeading}>
+                  <View
+                    style={[
+                      styles.sectionIcon,
+                      { backgroundColor: theme.backgroundSelected },
+                    ]}
+                  >
+                    <Ionicons
+                      name="calendar-outline"
+                      size={18}
+                      color={theme.primary}
+                    />
+                  </View>
+                  <View style={styles.sectionHeadingCopy}>
+                    <AppText weight="semibold">Loss date</AppText>
+                    <AppText size="small" tone="secondary">
+                      When did it happen?
+                    </AppText>
+                  </View>
+                </View>
                 <DatePickerField
                   label="Loss date"
                   value={draft.loss_date}
@@ -430,15 +474,37 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
     gap: 14,
   },
-  summaryCard: {
+  reviewHero: {
+    gap: 14,
+    borderLeftWidth: 4,
+  },
+  reviewHeroTop: { flexDirection: "row", alignItems: "center", gap: 12 },
+  reviewHeroIcon: {
+    width: 46,
+    height: 46,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 14,
+  },
+  reviewHeroCopy: { flex: 1, minWidth: 0, gap: 2 },
+  reviewTotal: {
+    minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-around",
-    gap: 12,
+    justifyContent: "space-between",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 10,
   },
-  summaryMetric: { flex: 1, alignItems: "center", gap: 2 },
-  summaryDivider: { width: StyleSheet.hairlineWidth, height: 44 },
   section: { gap: 12 },
+  sectionHeading: { flexDirection: "row", alignItems: "center", gap: 10 },
+  sectionIcon: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+  },
+  sectionHeadingCopy: { flex: 1, minWidth: 0, gap: 2 },
   entries: { gap: 12 },
   lossCard: { gap: 14 },
   lossHeading: { flexDirection: "row", alignItems: "center", gap: 10 },

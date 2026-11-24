@@ -21,6 +21,7 @@ export default function EditProductRoute() {
     productId: string;
     fromSetup?: string;
     setupStep?: string;
+    setupAdditional?: string;
   }>();
   const fromSetup = params.fromSetup === "true";
   return (
@@ -28,6 +29,7 @@ export default function EditProductRoute() {
       <EditProductContent
         fromSetup={fromSetup}
         setupStep={params.setupStep ?? "1"}
+        setupAdditional={params.setupAdditional === "true"}
       />
     </SessionGate>
   );
@@ -36,9 +38,11 @@ export default function EditProductRoute() {
 function EditProductContent({
   fromSetup,
   setupStep,
+  setupAdditional,
 }: {
   fromSetup: boolean;
   setupStep: string;
+  setupAdditional: boolean;
 }) {
   const { user } = useAuth();
   const farm = useFarm();
@@ -47,7 +51,13 @@ function EditProductContent({
   const { productId } = useLocalSearchParams<{ productId: string }>();
   const productQuery = useProduct(user?.id, farm.selectedFarm?.id, productId);
   const detailHref = fromSetup
-    ? ({ pathname: "/farm-setup", params: { step: setupStep } } as Href)
+    ? ({
+        pathname: "/farm-setup",
+        params: {
+          step: setupStep,
+          ...(setupAdditional ? { additional: "true" } : {}),
+        },
+      } as Href)
     : (`/products/${productId}` as Href);
   const update = useUpdateProduct(user?.id ?? "", farm.selectedFarm?.id ?? "");
 
@@ -77,6 +87,7 @@ function EditProductContent({
           <ProductForm
             key={productQuery.data.id}
             initialProduct={productQuery.data}
+            setupMode={fromSetup}
             submitLabel="Save changes"
             isSubmitting={update.isPending}
             onSubmit={async (payload) => {

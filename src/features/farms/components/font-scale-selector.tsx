@@ -23,14 +23,9 @@ export function FontScaleSelector({ value, onChange }: FontScaleSelectorProps) {
 
   return (
     <View style={styles.container}>
-      <View style={styles.heading}>
-        <AppText size="small" weight="semibold">
-          Text size
-        </AppText>
-        <AppText size="small" tone="secondary">
-          The sample size is applied throughout the app immediately.
-        </AppText>
-      </View>
+      <AppText size="small" weight="semibold">
+        Text size
+      </AppText>
       <View style={styles.options}>
         {scaleOptions.map((option) => {
           const selected = value === option.value;
@@ -80,7 +75,6 @@ export function FontScaleSelector({ value, onChange }: FontScaleSelectorProps) {
 
 const styles = StyleSheet.create({
   container: { gap: 9 },
-  heading: { gap: 3 },
   options: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   option: {
     width: "30%",

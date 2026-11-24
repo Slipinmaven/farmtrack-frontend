@@ -46,7 +46,7 @@ export function BlockCapacityMeter({
           ? "Nearly full"
           : maximum === 0
             ? "No capacity set"
-            : "Capacity available";
+              : "Within capacity";
   const barColor = isDanger
     ? theme.danger
     : isWarning
@@ -90,14 +90,6 @@ export function BlockCapacityMeter({
         </AppText>
         <AppText size="small" tone="secondary">
           {available.toLocaleString()} available
-        </AppText>
-      </View>
-      <View style={styles.footer}>
-        <AppText size="small" tone="secondary">
-          {block.capacity.toLocaleString()} base
-          {block.over_capacity_limit > 0
-            ? ` · ${block.over_capacity_limit.toLocaleString()} extra allowance`
-            : ""}
         </AppText>
       </View>
     </View>

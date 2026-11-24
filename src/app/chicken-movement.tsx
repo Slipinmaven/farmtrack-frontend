@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useMemo, useRef, useState } from "react";
 import {
   KeyboardAvoidingView,
@@ -8,8 +8,10 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  TextInput,
   View,
+  type ScrollViewInstance,
+  type TextInputInstance,
+  type ViewInstance,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -30,6 +32,7 @@ import {
   useChickenSaleOptions,
   useCreateChickenBatchMovement,
 } from "@/features/chickens/hooks";
+import { formatChickenCount } from "@/features/chickens/format";
 import { normalizeApiError } from "@/lib/api/errors";
 import { useAuth } from "@/providers/auth-provider";
 import { useFarm } from "@/providers/farm-provider";
@@ -56,6 +59,9 @@ export default function ChickenMovementScreen() {
 }
 
 function ChickenMovementContent() {
+  const { sourceBlockId: initialSourceBlockId } = useLocalSearchParams<{
+    sourceBlockId?: string;
+  }>();
   const { user } = useAuth();
   const farm = useFarm();
   const { theme } = useTheme();
@@ -69,16 +75,18 @@ function ChickenMovementContent() {
   const [stage, setStage] = useState<"select" | "review">("select");
   const [movementDate, setMovementDate] = useState(localToday());
   const [search, setSearch] = useState("");
-  const [sourceBlockId, setSourceBlockId] = useState("");
+  const [sourceBlockId, setSourceBlockId] = useState(
+    initialSourceBlockId ?? "",
+  );
   const [destinationBlockId, setDestinationBlockId] = useState("");
   const [selectedBatches, setSelectedBatches] = useState<SelectedBatch[]>([]);
   const [reason, setReason] = useState("");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<MovementError | null>(null);
-  const scrollRef = useRef<ScrollView>(null);
-  const areaRefs = useRef<Record<string, View | null>>({});
-  const quantityInputs = useRef<Record<string, TextInput | null>>({});
-  const batchSearchInput = useRef<TextInput>(null);
+  const scrollRef = useRef<ScrollViewInstance>(null);
+  const areaRefs = useRef<Record<string, ViewInstance | null>>({});
+  const quantityInputs = useRef<Record<string, TextInputInstance | null>>({});
+  const batchSearchInput = useRef<TextInputInstance>(null);
 
   const inventory = options.data;
   const sourceBlock = inventory?.blocks.find(
@@ -132,7 +140,7 @@ function ChickenMovementContent() {
     requestAnimationFrame(() => {
       const scrollHandle = findNodeHandle(scrollRef.current);
       const target = areaRefs.current[batchId ? `batch-${batchId}` : key];
-      if (target && scrollHandle !== null) {
+      if (target && scrollHandle != null) {
         target.measureLayout(
           scrollHandle,
           (_x, y) => scrollRef.current?.scrollTo({ y: Math.max(y - 20, 0), animated: true }),
@@ -250,7 +258,7 @@ function ChickenMovementContent() {
     }
     if (totalQuantity > destinationCapacity) {
       showError(
-        `${destinationBlock.name} has space for ${destinationCapacity} chickens, but ${totalQuantity} are selected. Reduce one or more batch quantities.`,
+        `${destinationBlock.name} has space for ${formatChickenCount(destinationCapacity)}, but ${formatChickenCount(totalQuantity)} ${totalQuantity === 1 ? "is" : "are"} selected. Reduce one or more batch quantities.`,
         "destination",
       );
       return;
@@ -306,7 +314,7 @@ function ChickenMovementContent() {
           ),
         );
         showError(
-          `${staleBatch.batch.name} now has ${latest} ${latest === 1 ? "chicken" : "chickens"} available. Update its quantity before continuing.`,
+          `${staleBatch.batch.name} now has ${formatChickenCount(latest)} available. Update its quantity before continuing.`,
           "batch",
           staleBatch.batch.id,
         );
@@ -328,7 +336,7 @@ function ChickenMovementContent() {
       }
       if (totalQuantity > latestCapacity) {
         showError(
-          `${latestDestination.name} now has space for ${latestCapacity} chickens. Reduce the selected quantities or choose another destination.`,
+          `${latestDestination.name} now has space for ${formatChickenCount(latestCapacity)}. Reduce the selected quantities or choose another destination.`,
           "destination",
         );
         return;
@@ -336,7 +344,7 @@ function ChickenMovementContent() {
 
       const confirmed = await dialog.confirmDialog({
         title: "Confirm chicken movement",
-        message: `Move ${totalQuantity} ${totalQuantity === 1 ? "chicken" : "chickens"} from ${sourceBlock.name} to ${latestDestination.name} across ${selectedBatches.length} ${selectedBatches.length === 1 ? "batch" : "batches"}?`,
+        message: `Move ${formatChickenCount(totalQuantity)} from ${sourceBlock.name} to ${latestDestination.name} across ${selectedBatches.length} ${selectedBatches.length === 1 ? "batch" : "batches"}?`,
         confirmLabel: "Move chickens",
       });
       if (!confirmed) return;
@@ -354,7 +362,7 @@ function ChickenMovementContent() {
       });
       await dialog.showDialog({
         title: "Chickens moved",
-        message: `${totalQuantity} ${totalQuantity === 1 ? "chicken has" : "chickens have"} been moved from ${sourceBlock.name} to ${latestDestination.name}.`,
+        message: `${formatChickenCount(totalQuantity)} ${totalQuantity === 1 ? "has" : "have"} been moved from ${sourceBlock.name} to ${latestDestination.name}.`,
         tone: "success",
       });
       router.back();
@@ -550,7 +558,7 @@ function ChickenMovementContent() {
                             <View style={styles.blockCopy}>
                               <AppText weight="semibold">{block.name}</AppText>
                               <AppText size="small" tone="secondary" numberOfLines={1}>
-                                {totalBirds.toLocaleString()} birds · {batchCount}{" "}
+                                {formatChickenCount(totalBirds, "bird")} · {batchCount}{" "}
                                 {batchCount === 1 ? "batch" : "batches"}
                               </AppText>
                             </View>
@@ -706,7 +714,7 @@ function ChickenMovementContent() {
                                   }
                                 />
                                 <AppText size="small" tone="secondary">
-                                  of {selected.available} birds
+                                  of {formatChickenCount(selected.available, "bird")}
                                 </AppText>
                               </View>
                             ) : null}
@@ -730,7 +738,7 @@ function ChickenMovementContent() {
                             {selectedBatches.length} {selectedBatches.length === 1 ? "batch" : "batches"} selected
                           </AppText>
                           <AppText size="small" tone="secondary">
-                            Moving {totalQuantity} of {totalAvailable} available birds
+                            Moving {formatChickenCount(totalQuantity, "bird")} of {formatChickenCount(totalAvailable, "bird")} available
                           </AppText>
                         </View>
                       </View>
@@ -792,12 +800,12 @@ function ChickenMovementContent() {
                                 <AppText size="small" tone="secondary">
                                   {block.current_chickens} / {capacityLimit}{" "}
                                   birds · {capacity}{" "}
-                                  spaces available
+                                  {capacity === 1 ? "space" : "spaces"} available
                                 </AppText>
                                 {!fits ? (
                                   <AppText size="small" tone="secondary">
                                     {totalQuantity > 0
-                                      ? `Needs room for ${totalQuantity} birds`
+                                      ? `Needs room for ${formatChickenCount(totalQuantity, "bird")}`
                                       : "Enter batch quantities first"}
                                   </AppText>
                                 ) : null}
@@ -903,7 +911,7 @@ function ChickenMovementContent() {
               <AppText size="small" tone="secondary">
                 {selectedBatches.length}{" "}
                 {selectedBatches.length === 1 ? "batch" : "batches"} ·{" "}
-                {totalQuantity} chickens · {formatDate(movementDate)}
+                {formatChickenCount(totalQuantity)} · {formatDate(movementDate)}
               </AppText>
               {reason.trim() ? (
                 <SummaryRow label="Reason" value={reason.trim()} />
@@ -931,7 +939,7 @@ function ChickenMovementContent() {
             <View style={styles.bottomCopy}>
               <AppText size="small" weight="semibold" numberOfLines={1}>
                 {selectedBatches.length
-                  ? `${selectedBatches.length} ${selectedBatches.length === 1 ? "batch" : "batches"} · ${totalQuantity} birds`
+                  ? `${selectedBatches.length} ${selectedBatches.length === 1 ? "batch" : "batches"} · ${formatChickenCount(totalQuantity, "bird")}`
                   : "Select batches"}
               </AppText>
               <AppText size="small" tone="secondary" numberOfLines={1}>
@@ -1065,7 +1073,7 @@ function MovementSummary({
           </AppText>
         ))}
         <AppText size="small" weight="semibold">
-          Total: {totalQuantity} chickens
+          Total: {formatChickenCount(totalQuantity)}
         </AppText>
       </View>
     </View>

@@ -1,13 +1,15 @@
 import { Ionicons } from "@expo/vector-icons";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { Controller, useForm } from "react-hook-form";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
   StyleSheet,
+  type ScrollViewInstance,
+  type TextInputInstance,
   View,
 } from "react-native";
 
@@ -23,11 +25,34 @@ import { useTheme } from "@/providers/theme-provider";
 export default function LoginScreen() {
   const auth = useAuth();
   const { theme } = useTheme();
+  const params = useLocalSearchParams<{
+    deletionPending?: string | string[];
+    email?: string | string[];
+  }>();
+  const initialEmail = Array.isArray(params.email) ? params.email[0] : params.email;
+  const pendingParam = Array.isArray(params.deletionPending)
+    ? params.deletionPending[0]
+    : params.deletionPending;
   const [passwordVisible, setPasswordVisible] = useState(false);
+  const [accountDeletionPending, setAccountDeletionPending] = useState(
+    pendingParam === "true",
+  );
+  const emailInput = useRef<TextInputInstance>(null);
+  const passwordInput = useRef<TextInputInstance>(null);
+  const scrollView = useRef<ScrollViewInstance>(null);
   const form = useForm<LoginFormValues>({
     resolver: zodResolver(loginSchema),
-    defaultValues: { email: "", password: "" },
+    defaultValues: { email: initialEmail ?? "", password: "" },
   });
+
+  useEffect(() => {
+    if (auth.errorCode === "ACCOUNT_DELETION_PENDING") {
+      setAccountDeletionPending(true);
+      form.setError("root", {
+        message: auth.error ?? "Restore this account before signing in.",
+      });
+    }
+  }, [auth.error, auth.errorCode, form]);
 
   async function submit(values: LoginFormValues) {
     try {
@@ -38,8 +63,23 @@ export default function LoginScreen() {
         router.replace("/device-blocked");
         return;
       }
+      setAccountDeletionPending(
+        apiError.code === "ACCOUNT_DELETION_PENDING",
+      );
       form.setError("root", { message: apiError.message });
     }
+  }
+
+  function scrollInputIntoView(input: TextInputInstance | null) {
+    if (Platform.OS !== "android" || !input) return;
+
+    setTimeout(() => {
+      scrollView.current?.scrollResponderScrollNativeHandleToKeyboard(
+        input,
+        24,
+        true,
+      );
+    }, 350);
   }
 
   return (
@@ -48,9 +88,11 @@ export default function LoginScreen() {
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <ScrollView
+        ref={scrollView}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
-        automaticallyAdjustKeyboardInsets
+        keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+        automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
       >
         <View style={styles.column}>
           <View style={styles.brandRow}>
@@ -83,22 +125,19 @@ export default function LoginScreen() {
           >
             <View style={styles.cardHeading}>
               <View style={styles.welcomeCopy}>
+                <AppText
+                  size="small"
+                  weight="semibold"
+                  tone="muted"
+                  style={styles.eyebrow}
+                >
+                  FARM MANAGEMENT
+                </AppText>
                 <AppText size="title" weight="semibold" style={styles.title}>
                   Welcome back
                 </AppText>
                 <AppText size="body" tone="secondary">
-                  Sign in to stay close to your farm.
-                </AppText>
-              </View>
-              <View
-                style={[
-                  styles.secureBadge,
-                  { backgroundColor: theme.backgroundSelected },
-                ]}
-              >
-                <Ionicons name="shield-checkmark-outline" size={16} color={theme.primary} />
-                <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
-                  SECURE
+                  Sign in to continue to your farm workspace.
                 </AppText>
               </View>
             </View>
@@ -138,6 +177,7 @@ export default function LoginScreen() {
                 name="email"
                 render={({ field, fieldState }) => (
                   <TextField
+                    ref={emailInput}
                     label="Email address"
                     leadingIcon="mail-outline"
                     placeholder="you@example.com"
@@ -149,10 +189,14 @@ export default function LoginScreen() {
                     onChangeText={(value) => {
                       field.onChange(value);
                       form.clearErrors("root");
+                      setAccountDeletionPending(false);
                     }}
                     onBlur={field.onBlur}
                     error={fieldState.error?.message}
                     returnKeyType="next"
+                    blurOnSubmit={false}
+                    onFocus={() => scrollInputIntoView(emailInput.current)}
+                    onSubmitEditing={() => passwordInput.current?.focus()}
                   />
                 )}
               />
@@ -161,6 +205,7 @@ export default function LoginScreen() {
                 name="password"
                 render={({ field, fieldState }) => (
                   <TextField
+                    ref={passwordInput}
                     label="Password"
                     leadingIcon="lock-closed-outline"
                     placeholder="Enter your password"
@@ -178,11 +223,15 @@ export default function LoginScreen() {
                     onChangeText={(value) => {
                       field.onChange(value);
                       form.clearErrors("root");
+                      setAccountDeletionPending(false);
                     }}
                     onBlur={field.onBlur}
                     error={fieldState.error?.message}
                     returnKeyType="done"
-                    onSubmitEditing={form.handleSubmit(submit)}
+                    onFocus={() => scrollInputIntoView(passwordInput.current)}
+                    onSubmitEditing={() => {
+                      void form.handleSubmit(submit)();
+                    }}
                   />
                 )}
               />
@@ -212,9 +261,23 @@ export default function LoginScreen() {
               <Button
                 label="Sign in"
                 loading={form.formState.isSubmitting}
-                onPress={form.handleSubmit(submit)}
+                onPress={() => {
+                  void form.handleSubmit(submit)();
+                }}
                 style={styles.signInButton}
               />
+              {accountDeletionPending ? (
+                <Button
+                  label="Restore scheduled account deletion"
+                  variant="secondary"
+                  onPress={() =>
+                    router.push({
+                      pathname: "/restore-account",
+                      params: { email: form.getValues("email") },
+                    })
+                  }
+                />
+              ) : null}
             </View>
 
             <View style={[styles.cardDivider, { backgroundColor: theme.border }]} />
@@ -243,29 +306,30 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     justifyContent: "center",
     paddingHorizontal: 22,
-    paddingVertical: 28,
+    paddingTop: 24,
+    paddingBottom: 32,
   },
   column: {
     width: "100%",
     maxWidth: 480,
     alignSelf: "center",
-    gap: 28,
+    gap: 24,
   },
-  brandRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  brandRow: { flexDirection: "row", alignItems: "center", gap: 14 },
   brandMark: {
-    width: 58,
-    height: 58,
-    borderRadius: 17,
+    width: 62,
+    height: 62,
+    borderRadius: 18,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
-  brandCopy: { gap: 2 },
+  brandCopy: { gap: 1 },
   loginCard: {
     borderWidth: 1,
-    borderRadius: 22,
+    borderRadius: 24,
     padding: 24,
-    gap: 22,
+    gap: 20,
     shadowColor: "#10251B",
     shadowOffset: { width: 0, height: 12 },
     shadowOpacity: 0.08,
@@ -273,21 +337,11 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   cardHeading: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    gap: 12,
+    gap: 2,
   },
-  welcomeCopy: { flex: 1, gap: 6 },
-  title: { letterSpacing: -0.5 },
-  secureBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    paddingHorizontal: 9,
-    paddingVertical: 6,
-    borderRadius: 20,
-  },
+  welcomeCopy: { gap: 4 },
+  eyebrow: { letterSpacing: 1.1, marginBottom: 2 },
+  title: { letterSpacing: -0.7 },
   sessionNotice: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -298,7 +352,7 @@ const styles = StyleSheet.create({
   },
   noticeCopy: { flex: 1, gap: 6 },
   retryButton: { alignSelf: "flex-start", minHeight: 40 },
-  form: { gap: 18 },
+  form: { gap: 16 },
   errorNotice: {
     flexDirection: "row",
     alignItems: "flex-start",

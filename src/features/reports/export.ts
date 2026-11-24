@@ -4,6 +4,8 @@ import * as Print from "expo-print";
 import * as Sharing from "expo-sharing";
 import { Platform } from "react-native";
 
+import { fetchFarmLogoDataUri } from "@/features/farms/logo";
+
 export type ReportExportCell = string | number | null;
 export type ReportExportColumnKind = "text" | "number" | "currency" | "date";
 
@@ -17,6 +19,7 @@ export type ReportExportSheet = {
   name: string;
   columns: ReportExportColumn[];
   rows: Record<string, ReportExportCell>[];
+  cellKinds?: Record<number, Record<string, ReportExportColumnKind>>;
   totals?: boolean;
   totalColumns?: string[];
   formulas?: Record<number, Record<string, string>>;
@@ -34,6 +37,7 @@ export type ReportExportData = {
   farmLogoUri?: string | null;
   fromDate?: string;
   toDate?: string;
+  periodLabel?: string;
   charts?: ReportExportChart[];
   summary: {
     label: string;
@@ -41,6 +45,9 @@ export type ReportExportData = {
     kind?: ReportExportColumnKind;
   }[];
   sheets: ReportExportSheet[];
+  customPdfHtml?: string | ((logoUri: string | null) => string);
+  customPdfFilename?: string;
+  customPdfFooter?: string;
 };
 
 export type ReportExportFormat = "pdf" | "xlsx" | "csv";
@@ -51,7 +58,10 @@ export async function exportReport(
 ): Promise<void> {
   const filename = `${slug(data.farmName)}-${slug(data.title)}-${dateStamp()}`;
   if (format === "pdf") {
-    await exportPdf(data, filename);
+    await exportPdf(
+      data,
+      data.customPdfFilename ?? filename,
+    );
   } else if (format === "xlsx") {
     await exportFile(
       `${filename}.xlsx`,
@@ -62,7 +72,7 @@ export async function exportReport(
     await exportFile(
       `${filename}.csv`,
       "text/csv;charset=utf-8",
-      createCsv(data.sheets[0]),
+      createCsv(data),
     );
   }
 }
@@ -72,7 +82,7 @@ function createPdfHtml(data: ReportExportData): string {
   const period =
     data.fromDate || data.toDate
       ? `${data.fromDate || "Beginning"} to ${data.toDate || "Today"}`
-      : "Current snapshot";
+      : data.periodLabel ?? "Current snapshot";
   const logo = data.farmLogoUri
     ? `<span class="logo-container"><img class="farm-logo" src="${escapeHtml(data.farmLogoUri)}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex'"><span class="farm-logo-fallback">FT</span></span>`
     : `<span class="farm-logo-fallback">FT</span>`;
@@ -84,6 +94,7 @@ function createPdfHtml(data: ReportExportData): string {
     .join("");
   const sections = data.sheets
     .map((sheet) => {
+      const wideTable = sheet.columns.length > 6;
       const headers = sheet.columns
         .map((column) => `<th>${escapeHtml(column.label)}</th>`)
         .join("");
@@ -100,7 +111,7 @@ function createPdfHtml(data: ReportExportData): string {
               .join("")}</tr>`,
         )
         .join("");
-      return `<section><h2>${escapeHtml(sheet.name)}</h2><table><thead><tr>${headers}</tr></thead><tbody>${rows}${renderHtmlTotals(sheet)}</tbody></table></section>`;
+      return `<section><h2>${escapeHtml(sheet.name)}</h2><table${wideTable ? ' class="wide-table"' : ""}><thead><tr>${headers}</tr></thead><tbody>${rows}${renderHtmlTotals(sheet)}</tbody></table></section>`;
     })
     .join("");
   const charts = (data.charts ?? [])
@@ -125,6 +136,8 @@ function createPdfHtml(data: ReportExportData): string {
   table { width: 100%; border-collapse: collapse; margin: 0 0 12px; }
   thead { display: table-header-group; }
   th, td { border: 1px solid #d8e1dd; padding: 6px 7px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+  table.wide-table { table-layout: fixed; font-size: 8pt; }
+  table.wide-table th, table.wide-table td { padding: 4px 5px; }
   thead th { background: #edf4f0; color: #244c3e; font-weight: 700; }
   tbody tr:nth-child(even) { background: #f8faf9; }
   .summary th { width: 45%; }
@@ -153,9 +166,24 @@ function createPdfHtml(data: ReportExportData): string {
 }
 
 async function exportPdf(data: ReportExportData, filename: string): Promise<void> {
-  const html = createPdfHtml(data);
+  const logoUri = await fetchFarmLogoDataUri(data.farmLogoUri);
+  const exportData = { ...data, farmLogoUri: logoUri };
+  await exportHtmlPdf(
+    typeof data.customPdfHtml === "function"
+      ? data.customPdfHtml(logoUri)
+      : data.customPdfHtml ?? createPdfHtml(exportData),
+    filename,
+    data.customPdfFooter ? { footerText: data.customPdfFooter } : {},
+  );
+}
+
+export async function exportHtmlPdf(
+  html: string,
+  filename: string,
+  options: { receipt?: boolean; footerText?: string } = {},
+): Promise<void> {
   if (Platform.OS === "web") {
-    await downloadWebPdf(html, filename);
+    await downloadWebPdf(html, filename, options);
     return;
   }
 
@@ -172,7 +200,12 @@ async function exportPdf(data: ReportExportData, filename: string): Promise<void
   await shareFile(pdfFile.uri, `${filename}.pdf`, "application/pdf");
 }
 
-async function downloadWebPdf(html: string, filename: string): Promise<void> {
+async function downloadWebPdf(
+  html: string,
+  filename: string,
+  options: { receipt?: boolean; footerText?: string },
+): Promise<void> {
+  const receipt = options.receipt ?? false;
   const html2pdf = (await import("html2pdf.js")).default;
   const parsedDocument = new DOMParser().parseFromString(html, "text/html");
   const container = document.createElement("div");
@@ -180,53 +213,68 @@ async function downloadWebPdf(html: string, filename: string): Promise<void> {
   container.style.position = "fixed";
   container.style.left = "-100000px";
   container.style.top = "0";
-  container.style.width = "1120px";
+  const contentWidth = receipt ? 302 : 1120;
+  container.style.width = `${contentWidth}px`;
   container.style.backgroundColor = "#ffffff";
 
   for (const stylesheet of parsedDocument.head.querySelectorAll("style")) {
     container.append(stylesheet.cloneNode(true));
   }
   const content = document.createElement("div");
+  if (receipt) content.className = "receipt-export-root";
   content.innerHTML = parsedDocument.body.innerHTML;
+  if (options.footerText) content.querySelector("footer")?.remove();
   container.append(content);
   document.body.append(container);
 
   try {
     await document.fonts.ready;
+    const receiptHeightMm = Math.ceil(
+      (content.getBoundingClientRect().height * 25.4) / 96 + 8,
+    );
     const pdf = await html2pdf()
       .set({
-        margin: [12, 10, 16, 10],
+        margin: receipt ? [3, 3, 3, 3] : [12, 10, 16, 10],
         filename: `${filename}.pdf`,
         image: { type: "jpeg", quality: 0.98 },
         html2canvas: {
           scale: 1.5,
           useCORS: true,
           backgroundColor: "#ffffff",
-          windowWidth: 1120,
+          windowWidth: contentWidth,
         },
         jsPDF: {
           unit: "mm",
-          format: "a4",
-          orientation: content.querySelector("table tr th:nth-child(7)")
-            ? "landscape"
-            : "portrait",
+          format: receipt ? [80, Math.max(100, receiptHeightMm)] : "a4",
+          orientation: receipt
+            ? "portrait"
+            : content.querySelector("table tr th:nth-child(7)")
+              ? "landscape"
+              : "portrait",
         },
       })
       .from(content)
       .toPdf()
       .get("pdf");
 
-    const pageCount = pdf.internal.getNumberOfPages();
-    for (let page = 1; page <= pageCount; page += 1) {
-      pdf.setPage(page);
-      pdf.setFontSize(8);
-      pdf.setTextColor(100, 116, 139);
-      pdf.text(
-        `Page ${page} of ${pageCount}`,
-        pdf.internal.pageSize.getWidth() - 10,
-        pdf.internal.pageSize.getHeight() - 6,
-        { align: "right" },
-      );
+    if (!receipt) {
+      const pageCount = pdf.internal.getNumberOfPages();
+      for (let page = 1; page <= pageCount; page += 1) {
+        pdf.setPage(page);
+        pdf.setFontSize(8);
+        pdf.setTextColor(100, 116, 139);
+        if (options.footerText) {
+          pdf.setFontSize(8);
+          pdf.setTextColor(71, 85, 105);
+          pdf.text(options.footerText, 10, pdf.internal.pageSize.getHeight() - 6);
+        }
+        pdf.text(
+          `Page ${page} of ${pageCount}`,
+          pdf.internal.pageSize.getWidth() - 10,
+          pdf.internal.pageSize.getHeight() - 6,
+          { align: "right" },
+        );
+      }
     }
 
     await pdf.save(`${filename}.pdf`);
@@ -281,15 +329,74 @@ async function shareFile(
   await Sharing.shareAsync(uri, { mimeType, dialogTitle: filename });
 }
 
-function createCsv(sheet: ReportExportSheet | undefined): string {
-  if (!sheet) return "";
-  const header = sheet.columns.map((column) => csvCell(column.label)).join(",");
-  const rows = sheet.rows.map((row) =>
-    sheet.columns
-      .map((column) => csvCell(row[column.key], column.kind))
-      .join(","),
+function createCsv(data: ReportExportData): string {
+  const lines: string[] = [];
+  const summaryRows: {
+    metric: ReportExportCell;
+    value: ReportExportCell;
+    kind?: ReportExportColumnKind;
+  }[] = [
+    { metric: "Farm", value: data.farmName },
+    { metric: "Report", value: data.title },
+    {
+      metric: "Reporting period",
+      value: data.fromDate || data.toDate
+        ? `${data.fromDate || "Beginning"} to ${data.toDate || "Today"}`
+        : data.periodLabel ?? "Current snapshot",
+    },
+    { metric: "Generated", value: new Date().toISOString() },
+    ...data.summary.map((item) => ({
+      metric:
+        item.kind === "currency" && data.currencyCode
+          ? `${item.label} (${data.currencyCode})`
+          : item.label,
+      value: item.value,
+      kind: item.kind,
+    })),
+  ];
+  lines.push(
+    csvCell("Summary"),
+    csvCell("Metric") + "," + csvCell("Value"),
+    ...summaryRows.map((row) =>
+      `${csvCell(row.metric)},${csvCell(row.value, row.kind)}`,
+    ),
   );
-  return `\uFEFF${[header, ...rows].join("\r\n")}`;
+
+  for (const sheet of data.sheets) {
+    lines.push("", csvCell(sheet.name));
+    lines.push(sheet.columns.map((column) => csvCell(column.label)).join(","));
+    lines.push(
+      ...sheet.rows.map((row) =>
+        sheet.columns
+          .map((column) => csvCell(row[column.key], column.kind))
+          .join(","),
+      ),
+    );
+    const totalColumns = sheet.totalColumns ?? (
+      sheet.totals
+        ? sheet.columns
+            .filter((column) => column.kind === "number" || column.kind === "currency")
+            .map((column) => column.key)
+        : []
+    );
+    if (sheet.rows.length && totalColumns.length) {
+      lines.push(
+        sheet.columns
+          .map((column, index) => {
+            if (!totalColumns.includes(column.key)) {
+              return csvCell(index === 0 ? "Total" : "");
+            }
+            const total = sheet.rows.reduce(
+              (sum, row) => sum + (Number(row[column.key]) || 0),
+              0,
+            );
+            return csvCell(total, column.kind);
+          })
+          .join(","),
+      );
+    }
+  }
+  return `\uFEFF${lines.join("\r\n")}`;
 }
 
 function createWorkbook(data: ReportExportData): Uint8Array {
@@ -306,7 +413,7 @@ function createWorkbook(data: ReportExportData): Uint8Array {
         metric: "Reporting period",
         value: data.fromDate || data.toDate
           ? `${data.fromDate || "Beginning"} to ${data.toDate || "Today"}`
-          : "Current snapshot",
+          : data.periodLabel ?? "Current snapshot",
       },
       { metric: "Generated", value: new Date().toISOString() },
       ...data.summary.map((item) => ({
@@ -317,6 +424,11 @@ function createWorkbook(data: ReportExportData): Uint8Array {
         value: item.value,
       })),
     ],
+    cellKinds: Object.fromEntries(
+      data.summary.flatMap((item, index) =>
+        item.kind ? [[index + 4, { value: item.kind }]] : [],
+      ),
+    ),
     formulas: (() => {
       const salesIndex = data.summary.findIndex((item) => item.label === "Completed sales");
       const expenseIndex = data.summary.findIndex((item) => item.label === "Recorded expenses");
@@ -363,7 +475,10 @@ function worksheetXml(sheet: ReportExportSheet): string {
           cellXml(
             `${columnName(columnIndex + 1)}${rowIndex + 1}`,
             value,
-            rowIndex === 0 ? undefined : sheet.columns[columnIndex]?.kind,
+            rowIndex === 0
+              ? undefined
+              : sheet.cellKinds?.[rowIndex - 1]?.[sheet.columns[columnIndex]?.key ?? ""] ??
+                sheet.columns[columnIndex]?.kind,
             rowIndex === 0,
             rowIndex > 0
               ? sheet.formulas?.[rowIndex - 1]?.[sheet.columns[columnIndex]?.key ?? ""]

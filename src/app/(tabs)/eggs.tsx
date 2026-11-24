@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
-import { router, type Href } from "expo-router";
-import { useState } from "react";
+import { router, useFocusEffect, type Href } from "expo-router";
+import { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -9,6 +9,7 @@ import {
   StyleSheet,
   View,
 } from "react-native";
+import Animated, { FadeInDown } from "react-native-reanimated";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { LoadingState } from "@/components/feedback/loading-state";
@@ -30,9 +31,8 @@ import { useTheme } from "@/providers/theme-provider";
 const emptyProducts: EggCollectionProduct[] = [];
 const activityLabels: Record<string, string> = {
   egg_collection_recorded: "Eggs collected",
-  egg_loss_recorded: "Egg loss recorded",
+  egg_loss_recorded: "Eggs lost",
 };
-
 export default function EggsScreen() {
   return (
     <SessionGate>
@@ -55,48 +55,41 @@ function EggsContent() {
     undefined,
     undefined,
   );
-  const [showAllActivities, setShowAllActivities] = useState(false);
+  const refetchOptions = options.refetch;
+  const refetchActivities = activities.refetch;
+  const hasFocused = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (hasFocused.current) {
+        void Promise.all([refetchOptions(), refetchActivities()]);
+      }
+      hasFocused.current = true;
+    }, [refetchActivities, refetchOptions]),
+  );
   const products = options.data?.products ?? emptyProducts;
-  const inStockCount = products.filter(
+  const sellableProducts = products.filter((product) => product.is_sellable);
+  const totalSellable = sellableProducts.reduce(
+    (total, product) =>
+      total + Number(product.available_quantity_in_base_unit),
+    0,
+  );
+  const totalReserved = products.reduce(
+    (total, product) =>
+      total + Number(product.reserved_quantity_in_base_unit),
+    0,
+  );
+  const sellableUnit = getSharedBaseUnit(sellableProducts);
+  const reservedProducts = products.filter(
+    (product) => Number(product.reserved_quantity_in_base_unit) > 0,
+  );
+  const reservedUnit = getSharedBaseUnit(reservedProducts);
+  const hasSellableStock = sellableProducts.some(
     (product) => Number(product.available_quantity_in_base_unit) > 0,
-  ).length;
-  const sellableCount = products.filter((product) => product.is_sellable).length;
-  const sellableInStockCount = products.filter(
-    (product) =>
-      product.is_sellable &&
-      Number(product.available_quantity_in_base_unit) > 0,
-  ).length;
-  const outOfStockCount = products.filter(
-    (product) =>
-      product.is_sellable &&
-      Number(product.available_quantity_in_base_unit) <= 0,
-  ).length;
-  const readinessStatusColor =
-    sellableCount === 0
-      ? theme.textSecondary
-      : theme.mode === "dark"
-        ? outOfStockCount > 0
-          ? "#FF9B91"
-          : "#8FD0A5"
-        : outOfStockCount > 0
-          ? theme.danger
-          : theme.success;
-  const readinessStatusBackground =
-    sellableCount === 0
-      ? theme.backgroundSelected
-      : theme.mode === "dark"
-        ? outOfStockCount > 0
-          ? "rgba(255, 155, 145, 0.16)"
-          : "rgba(143, 208, 165, 0.16)"
-        : outOfStockCount > 0
-          ? `${theme.danger}18`
-          : `${theme.success}18`;
+  );
   const recentActivities =
     activities.data?.pages.flatMap((page) => page.items) ?? [];
   const productById = new Map(products.map((product) => [product.id, product]));
-  const recentItems = showAllActivities
-    ? recentActivities
-    : recentActivities.slice(0, 6);
+  const recentItems = recentActivities.slice(0, 4);
 
   async function refresh() {
     await Promise.all([options.refetch(), activities.refetch()]);
@@ -123,10 +116,10 @@ function EggsContent() {
         <View style={styles.pageHeading}>
           <View style={styles.headingCopy}>
             <AppText size="heading" weight="semibold">
-              Egg operations
+              Egg stock
             </AppText>
             <AppText size="small" tone="secondary">
-              Available stock, product readiness and recent records
+              Eggs ready to sell and recent activity
             </AppText>
           </View>
           {options.isFetching || activities.isFetching ? (
@@ -156,144 +149,161 @@ function EggsContent() {
 
         {options.data ? (
           <>
-            <Card style={styles.summaryCard}>
-              <View style={styles.readinessHeader}>
-                <View
-                  style={[
-                    styles.readinessIcon,
-                    { backgroundColor: theme.backgroundSelected },
-                  ]}
-                >
-                  <Ionicons
-                    name="egg-outline"
-                    size={22}
-                    color={
-                      theme.mode === "dark" ? theme.onPrimary : theme.primary
-                    }
-                  />
-                </View>
-                <View style={styles.readinessCopy}>
-                  <AppText size="small" weight="semibold" tone="secondary">
-                    SELLABLE STOCK
-                  </AppText>
-                </View>
-                <View
-                  style={[
-                    styles.readinessBadge,
-                    { backgroundColor: readinessStatusBackground },
-                  ]}
-                >
-                  <AppText
-                    size="small"
-                    weight="semibold"
-                    numberOfLines={1}
-                    style={{ color: readinessStatusColor }}
-                  >
-                    {sellableCount === 0
-                      ? "No sellable items"
-                      : outOfStockCount > 0
-                        ? "Restock needed"
-                        : "Ready to sell"}
-                  </AppText>
-                </View>
-              </View>
-              <View style={styles.readinessValueRow}>
-                <AppText
-                  style={[styles.readinessValue, { color: theme.text }]}
-                  numberOfLines={1}
-                  adjustsFontSizeToFit
-                >
-                  {sellableInStockCount}/{sellableCount}
-                </AppText>
-                <View style={styles.readinessValueCopy}>
-                  <AppText weight="semibold">products stocked</AppText>
-                  <AppText size="small" tone="secondary">
-                    {sellableCount === 0
-                      ? "Mark an egg product sellable to enable sales"
-                      : outOfStockCount > 0
-                      ? `${outOfStockCount} sellable ${outOfStockCount === 1 ? "product needs" : "products need"} stock`
-                        : "All sellable products have stock"}
-                  </AppText>
-                </View>
-              </View>
-              {sellableCount > 0 ? (
-                <View
-                  style={[
-                    styles.readinessTrack,
-                    { backgroundColor: theme.backgroundSelected },
-                  ]}
-                >
+            <Animated.View entering={FadeInDown.duration(260)}>
+              <Card style={styles.stockSummary}>
+                <View style={styles.stockSummaryHeading}>
+                  <View style={styles.stockSummaryCopy}>
+                    <AppText size="small" weight="semibold" tone="secondary">
+                      READY TO SELL
+                    </AppText>
+                    <AppText
+                      size="title"
+                      weight="semibold"
+                      style={{ color: theme.success }}
+                    >
+                      {sellableProducts.length === 0
+                        ? "No sellable products"
+                        : sellableUnit
+                          ? `${formatQuantity(totalSellable)} ${sellableUnit.abbreviation}`
+                          : "See quantities by product"}
+                    </AppText>
+                    {!sellableUnit && sellableProducts.length > 0 ? (
+                      <AppText size="small" tone="secondary">
+                        Units vary by product
+                      </AppText>
+                    ) : null}
+                  </View>
                   <View
                     style={[
-                      styles.readinessFill,
+                      styles.stockSummaryIcon,
+                      { backgroundColor: `${theme.success}16` },
+                    ]}
+                  >
+                    <Ionicons
+                      name="cart-outline"
+                      size={22}
+                      color={theme.success}
+                    />
+                  </View>
+                </View>
+                {totalReserved > 0 ? (
+                  <View
+                    style={[
+                      styles.reservedSummary,
                       {
-                        width: `${Math.min(100, (sellableInStockCount / sellableCount) * 100)}%`,
-                        backgroundColor:
-                          theme.mode === "dark" ? "#8FD0A5" : theme.success,
+                        backgroundColor: `${theme.secondary}12`,
+                        borderColor: `${theme.secondary}35`,
                       },
                     ]}
-                  />
-                </View>
-              ) : null}
-              <View style={[styles.statGrid, { borderTopColor: theme.border }]}>
-                <EggStat
-                  label="Products with stock"
-                  value={inStockCount.toLocaleString()}
-                  icon="cube-outline"
-                  color={
-                    theme.mode === "dark" ? theme.onPrimary : theme.primary
-                  }
-                  theme={theme}
-                />
-                <EggStat
-                  label="Sellable products"
-                  value={sellableCount.toLocaleString()}
-                  icon="cart-outline"
-                  color={theme.success}
-                  theme={theme}
-                />
-              </View>
-            </Card>
+                  >
+                    <View style={styles.reservedSummaryCopy}>
+                      <AppText
+                        size="small"
+                        weight="semibold"
+                        style={{ color: theme.secondary }}
+                      >
+                        Reserved for orders
+                      </AppText>
+                      <AppText size="small" tone="secondary">
+                        Not yet delivered
+                      </AppText>
+                    </View>
+                    <AppText size="body" weight="semibold">
+                      {reservedUnit
+                        ? `${formatQuantity(totalReserved)} ${reservedUnit.abbreviation}`
+                        : "See each product"}
+                    </AppText>
+                  </View>
+                ) : null}
+              </Card>
+            </Animated.View>
 
-            <View style={styles.actionGroup}>
-              <OperationAction
-                label="Collect eggs"
-                icon="egg-outline"
-                color={theme.onPrimary}
-                background={theme.primary}
-                accessibilityLabel="Record egg collection"
-                onPress={() => router.push("/egg-collection" as Href)}
-                theme={theme}
-                prominent
-              />
-              <View style={styles.secondaryActionRow}>
+            <Animated.View
+              entering={FadeInDown.duration(260).delay(60)}
+              style={styles.actionGroup}
+            >
+              {products.length === 0 ? (
+                <OperationAction
+                  label="Add egg product"
+                  icon="add-outline"
+                  color={theme.onPrimary}
+                  background={theme.primary}
+                  accessibilityLabel="Add an egg product"
+                  onPress={() => router.push("/products/new" as Href)}
+                  theme={theme}
+                  prominent
+                />
+              ) : hasSellableStock ? (
                 <OperationAction
                   label="Sell eggs"
                   icon="cart-outline"
-                  color={theme.mode === "dark" ? theme.text : theme.primary}
-                  background={theme.backgroundElement}
-                  accessibilityLabel="Record egg sale"
+                  color={theme.onPrimary}
+                  background={theme.primary}
+                  accessibilityLabel="Start an egg sale"
                   onPress={() => router.push("/egg-sale" as Href)}
                   theme={theme}
+                  prominent
                 />
+              ) : (
                 <OperationAction
-                  label="Record loss"
-                  icon="alert-circle-outline"
-                  color={theme.mode === "dark" ? "#FF9B91" : theme.danger}
-                  background={theme.backgroundElement}
-                  accessibilityLabel="Record egg loss"
-                  onPress={() => router.push("/egg-loss" as Href)}
+                  label="Collect eggs"
+                  icon="egg-outline"
+                  color={theme.onPrimary}
+                  background={theme.primary}
+                  accessibilityLabel="Record an egg collection"
+                  onPress={() => router.push("/egg-collection" as Href)}
                   theme={theme}
+                  prominent
                 />
-              </View>
-            </View>
+              )}
+              {products.length > 0 ? (
+                <View style={styles.secondaryActionRow}>
+                  <OperationAction
+                    label={hasSellableStock ? "Collect eggs" : "View products"}
+                    icon={hasSellableStock ? "egg-outline" : "cube-outline"}
+                    color={theme.mode === "dark" ? theme.text : theme.primary}
+                    background={theme.backgroundElement}
+                    accessibilityLabel={
+                      hasSellableStock
+                        ? "Record an egg collection"
+                        : "View egg products"
+                    }
+                    onPress={() =>
+                      router.push(
+                        hasSellableStock
+                          ? ("/egg-collection" as Href)
+                          : ("/products" as Href),
+                      )
+                    }
+                    theme={theme}
+                  />
+                  {products.some(
+                    (product) =>
+                      Number(product.on_hand_quantity_in_base_unit) > 0,
+                  ) ? (
+                    <OperationAction
+                      label="Record loss"
+                      icon="alert-circle-outline"
+                      color={theme.mode === "dark" ? "#FF9B91" : theme.danger}
+                      background={theme.backgroundElement}
+                      accessibilityLabel="Record an egg loss"
+                      onPress={() => router.push("/egg-loss" as Href)}
+                      theme={theme}
+                    />
+                  ) : null}
+                </View>
+              ) : null}
+            </Animated.View>
 
-            <Card style={styles.inventoryCard}>
+            <Animated.View
+              entering={FadeInDown.duration(260).delay(120)}
+              style={styles.inventorySection}
+            >
               <View style={styles.sectionHeading}>
                 <View style={styles.headingCopy}>
-                  <AppText weight="semibold">Egg inventory</AppText>
+                  <AppText weight="semibold">By product</AppText>
                   <AppText size="small" tone="secondary">
-                    Current quantity and all-time movement by product
+                    Sellable stock and pending orders
                   </AppText>
                 </View>
                 <Pressable
@@ -309,7 +319,7 @@ function EggsContent() {
                       color: theme.mode === "dark" ? theme.onPrimary : theme.primary,
                     }}
                   >
-                    Products
+                    Manage
                   </AppText>
                   <Ionicons
                     name="chevron-forward"
@@ -323,8 +333,12 @@ function EggsContent() {
 
               {products.length ? (
                 <View style={styles.productList}>
-                  {products.map((product) => (
-                    <EggProductCard key={product.id} product={product} />
+                  {products.map((product, index) => (
+                    <EggProductCard
+                      key={product.id}
+                      product={product}
+                      index={index}
+                    />
                   ))}
                 </View>
               ) : (
@@ -346,153 +360,104 @@ function EggsContent() {
                   />
                 </View>
               )}
-            </Card>
+            </Animated.View>
           </>
         ) : null}
 
-        <Card style={styles.activityCard}>
-          <View style={styles.sectionHeading}>
-            <View style={styles.headingCopy}>
-              <AppText weight="semibold">Recent egg activity</AppText>
-              <AppText size="small" tone="secondary">
-                Collection and loss records
-              </AppText>
-            </View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="View all egg activity"
-              onPress={() => openEggActivity()}
-              style={[
-                styles.historyAction,
-                { backgroundColor: theme.backgroundSelected },
-              ]}
-            >
-              <AppText
-                size="small"
-                weight="semibold"
-                style={{
-                  color: theme.mode === "dark" ? theme.onPrimary : theme.primary,
-                }}
+        <Animated.View
+          entering={FadeInDown.duration(260).delay(180)}
+        >
+          <Card style={styles.activityCard}>
+            <View style={styles.sectionHeading}>
+              <View style={styles.headingCopy}>
+                <AppText weight="semibold">Recent activity</AppText>
+                <AppText size="small" tone="secondary">
+                  Collections and losses
+                </AppText>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="View all egg activity"
+                onPress={() => openEggActivity()}
+                style={[
+                  styles.historyAction,
+                  { backgroundColor: theme.backgroundSelected },
+                ]}
               >
-                View all
-              </AppText>
-              <Ionicons
-                name="chevron-forward"
-                size={15}
-                color={theme.mode === "dark" ? theme.onPrimary : theme.primary}
-              />
-            </Pressable>
-          </View>
-
-          {activities.isLoading ? (
-            <View style={styles.loadingInline}>
-              <ActivityIndicator size="small" color={theme.primary} />
-              <AppText size="small" tone="secondary">
-                Loading egg activity…
-              </AppText>
-            </View>
-          ) : null}
-          {activities.isError ? (
-            <View style={styles.stateInline}>
-              <AppText weight="semibold">Couldn’t load egg activity</AppText>
-              <AppText size="small" tone="secondary">
-                {normalizeApiError(activities.error).message}
-              </AppText>
-              <Button
-                label="Retry activity"
-                variant="secondary"
-                onPress={() => void activities.refetch()}
-              />
-            </View>
-          ) : null}
-          {!activities.isLoading &&
-          !activities.isError &&
-          recentItems.length ? (
-            <View style={styles.activityList}>
-              {recentItems.map((entry) => (
-                <EggActivityRow
-                  key={entry.id}
-                  entry={entry}
-                  productById={productById}
+                <AppText
+                  size="small"
+                  weight="semibold"
+                  style={{
+                    color:
+                      theme.mode === "dark" ? theme.onPrimary : theme.primary,
+                  }}
+                >
+                  See all
+                </AppText>
+                <Ionicons
+                  name="chevron-forward"
+                  size={15}
+                  color={theme.mode === "dark" ? theme.onPrimary : theme.primary}
                 />
-              ))}
+              </Pressable>
             </View>
-          ) : null}
-          {!activities.isLoading &&
-          !activities.isError &&
-          recentActivities.length === 0 ? (
-            <View style={styles.emptyActivity}>
-              <Ionicons
-                name="time-outline"
-                size={22}
-                color={theme.textSecondary}
-              />
-              <AppText
-                size="small"
-                tone="secondary"
-                style={styles.emptyActivityCopy}
-              >
-                Egg collections and losses will appear here once recorded.
-              </AppText>
-            </View>
-          ) : null}
-          {!showAllActivities && recentActivities.length > recentItems.length ? (
-            <Button
-              label={`Show all ${recentActivities.length} loaded records`}
-              variant="secondary"
-              onPress={() => setShowAllActivities(true)}
-            />
-          ) : null}
-          {showAllActivities && activities.hasNextPage ? (
-            <Button
-              label="Load older egg activity"
-              variant="secondary"
-              loading={activities.isFetchingNextPage}
-              disabled={activities.isFetchingNextPage}
-              onPress={() => void activities.fetchNextPage()}
-            />
-          ) : null}
-        </Card>
+
+            {activities.isLoading ? (
+              <View style={styles.loadingInline}>
+                <ActivityIndicator size="small" color={theme.primary} />
+                <AppText size="small" tone="secondary">
+                  Loading egg activity
+                </AppText>
+              </View>
+            ) : null}
+            {activities.isError ? (
+              <View style={styles.stateInline}>
+                <AppText weight="semibold">Couldn’t load egg activity</AppText>
+                <AppText size="small" tone="secondary">
+                  {normalizeApiError(activities.error).message}
+                </AppText>
+                <Button
+                  label="Retry activity"
+                  variant="secondary"
+                  onPress={() => void activities.refetch()}
+                />
+              </View>
+            ) : null}
+            {!activities.isLoading &&
+            !activities.isError &&
+            recentItems.length ? (
+              <View style={styles.activityList}>
+                {recentItems.map((entry) => (
+                  <EggActivityRow
+                    key={entry.id}
+                    entry={entry}
+                    productById={productById}
+                  />
+                ))}
+              </View>
+            ) : null}
+            {!activities.isLoading &&
+            !activities.isError &&
+            recentActivities.length === 0 ? (
+              <View style={styles.emptyActivity}>
+                <Ionicons
+                  name="time-outline"
+                  size={22}
+                  color={theme.textSecondary}
+                />
+                <AppText
+                  size="small"
+                  tone="secondary"
+                  style={styles.emptyActivityCopy}
+                >
+                  No egg records yet
+                </AppText>
+              </View>
+            ) : null}
+          </Card>
+        </Animated.View>
       </ScrollView>
     </SafeAreaView>
-  );
-}
-
-function EggStat({
-  label,
-  value,
-  icon,
-  color,
-  theme,
-}: {
-  label: string;
-  value: string;
-  icon: keyof typeof Ionicons.glyphMap;
-  color: string;
-  theme: ReturnType<typeof useTheme>["theme"];
-}) {
-  return (
-    <View style={styles.statCard}>
-      <View style={[styles.statIcon, { backgroundColor: `${color}18` }]}>
-        <Ionicons
-          name={icon}
-          size={15}
-          color={theme.mode === "dark" ? theme.onPrimary : color}
-        />
-      </View>
-      <AppText size="small" tone="secondary" numberOfLines={1} style={styles.statLabel}>
-        {label}
-      </AppText>
-      <AppText
-        size="small"
-        weight="semibold"
-        style={[styles.statValue, { color: theme.text }]}
-        numberOfLines={1}
-        adjustsFontSizeToFit
-      >
-        {value}
-      </AppText>
-    </View>
   );
 }
 
@@ -543,150 +508,234 @@ function OperationAction({
   );
 }
 
-function EggProductCard({ product }: { product: EggCollectionProduct }) {
+function EggProductCard({
+  product,
+  index,
+}: {
+  product: EggCollectionProduct;
+  index: number;
+}) {
   const { theme } = useTheme();
-  const primaryAccent =
-    theme.mode === "dark" ? theme.onPrimary : theme.primary;
-  const successAccent =
-    theme.mode === "dark" ? "#8FD0A5" : theme.success;
-  const dangerAccent = theme.mode === "dark" ? "#FF9B91" : theme.danger;
+  const [showBreakdown, setShowBreakdown] = useState(false);
   const baseUnit =
     product.units.find((unit) => unit.is_base_unit) ?? product.units[0];
-  const available = formatQuantity(product.available_quantity_in_base_unit);
-  const collected = formatQuantity(product.collected_quantity_in_base_unit);
-  const sold = formatQuantity(product.sold_quantity_in_base_unit);
-  const lost = formatQuantity(product.lost_quantity_in_base_unit);
-  const hasStock = Number(product.available_quantity_in_base_unit) > 0;
+  const unit = baseUnit?.abbreviation ?? "eggs";
+  const available = product.is_sellable
+    ? product.available_quantity_in_base_unit
+    : product.on_hand_quantity_in_base_unit;
+  const reserved = Number(product.reserved_quantity_in_base_unit);
+  const adjustment = Number(product.stock_adjustment_quantity_in_base_unit);
+  const successColor =
+    theme.mode === "dark" ? "#8FD0A5" : theme.success;
+  const warningColor =
+    theme.mode === "dark" ? "#F0B27A" : theme.secondary;
 
   return (
-    <View
-      style={[
-        styles.productCard,
-        { borderColor: theme.border, backgroundColor: theme.backgroundElement },
-      ]}
+    <Animated.View
+      entering={FadeInDown.duration(240).delay(Math.min(index, 4) * 45)}
     >
-      <View style={styles.productHeading}>
+      <View
+        style={[
+          styles.productCard,
+          {
+            borderColor: theme.border,
+            backgroundColor: theme.backgroundElement,
+          },
+        ]}
+      >
+        <View style={styles.productHeading}>
+          <View style={styles.productCopy}>
+            <AppText weight="semibold">{product.name}</AppText>
+            <AppText size="small" tone="secondary">
+              {product.is_sellable ? "Sellable product" : "Not for sale"}
+            </AppText>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`View ${product.name} stock details`}
+            onPress={() =>
+              router.push(`/products/${product.id}/inventory` as Href)
+            }
+            style={({ pressed }) => [
+              styles.productDetailsAction,
+              {
+                backgroundColor: pressed
+                  ? theme.backgroundSelected
+                  : "transparent",
+              },
+            ]}
+          >
+            <AppText
+              size="small"
+              weight="semibold"
+              style={{ color: theme.primary }}
+            >
+              Stock details
+            </AppText>
+            <Ionicons
+              name="chevron-forward"
+              size={16}
+              color={theme.primary}
+            />
+          </Pressable>
+        </View>
+
         <View
           style={[
-            styles.productIcon,
-            { backgroundColor: theme.backgroundSelected },
+            styles.productSellable,
+            {
+              backgroundColor: `${successColor}12`,
+              borderColor: `${successColor}35`,
+            },
           ]}
         >
-          <Ionicons name="egg-outline" size={18} color={primaryAccent} />
-        </View>
-        <View style={styles.productCopy}>
-          <AppText weight="semibold" numberOfLines={1}>
-            {product.name}
-          </AppText>
-          <View style={styles.productBadges}>
+          <View style={styles.sellableLabelRow}>
             <View
               style={[
-                styles.productBadge,
+                styles.sellableDot,
+                { backgroundColor: successColor },
+              ]}
+            />
+            <AppText
+              size="small"
+              weight="semibold"
+              style={{ color: successColor }}
+            >
+              {product.is_sellable ? "SELLABLE NOW" : "STOCK ON HAND"}
+            </AppText>
+          </View>
+          <AppText
+            size="title"
+            weight="semibold"
+            style={{ color: successColor }}
+          >
+            {formatQuantity(available)} {unit}
+          </AppText>
+        </View>
+
+        <View style={styles.stockFacts}>
+          {product.is_sellable ? (
+            <View style={styles.stockFactRow}>
+              <AppText size="small" tone="secondary">
+                Total on hand
+              </AppText>
+              <AppText size="small" weight="semibold">
+                {formatQuantity(product.on_hand_quantity_in_base_unit)} {unit}
+              </AppText>
+            </View>
+          ) : null}
+          {reserved > 0 ? (
+            <View
+              style={[
+                styles.stockFactRow,
+                styles.reservedFact,
                 {
-                  backgroundColor: hasStock
-                    ? theme.mode === "dark"
-                      ? "rgba(143, 208, 165, 0.16)"
-                      : `${theme.success}18`
-                    : theme.mode === "dark"
-                      ? "rgba(255, 155, 145, 0.16)"
-                      : `${theme.danger}18`,
+                  backgroundColor: `${warningColor}12`,
+                  borderColor: `${warningColor}40`,
                 },
               ]}
             >
-              <AppText
-                size="small"
-                weight="semibold"
-                style={{ color: hasStock ? successAccent : dangerAccent }}
-              >
-                {hasStock ? "In stock" : "Out of stock"}
+              <View style={styles.reservedFactLabel}>
+                <Ionicons
+                  name="time-outline"
+                  size={15}
+                  color={warningColor}
+                />
+                <AppText
+                  size="small"
+                  weight="semibold"
+                  style={{ color: warningColor }}
+                >
+                  Reserved for orders
+                </AppText>
+              </View>
+              <AppText size="small" weight="semibold">
+                {formatQuantity(reserved)} {unit}
               </AppText>
             </View>
-            {product.is_sellable ? (
+          ) : null}
+        </View>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: showBreakdown }}
+          accessibilityLabel={`${showBreakdown ? "Hide" : "Show"} ${product.name} stock breakdown`}
+          onPress={() => setShowBreakdown((shown) => !shown)}
+          style={[
+            styles.breakdownToggle,
+            { borderTopColor: theme.border },
+          ]}
+        >
+          <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+            Stock breakdown
+          </AppText>
+          <Ionicons
+            name={showBreakdown ? "chevron-up" : "chevron-down"}
+            size={18}
+            color={theme.primary}
+          />
+        </Pressable>
+        {showBreakdown ? (
+          <Animated.View
+            entering={FadeInDown.duration(180)}
+            style={styles.breakdownRows}
+          >
+            <StockBreakdownRow
+              label="Opening stock"
+              value={product.opening_stock_quantity_in_base_unit}
+              unit={unit}
+            />
+            <StockBreakdownRow
+              label="Collected"
+              value={product.collected_quantity_in_base_unit}
+              unit={unit}
+            />
+            <StockBreakdownRow
+              label="Sales and orders"
+              value={product.sold_quantity_in_base_unit}
+              unit={unit}
+            />
+            {reserved > 0 ? (
               <AppText size="small" tone="secondary">
-                Sellable
+                Sales include the reserved orders above.
               </AppText>
             ) : null}
-          </View>
-        </View>
-        <View style={styles.productAvailable}>
-          <AppText
-            weight="semibold"
-            style={[
-              styles.productQuantity,
-              { color: hasStock ? theme.text : theme.textSecondary },
-            ]}
-          >
-            {available}
-          </AppText>
-          <AppText size="small" tone="secondary">
-            {baseUnit?.abbreviation ?? "units"} available
-          </AppText>
-        </View>
-      </View>
-      <View style={[styles.movementDivider, { borderTopColor: theme.border }]} />
-      <View style={styles.movementHeading}>
-        <AppText size="small" weight="semibold">
-          All-time movement
-        </AppText>
-        {baseUnit?.abbreviation ? (
-          <AppText size="small" tone="secondary">
-            {baseUnit.abbreviation}
-          </AppText>
+            <StockBreakdownRow
+              label="Losses"
+              value={product.lost_quantity_in_base_unit}
+              unit={unit}
+            />
+            {adjustment !== 0 ? (
+              <StockBreakdownRow
+                label="Stock adjustments"
+                value={adjustment}
+                unit={unit}
+              />
+            ) : null}
+          </Animated.View>
         ) : null}
       </View>
-      <View style={styles.movementStats}>
-        <MovementStat
-          label="Collected"
-          value={collected}
-          color={primaryAccent}
-          theme={theme}
-        />
-        <MovementStat
-          label="Sold"
-          value={sold}
-          color={successAccent}
-          theme={theme}
-        />
-        <MovementStat
-          label="Lost"
-          value={lost}
-          color={dangerAccent}
-          theme={theme}
-        />
-      </View>
-    </View>
+    </Animated.View>
   );
 }
 
-function MovementStat({
+function StockBreakdownRow({
   label,
   value,
-  color,
-  theme,
+  unit,
 }: {
   label: string;
-  value: string;
-  color: string;
-  theme: ReturnType<typeof useTheme>["theme"];
+  value: number | string;
+  unit: string;
 }) {
+  const { theme } = useTheme();
   return (
-    <View
-      style={[
-        styles.movementStat,
-        { backgroundColor: theme.backgroundSelected },
-      ]}
-    >
+    <View style={[styles.breakdownRow, { borderBottomColor: theme.border }]}>
       <AppText size="small" tone="secondary">
         {label}
       </AppText>
-      <AppText
-        size="body"
-        weight="semibold"
-        numberOfLines={1}
-        adjustsFontSizeToFit
-        style={{ color }}
-      >
-        {value}
+      <AppText size="small" weight="semibold">
+        {formatQuantity(value)} {unit}
       </AppText>
     </View>
   );
@@ -754,14 +803,14 @@ function EggActivityRow({
         />
       </View>
       <View style={styles.activityCopy}>
-        <AppText size="small" weight="semibold" numberOfLines={1}>
+        <AppText size="small" weight="semibold">
           {activityLabels[entry.type] ?? "Egg activity"}
           {product ? ` · ${product.name}` : ""}
         </AppText>
-        <AppText size="small" tone="secondary" numberOfLines={1}>
+        <AppText size="small" tone="secondary">
           {summary}
         </AppText>
-        <AppText size="small" tone="secondary" numberOfLines={1}>
+        <AppText size="small" tone="secondary">
           {formatRelativeDate(entry.created_at)}
         </AppText>
       </View>
@@ -799,6 +848,20 @@ function formatQuantity(value: number | string): string {
     : "—";
 }
 
+function getSharedBaseUnit(
+  products: EggCollectionProduct[],
+): EggCollectionProduct["units"][number] | undefined {
+  if (!products.length) return undefined;
+  const units = products.map((product) =>
+    product.units.find((unit) => unit.is_base_unit),
+  );
+  const sharedUnit = units[0];
+  if (!sharedUnit || units.some((unit) => unit?.id !== sharedUnit.id)) {
+    return undefined;
+  }
+  return sharedUnit;
+}
+
 function labelize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1).replaceAll("_", " ");
 }
@@ -811,7 +874,7 @@ const styles = StyleSheet.create({
     alignSelf: "center",
     paddingHorizontal: 16,
     paddingTop: 14,
-    paddingBottom: 28,
+    paddingBottom: 42,
     gap: 13,
   },
   pageHeading: {
@@ -821,148 +884,132 @@ const styles = StyleSheet.create({
   },
   headingCopy: { flex: 1, gap: 3 },
   actionGroup: { gap: 7 },
-  secondaryActionRow: { flexDirection: "row", gap: 7 },
+  secondaryActionRow: { flexDirection: "row", gap: 8 },
   operationAction: {
-    minHeight: 46,
+    minHeight: 48,
     flexDirection: "row",
     flexGrow: 1,
     flexBasis: 0,
     alignItems: "center",
     justifyContent: "center",
-    gap: 7,
+    gap: 8,
     borderWidth: 1,
-    borderRadius: 7,
-    paddingHorizontal: 8,
-    paddingVertical: 7,
+    borderRadius: 11,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
   },
-  prominentAction: { minHeight: 50 },
+  prominentAction: { minHeight: 54 },
   stateCard: { alignItems: "center", gap: 9, paddingVertical: 20 },
-  summaryCard: { gap: 12, borderRadius: 8, padding: 14 },
+  stockSummary: { gap: 12, borderRadius: 15, padding: 15 },
+  stockSummaryHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  stockSummaryCopy: { flex: 1, minWidth: 0, gap: 4 },
+  stockSummaryIcon: {
+    width: 42,
+    height: 42,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 13,
+  },
+  reservedSummary: {
+    minHeight: 54,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    borderWidth: 1,
+    borderRadius: 11,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+  },
+  reservedSummaryCopy: { flex: 1, minWidth: 0, gap: 2 },
   sectionHeading: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
   },
-  readinessHeader: {
+  inventorySection: { gap: 11 },
+  textAction: {
+    minHeight: 38,
     flexDirection: "row",
     alignItems: "center",
-    gap: 9,
+    gap: 3,
+    paddingHorizontal: 7,
   },
-  readinessIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  readinessCopy: { flex: 1, gap: 2 },
-  readinessBadge: {
-    maxWidth: "42%",
-    borderRadius: 20,
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-  },
-  readinessValueRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    paddingTop: 0,
-  },
-  readinessValue: {
-    fontSize: 32,
-    lineHeight: 38,
-    fontWeight: "700",
-    fontVariant: ["tabular-nums"],
-  },
-  readinessValueCopy: { flex: 1, gap: 2 },
-  readinessTrack: { height: 8, borderRadius: 4, overflow: "hidden" },
-  readinessFill: { height: "100%", borderRadius: 4 },
-  statGrid: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingTop: 9,
-    borderTopWidth: StyleSheet.hairlineWidth,
-  },
-  statCard: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 7,
-    paddingHorizontal: 3,
-  },
-  statIcon: {
-    width: 26,
-    height: 26,
-    borderRadius: 6,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  statLabel: { flex: 1, minWidth: 0 },
-  statValue: {
-    fontVariant: ["tabular-nums"],
-  },
-  inventoryCard: { gap: 11, borderRadius: 8 },
-  textAction: { flexDirection: "row", alignItems: "center", gap: 2 },
   productList: { gap: 10 },
   productCard: {
-    gap: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 8,
-    padding: 11,
+    gap: 11,
+    borderWidth: 1,
+    borderRadius: 15,
+    padding: 13,
   },
   productHeading: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 9,
+    gap: 8,
   },
-  productIcon: {
-    width: 31,
-    height: 31,
-    borderRadius: 7,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  productCopy: { flex: 1, minWidth: 0, gap: 4 },
-  productBadges: {
+  productCopy: { flex: 1, minWidth: 0, gap: 3 },
+  productDetailsAction: {
+    minHeight: 38,
     flexDirection: "row",
     alignItems: "center",
-    flexWrap: "wrap",
-    gap: 6,
+    gap: 1,
+    borderRadius: 9,
+    paddingHorizontal: 6,
   },
-  productBadge: {
-    borderRadius: 20,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
+  productSellable: {
+    gap: 3,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
-  productAvailable: { alignItems: "flex-end", gap: 1 },
-  productQuantity: {
-    fontSize: 18,
-    lineHeight: 24,
-    fontVariant: ["tabular-nums"],
+  sellableLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
   },
-  movementDivider: { borderTopWidth: StyleSheet.hairlineWidth },
-  movementHeading: {
+  sellableDot: { width: 7, height: 7, borderRadius: 4 },
+  stockFacts: { gap: 5 },
+  stockFactRow: {
+    minHeight: 40,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    gap: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
   },
-  movementStats: {
+  reservedFact: { borderWidth: 1, borderRadius: 9 },
+  reservedFactLabel: { flexDirection: "row", alignItems: "center", gap: 6 },
+  breakdownToggle: {
+    minHeight: 43,
     flexDirection: "row",
-    gap: 7,
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 7,
   },
-  movementStat: {
-    flex: 1,
-    minWidth: 0,
-    gap: 3,
-    paddingVertical: 4,
-    paddingHorizontal: 3,
+  breakdownRows: { gap: 2, paddingTop: 1 },
+  breakdownRow: {
+    minHeight: 38,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 6,
   },
   emptyState: { alignItems: "center", gap: 8, paddingVertical: 20 },
   emptyCopy: { maxWidth: 370, textAlign: "center" },
-  activityCard: { gap: 10, borderRadius: 8 },
+  activityCard: { gap: 10, borderRadius: 15 },
   historyAction: {
+    minHeight: 40,
     flexDirection: "row",
     alignItems: "center",
     gap: 2,

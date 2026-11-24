@@ -18,6 +18,8 @@ type DialogOptions = {
   title: string;
   message: string;
   tone?: DialogTone;
+  details?: { label: string; value: string }[];
+  note?: string;
 };
 type ConfirmDialogOptions = DialogOptions & {
   confirmLabel: string;
@@ -75,7 +77,7 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
         ? theme.danger
         : dialog?.tone === "warning"
           ? theme.secondary
-          : theme.primary;
+        : theme.primary;
   const iconName =
     dialog?.tone === "success"
       ? "checkmark-circle"
@@ -83,7 +85,7 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
         ? "alert-circle"
         : dialog?.tone === "warning"
           ? "alert-circle"
-          : dialog?.kind === "confirmation"
+        : dialog?.kind === "confirmation"
           ? "help-circle"
           : "information-circle";
 
@@ -113,12 +115,60 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
             <View style={[styles.icon, { backgroundColor: `${toneColor}1A` }]}>
               <Ionicons name={iconName} size={26} color={toneColor} />
             </View>
-            <AppText size="heading" weight="semibold" style={styles.title}>
-              {dialog?.title}
-            </AppText>
-            <AppText tone="secondary" style={styles.message}>
-              {dialog?.message}
-            </AppText>
+            <View style={styles.copy}>
+              <AppText size="heading" weight="semibold" style={styles.title}>
+                {dialog?.title}
+              </AppText>
+              <AppText tone="secondary" style={styles.message}>
+                {dialog?.message}
+              </AppText>
+            </View>
+            {dialog?.details?.length ? (
+              <View
+                style={[
+                  styles.details,
+                  {
+                    borderColor: theme.border,
+                    backgroundColor: theme.background,
+                  },
+                ]}
+              >
+                {dialog.details.map((item, index) => (
+                  <View
+                    key={item.label}
+                    style={[
+                      styles.detailRow,
+                      index > 0 && {
+                        borderTopColor: theme.border,
+                        borderTopWidth: StyleSheet.hairlineWidth,
+                      },
+                    ]}
+                  >
+                    <AppText size="small" tone="secondary" style={styles.detailLabel}>
+                      {item.label}
+                    </AppText>
+                    <AppText size="small" weight="semibold" style={styles.detailValue}>
+                      {item.value}
+                    </AppText>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+            {dialog?.note ? (
+              <View
+                style={[
+                  styles.note,
+                  {
+                    backgroundColor: `${toneColor}12`,
+                    borderLeftColor: toneColor,
+                  },
+                ]}
+              >
+                <AppText size="small" style={{ color: theme.text }}>
+                  {dialog.note}
+                </AppText>
+              </View>
+            ) : null}
             {dialog?.kind === "confirmation" ? (
               <View style={styles.actions}>
                 <Pressable
@@ -195,35 +245,57 @@ const styles = StyleSheet.create({
     width: "100%",
     maxWidth: 440,
     alignItems: "center",
-    gap: 12,
+    gap: 16,
     borderWidth: 1,
-    borderRadius: 8,
-    padding: 24,
+    borderRadius: 18,
+    padding: 22,
   },
   icon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 52,
+    height: 52,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
   },
-  title: { textAlign: "center" },
-  message: { textAlign: "center" },
+  copy: { width: "100%", gap: 7 },
+  title: { textAlign: "left", lineHeight: 26 },
+  message: { textAlign: "left", lineHeight: 21 },
+  details: {
+    width: "100%",
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+  },
+  detailRow: {
+    minHeight: 43,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    paddingVertical: 8,
+  },
+  detailLabel: { flex: 1 },
+  detailValue: { textAlign: "right", fontVariant: ["tabular-nums"] },
+  note: {
+    width: "100%",
+    borderLeftWidth: 3,
+    borderRadius: 8,
+    paddingHorizontal: 11,
+    paddingVertical: 10,
+  },
   actions: {
     width: "100%",
-    flexDirection: "row",
-    justifyContent: "flex-end",
+    flexDirection: "column-reverse",
     gap: 10,
-    marginTop: 8,
   },
   action: {
-    minHeight: 46,
-    minWidth: 100,
+    minHeight: 48,
+    width: "100%",
     justifyContent: "center",
     alignItems: "center",
     borderWidth: 1,
-    borderRadius: 6,
+    borderRadius: 10,
     paddingHorizontal: 16,
   },
-  messageAction: { width: "100%", marginTop: 8 },
+  messageAction: { marginTop: 0 },
 });

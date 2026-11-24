@@ -20,6 +20,7 @@ import { Card } from "@/components/ui/card";
 import { DatePickerField } from "@/components/ui/date-picker-field";
 import { TextField } from "@/components/ui/text-field";
 import type { ChickenSaleBatch } from "@/features/chickens/api";
+import { formatChickenCount } from "@/features/chickens/format";
 import { useChickenSaleOptions } from "@/features/chickens/hooks";
 import {
   setChickenLossDraft,
@@ -172,11 +173,34 @@ function ChickenLossContent() {
           keyboardShouldPersistTaps="handled"
           automaticallyAdjustKeyboardInsets
         >
-          <FarmPageHeader title="Record chicken loss" showBack />
-          <AppText tone="secondary">
-            Select every batch and block affected, then set the number lost in
-            each. You can select multiple locations before reviewing.
-          </AppText>
+          <FarmPageHeader title="Flock" showBack />
+          <View
+            style={[
+              styles.pageHero,
+              {
+                backgroundColor: theme.backgroundElement,
+                borderColor: theme.border,
+                borderLeftColor: theme.danger,
+              },
+            ]}
+          >
+            <View
+              style={[
+                styles.pageHeroIcon,
+                { backgroundColor: `${theme.danger}16` },
+              ]}
+            >
+              <Ionicons name="heart-dislike-outline" size={23} color={theme.danger} />
+            </View>
+            <View style={styles.pageHeroCopy}>
+              <AppText size="heading" weight="semibold">
+                Record a loss
+              </AppText>
+              <AppText size="small" tone="secondary">
+                Select affected stock and enter birds lost.
+              </AppText>
+            </View>
+          </View>
 
           {options.isError ? (
             <Card style={styles.stateCard}>
@@ -222,19 +246,22 @@ function ChickenLossContent() {
             <>
               <Card style={styles.section}>
                 <View style={styles.sectionHeading}>
-                  <View style={styles.stepNumber}>
-                    <AppText
-                      size="small"
-                      weight="semibold"
-                      style={{ color: theme.primary }}
-                    >
-                      1
-                    </AppText>
+                  <View
+                    style={[
+                      styles.sectionIcon,
+                      { backgroundColor: theme.backgroundSelected },
+                    ]}
+                  >
+                    <Ionicons
+                      name="calendar-outline"
+                      size={18}
+                      color={theme.primary}
+                    />
                   </View>
                   <View style={styles.headingCopy}>
                     <AppText weight="semibold">Loss date</AppText>
                     <AppText size="small" tone="secondary">
-                      Defaults to today.
+                      When did it happen?
                     </AppText>
                   </View>
                 </View>
@@ -247,20 +274,22 @@ function ChickenLossContent() {
 
               <Card style={styles.section}>
                 <View style={styles.sectionHeading}>
-                  <View style={styles.stepNumber}>
-                    <AppText
-                      size="small"
-                      weight="semibold"
-                      style={{ color: theme.primary }}
-                    >
-                      2
-                    </AppText>
+                  <View
+                    style={[
+                      styles.sectionIcon,
+                      { backgroundColor: theme.backgroundSelected },
+                    ]}
+                  >
+                    <Ionicons
+                      name="layers-outline"
+                      size={18}
+                      color={theme.primary}
+                    />
                   </View>
                   <View style={styles.headingCopy}>
                     <AppText weight="semibold">Select affected stock</AppText>
                     <AppText size="small" tone="secondary">
-                      Select multiple batches across any blocks. Set quantity
-                      for each selected batch.
+                      Choose the batches and blocks affected.
                     </AppText>
                   </View>
                 </View>
@@ -321,11 +350,14 @@ function ChickenLossContent() {
                         <View style={styles.blockCopy}>
                           <AppText weight="semibold">{block.name}</AppText>
                           <AppText size="small" tone="secondary">
-                            {batches.reduce(
-                              (sum, entry) => sum + entry.stock.quantity,
-                              0,
+                            {formatChickenCount(
+                              batches.reduce(
+                                (sum, entry) => sum + entry.stock.quantity,
+                                0,
+                              ),
+                              "bird",
                             )}{" "}
-                            birds · {batches.length}{" "}
+                            · {batches.length}{" "}
                             {batches.length === 1 ? "batch" : "batches"}
                           </AppText>
                         </View>
@@ -556,12 +588,12 @@ function ChickenLossContent() {
             ]}
           >
             <View style={styles.bottomSummary}>
-              <AppText size="small" weight="semibold">
-                {selectedItems.length}{" "}
-                {selectedItems.length === 1 ? "batch" : "batches"} selected
+              <AppText weight="semibold">
+                {formatChickenCount(totalQuantity)}
               </AppText>
               <AppText size="small" tone="secondary">
-                {totalQuantity} chickens across{" "}
+                {selectedItems.length}{" "}
+                {selectedItems.length === 1 ? "batch" : "batches"} ·{" "}
                 {new Set(selectedItems.map((item) => item.block_id)).size}{" "}
                 {new Set(selectedItems.map((item) => item.block_id)).size === 1
                   ? "block"
@@ -639,16 +671,33 @@ const styles = StyleSheet.create({
     gap: 14,
   },
   section: { gap: 14 },
-  sectionHeading: { flexDirection: "row", alignItems: "center", gap: 10 },
-  headingCopy: { flex: 1, minWidth: 0, gap: 2 },
-  stepNumber: {
-    width: 30,
-    height: 30,
+  pageHero: {
+    minHeight: 94,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 13,
+    padding: 15,
+    borderWidth: 1,
+    borderLeftWidth: 4,
+    borderRadius: 16,
+  },
+  pageHeroIcon: {
+    width: 48,
+    height: 48,
     alignItems: "center",
     justifyContent: "center",
     borderRadius: 15,
-    backgroundColor: "#0000000A",
   },
+  pageHeroCopy: { flex: 1, minWidth: 0, gap: 2 },
+  sectionHeading: { flexDirection: "row", alignItems: "center", gap: 10 },
+  sectionIcon: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+  },
+  headingCopy: { flex: 1, minWidth: 0, gap: 2 },
   stateCard: { gap: 10 },
   emptyState: { alignItems: "center", gap: 10, paddingVertical: 24 },
   emptyIcon: {

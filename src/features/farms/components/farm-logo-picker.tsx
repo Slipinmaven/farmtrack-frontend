@@ -5,8 +5,7 @@ import { useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 
 import { AppText } from "@/components/ui/app-text";
-import { Button } from "@/components/ui/button";
-import { getFarmLogoUri } from "@/features/farms/logo";
+import { useFarmLogo } from "@/features/farms/use-farm-logo";
 import { useTheme } from "@/providers/theme-provider";
 
 type FarmLogoPickerProps = {
@@ -28,7 +27,7 @@ export function FarmLogoPicker({
   const [permissionMessage, setPermissionMessage] = useState<string | null>(
     null,
   );
-  const currentLogoUri = getFarmLogoUri(logoPath);
+  const { uri: currentLogoUri, error: logoLoadFailed } = useFarmLogo(logoPath);
   const previewUri = asset?.uri ?? (removalRequested ? null : currentLogoUri);
 
   async function chooseLogo() {
@@ -110,44 +109,70 @@ export function FarmLogoPicker({
         </View>
         <View style={styles.copy}>
           <AppText weight="semibold">Farm logo</AppText>
-          <AppText size="small" tone="secondary">
-            Square PNG, JPEG, or WebP. Maximum size 5 MB.
-          </AppText>
           {asset ? (
             <AppText size="small" style={{ color: theme.primary }}>
-              New logo selected; save to upload.
+              Ready to save
             </AppText>
           ) : removalRequested ? (
             <AppText size="small" style={{ color: theme.danger }}>
-              Logo will be removed when you save.
+              Will be removed
             </AppText>
-          ) : null}
-        </View>
-      </View>
-      <View style={styles.actions}>
-        <Button
-          label="Choose image"
-          variant="secondary"
-          onPress={() => void chooseLogo()}
-        />
-        {canRemove ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={removalLabel}
-            onPress={toggleRemoval}
-            style={styles.removeButton}
-          >
-            <Ionicons
-              name={removalRequested ? "refresh-outline" : "trash-outline"}
-              size={17}
-              color={theme.textSecondary}
-            />
+          ) : (
             <AppText size="small" tone="secondary">
-              {removalLabel}
+              {logoLoadFailed
+                ? "Saved logo could not be loaded."
+                : "Square image · 5 MB max"}
             </AppText>
-          </Pressable>
-        ) : null}
+          )}
+        </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={previewUri ? "Change farm logo" : "Add farm logo"}
+          onPress={() => void chooseLogo()}
+          style={({ pressed }) => [
+            styles.changeButton,
+            {
+              backgroundColor: theme.backgroundSelected,
+              borderColor: theme.border,
+              opacity: pressed ? 0.75 : 1,
+            },
+          ]}
+        >
+          <Ionicons
+            name={previewUri ? "camera-outline" : "add"}
+            size={17}
+            color={theme.primary}
+          />
+          <AppText
+            size="small"
+            weight="semibold"
+            style={{ color: theme.primary }}
+          >
+            {previewUri ? "Change" : "Add"}
+          </AppText>
+        </Pressable>
       </View>
+      {canRemove ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={removalLabel}
+          onPress={toggleRemoval}
+          style={styles.removeButton}
+        >
+          <Ionicons
+            name={removalRequested ? "refresh-outline" : "trash-outline"}
+            size={16}
+            color={theme.textSecondary}
+          />
+          <AppText size="small" tone="secondary">
+            {removalRequested
+              ? "Undo"
+              : asset
+                ? "Clear selection"
+                : "Remove logo"}
+          </AppText>
+        </Pressable>
+      ) : null}
       {permissionMessage ? (
         <AppText size="small" style={{ color: theme.danger }}>
           {permissionMessage}
@@ -158,23 +183,32 @@ export function FarmLogoPicker({
 }
 
 const styles = StyleSheet.create({
-  container: { gap: 14 },
-  previewRow: { flexDirection: "row", alignItems: "center", gap: 14 },
+  container: { gap: 4 },
+  previewRow: {
+    minHeight: 58,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 11,
+  },
   preview: {
-    width: 72,
-    height: 72,
-    borderRadius: 14,
+    width: 54,
+    height: 54,
+    borderRadius: 12,
     overflow: "hidden",
     alignItems: "center",
     justifyContent: "center",
   },
   previewImage: { width: "100%", height: "100%" },
   copy: { flex: 1, gap: 4 },
-  actions: {
+  changeButton: {
+    minHeight: 38,
     flexDirection: "row",
     alignItems: "center",
-    flexWrap: "wrap",
-    gap: 12,
+    justifyContent: "center",
+    gap: 5,
+    borderWidth: 1,
+    borderRadius: 9,
+    paddingHorizontal: 11,
   },
   removeButton: {
     minHeight: 44,

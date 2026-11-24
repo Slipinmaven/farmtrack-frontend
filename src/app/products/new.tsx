@@ -26,8 +26,26 @@ function CreateProductContent() {
     setupType?: ProductType;
     setupName?: string;
     setupStep?: string;
+    setupAdditional?: string;
+    returnToOpeningStock?: string;
+    openingSpecies?: "chickens" | "eggs";
+    returnToInventory?: string;
+    fromSetup?: string;
   }>();
   const isSetupFlow = params.setupFlow === "true";
+  const isPoultrySetup =
+    isSetupFlow &&
+    (params.setupType === "chickens" || params.setupType === "eggs");
+  const returnToOpeningStock = params.returnToOpeningStock === "true";
+  const returnToInventory = params.returnToInventory === "true";
+  const openingStockHref = {
+    pathname: "/inventory/opening-stock" as const,
+    params: {
+      species: params.openingSpecies ?? "eggs",
+      fromSetup: params.fromSetup,
+      setupStep: params.setupStep,
+    },
+  };
   const { user } = useAuth();
   const farm = useFarm();
   const dialog = useAppDialog();
@@ -37,19 +55,28 @@ function CreateProductContent() {
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: theme.background }}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
       <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
         <FarmPageHeader
           title="New product"
           showBack
           backHref={
-            isSetupFlow
-              ? {
-                  pathname: "/farm-setup",
-                  params: { step: params.setupStep ?? "0" },
-                }
-              : "/products"
+            returnToOpeningStock
+              ? openingStockHref
+              : returnToInventory
+                ? "/inventory"
+                : isSetupFlow
+                  ? {
+                      pathname: "/farm-setup",
+                      params: {
+                        step: params.setupStep ?? "0",
+                        ...(params.setupAdditional === "true"
+                          ? { additional: "true" }
+                          : {}),
+                      },
+                    }
+                  : "/products"
           }
         />
         <ProductForm
@@ -58,14 +85,38 @@ function CreateProductContent() {
             params.setupType ? [params.setupType] : undefined
           }
           initialName={params.setupName}
+          initialDescription={
+            params.setupType === "chickens"
+              ? "Live birds raised on this farm."
+              : params.setupType === "eggs"
+                ? "Eggs produced on this farm."
+                : undefined
+          }
+          setupMode={isPoultrySetup}
           submitLabel="Create product"
           isSubmitting={create.isPending}
           onSubmit={async (payload) => {
-            await create.mutateAsync(payload);
+            const product = await create.mutateAsync(payload);
+            if (returnToOpeningStock) {
+              router.replace(openingStockHref);
+              return;
+            }
+            if (returnToInventory) {
+              router.replace({
+                pathname: "/products/[productId]/inventory",
+                params: { productId: product.id },
+              });
+              return;
+            }
             if (isSetupFlow) {
               router.replace({
                 pathname: "/farm-setup",
-                params: { step: params.setupStep ?? "0" },
+                params: {
+                  step: params.setupStep ?? "0",
+                  ...(params.setupAdditional === "true"
+                    ? { additional: "true" }
+                    : {}),
+                },
               });
               return;
             }

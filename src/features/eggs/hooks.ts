@@ -55,6 +55,12 @@ export function useCreateEggSale(userId: string, farmId: string) {
         client.invalidateQueries({
           queryKey: ["notification-unread-count", userId, farmId],
         }),
+        client.invalidateQueries({
+          queryKey: ["pending-sale-deliveries", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["outstanding-balances", userId, farmId],
+        }),
       ]);
     },
   });

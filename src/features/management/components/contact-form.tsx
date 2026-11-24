@@ -2,7 +2,6 @@ import { Ionicons } from "@expo/vector-icons";
 import { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 
-import { useAppDialog } from "@/components/ui/app-dialog";
 import { AppText } from "@/components/ui/app-text";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -51,7 +50,6 @@ export function ContactForm({
   onSubmit,
 }: ContactFormProps) {
   const { theme } = useTheme();
-  const dialog = useAppDialog();
   const [name, setName] = useState(initialContact?.name ?? "");
   const [phone, setPhone] = useState(initialContact?.phone ?? "");
   const [email, setEmail] = useState(initialContact?.email ?? "");
@@ -91,13 +89,7 @@ export function ContactForm({
         notes: notes.trim() || null,
       });
     } catch (submitError) {
-      await dialog.showDialog({
-        title: initialContact
-          ? "Couldn’t update contact"
-          : "Couldn’t create contact",
-        message: normalizeApiError(submitError).message,
-        tone: "error",
-      });
+      setError(normalizeApiError(submitError).message);
     }
   }
 
@@ -146,7 +138,10 @@ export function ContactForm({
             leadingIcon="person-outline"
             placeholder="e.g. Amina Otieno"
             value={name}
-            onChangeText={setName}
+            onChangeText={(value) => {
+              setName(value);
+              setError(null);
+            }}
             maxLength={150}
           />
           <TextField
@@ -155,7 +150,10 @@ export function ContactForm({
             placeholder="Phone number"
             keyboardType="phone-pad"
             value={phone}
-            onChangeText={setPhone}
+            onChangeText={(value) => {
+              setPhone(value);
+              setError(null);
+            }}
             maxLength={30}
           />
           <TextField
@@ -165,7 +163,10 @@ export function ContactForm({
             keyboardType="email-address"
             autoCapitalize="none"
             value={email}
-            onChangeText={setEmail}
+            onChangeText={(value) => {
+              setEmail(value);
+              setError(null);
+            }}
             maxLength={255}
           />
           <TextField
@@ -173,7 +174,10 @@ export function ContactForm({
             leadingIcon="location-outline"
             placeholder="Street, town, or delivery location"
             value={address}
-            onChangeText={setAddress}
+            onChangeText={(value) => {
+              setAddress(value);
+              setError(null);
+            }}
             maxLength={255}
           />
           <TextField

@@ -1,0 +1,18 @@
+apply plugin: "com.android.library"
+apply plugin: "org.jetbrains.kotlin.android"
+
+group = "expo.modules.paymentshareintent"
+version = "1.0.0"
+
+android {
+  namespace "expo.modules.paymentshareintent"
+  compileSdkVersion rootProject.ext.compileSdkVersion
+
+  defaultConfig {
+    minSdkVersion rootProject.ext.minSdkVersion
+  }
+}
+
+dependencies {
+  implementation project(":expo-modules-core")
+}

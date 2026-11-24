@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   createChickenPurchase,
+  recordChickenPurchasePayment,
   createChickenLoss,
   createChickenMovement,
   createChickenBatchMovement,
@@ -9,6 +10,7 @@ import {
   createChickenSaleDelivery,
   createChickenSale,
   getChickenPurchaseDetails,
+  getChickenLosses,
   getChickenPurchaseOptions,
   getChickenSaleDetails,
   getChickenSaleFulfillment,
@@ -16,6 +18,7 @@ import {
   getChickenSettlementOptions,
   getChickenMovementHistory,
   type ChickenPurchaseInput,
+  type ChickenPurchasePaymentInput,
   type ChickenLossInput,
   type ChickenMovementInput,
   type ChickenBatchMovementInput,
@@ -45,6 +48,18 @@ export function useChickenSaleOptions(
   return useQuery({
     queryKey: ["chicken-sale-options", userId, farmId],
     queryFn: () => getChickenSaleOptions(farmId!),
+    enabled: Boolean(userId && farmId),
+  });
+}
+
+export function useChickenLosses(
+  userId: string | undefined,
+  farmId: string | undefined,
+  filters: { from_date?: string; to_date?: string },
+) {
+  return useQuery({
+    queryKey: ["chicken-losses", userId, farmId, filters],
+    queryFn: () => getChickenLosses(farmId!, filters),
     enabled: Boolean(userId && farmId),
   });
 }
@@ -142,9 +157,54 @@ export function useCreateChickenPurchase(userId: string, farmId: string) {
     mutationFn: (payload: ChickenPurchaseInput) =>
       createChickenPurchase(farmId, payload),
     onSuccess: async () => {
-      await client.invalidateQueries({
-        queryKey: ["farm-activities", userId, farmId],
-      });
+      await Promise.all([
+        client.invalidateQueries({
+          queryKey: ["chicken-sale-options", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["chicken-purchase-options", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: queryKeys.blocks(userId, farmId),
+        }),
+        client.invalidateQueries({
+          queryKey: ["farm-activities", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["receipt-history", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["outstanding-balances", userId, farmId],
+        }),
+      ]);
+    },
+  });
+}
+
+export function useRecordChickenPurchasePayment(
+  userId: string,
+  farmId: string,
+  transactionId: string,
+) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: ChickenPurchasePaymentInput) =>
+      recordChickenPurchasePayment(farmId, transactionId, payload),
+    onSuccess: async () => {
+      await Promise.all([
+        client.invalidateQueries({
+          queryKey: ["chicken-purchase-details", userId, farmId, transactionId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["farm-activities", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["receipt-history", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["outstanding-balances", userId, farmId],
+        }),
+      ]);
     },
   });
 }
@@ -164,6 +224,9 @@ export function useCreateChickenPurchaseReceipt(
         }),
         client.invalidateQueries({
           queryKey: ["chicken-purchase-options", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["chicken-sale-options", userId, farmId],
         }),
         client.invalidateQueries({
           queryKey: ["chicken-purchase-details", userId, farmId],
@@ -190,6 +253,9 @@ export function useCreateChickenSale(userId: string, farmId: string) {
           queryKey: ["farm-activities", userId, farmId],
         }),
         client.invalidateQueries({
+          queryKey: ["chicken-losses", userId, farmId],
+        }),
+        client.invalidateQueries({
           queryKey: ["chicken-sale-options", userId, farmId],
         }),
         client.invalidateQueries({
@@ -204,6 +270,15 @@ export function useCreateChickenSale(userId: string, farmId: string) {
         }),
         client.invalidateQueries({
           queryKey: ["notification-unread-count", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["receipt-history", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["pending-sale-deliveries", userId, farmId],
+        }),
+        client.invalidateQueries({
+          queryKey: ["outstanding-balances", userId, farmId],
         }),
       ]);
     },
@@ -230,6 +305,9 @@ export function useCreateChickenLoss(userId: string, farmId: string) {
           queryKey: queryKeys.blocks(userId, farmId),
         }),
         client.invalidateQueries({ queryKey: ["block", userId, farmId] }),
+        client.invalidateQueries({
+          queryKey: ["pending-sale-deliveries", userId, farmId],
+        }),
       ]);
     },
   });
@@ -322,6 +400,9 @@ export function useCreateChickenSaleDelivery(userId: string, farmId: string) {
           queryKey: queryKeys.blocks(userId, farmId),
         }),
         client.invalidateQueries({ queryKey: ["block", userId, farmId] }),
+        client.invalidateQueries({
+          queryKey: ["pending-sale-deliveries", userId, farmId],
+        }),
       ]);
     },
   });

@@ -9,7 +9,9 @@ import {
   StyleSheet,
   View,
 } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaView } from "react-native-safe-area-context";
+import Swipeable from "react-native-gesture-handler/ReanimatedSwipeable";
 
 import { FarmPageHeader } from "@/components/layout/farm-page-header";
 import { SessionGate } from "@/components/layout/session-gate";
@@ -19,12 +21,12 @@ import { Card } from "@/components/ui/card";
 import type { FarmNotification } from "@/features/management/api";
 import {
   useMarkAllNotificationsRead,
+  useArchiveNotification,
   useMarkNotificationRead,
   useNotifications,
   useUnreadNotificationCount,
 } from "@/features/management/hooks";
 import { normalizeApiError } from "@/lib/api/errors";
-import { formatRelativeDateTime } from "@/lib/date/format-relative-date";
 import { useAuth } from "@/providers/auth-provider";
 import { useFarm } from "@/providers/farm-provider";
 import { useTheme } from "@/providers/theme-provider";
@@ -39,13 +41,13 @@ type NotificationFilter = "all" | "unread";
 
 const notificationCategoryDetails: Record<
   string,
-  { label: string; icon: keyof typeof Ionicons.glyphMap }
+  { icon: keyof typeof Ionicons.glyphMap }
 > = {
-  alert: { label: "Alert", icon: "alert-circle-outline" },
-  transaction: { label: "Transaction", icon: "swap-horizontal-outline" },
-  reminder: { label: "Reminder", icon: "alarm-outline" },
-  farm: { label: "Farm update", icon: "leaf-outline" },
-  security: { label: "Security", icon: "shield-checkmark-outline" },
+  alert: { icon: "alert-circle-outline" },
+  transaction: { icon: "swap-horizontal-outline" },
+  reminder: { icon: "alarm-outline" },
+  farm: { icon: "leaf-outline" },
+  security: { icon: "shield-checkmark-outline" },
 };
 
 export default function NotificationsScreen() {
@@ -70,10 +72,18 @@ function NotificationsContent() {
   );
   const markAll = useMarkAllNotificationsRead(user?.id ?? "", farmId);
   const markRead = useMarkNotificationRead(user?.id ?? "", farmId);
+  const archive = useArchiveNotification(user?.id ?? "", farmId);
   const items = notifications.data?.pages.flatMap((page) => page.items) ?? [];
-  const unreadCount =
-    unreadCountQuery.data ?? items.filter((item) => !item.read_at).length;
-  const visibleItems = items.filter((item) => {
+  const deduplicatedItems = deduplicateInitialPayments(items);
+  const hiddenUnreadCount = items.filter(
+    (item) => !item.read_at && !deduplicatedItems.includes(item),
+  ).length;
+  const unreadCount = Math.max(
+    0,
+    (unreadCountQuery.data ??
+      items.filter((item) => !item.read_at).length) - hiddenUnreadCount,
+  );
+  const visibleItems = deduplicatedItems.filter((item) => {
     if (filter === "unread" && item.read_at) return false;
     if (categoryFilter === "all") return true;
     if (categoryFilter === "alerts") {
@@ -81,15 +91,57 @@ function NotificationsContent() {
     }
     return item.category === categoryFilter;
   });
-  const actionError = markAll.error ?? markRead.error;
+  const actionError = markAll.error ?? markRead.error ?? archive.error;
+  const categoryOptions = [
+    ["transaction", "Transactions"],
+    ["reminder", "Reminders"],
+    ["farm", "Farm"],
+    ["alerts", "Alerts & security"],
+  ] as const;
+  const populatedCategoryCounts = categoryOptions
+    .map(([value]) => notificationCategoryCount(deduplicatedItems, value))
+    .filter((count) => count > 0);
+  const showCategoryFilters =
+    (populatedCategoryCounts.length >= 3 &&
+      new Set(populatedCategoryCounts).size > 1) ||
+    categoryFilter !== "all";
+  const groupedItems = groupNotificationsByDate(visibleItems);
+  const hasEmptyState =
+    !notifications.isLoading && !notifications.isError && visibleItems.length === 0;
+  const stickyHeaderIndices: number[] = [];
+  let childIndex =
+    2 +
+    Number(unreadCount > 0) +
+    Number(showCategoryFilters) +
+    Number(Boolean(actionError)) +
+    Number(notifications.isLoading) +
+    Number(notifications.isError) +
+    Number(hasEmptyState);
+  for (const group of groupedItems) {
+    stickyHeaderIndices.push(childIndex);
+    childIndex += group.items.length + 1;
+  }
 
   return (
+    <GestureHandlerRootView style={styles.gestureRoot}>
     <SafeAreaView
       style={[styles.screen, { backgroundColor: theme.background }]}
       edges={["top", "bottom"]}
     >
       <ScrollView
         contentContainerStyle={styles.content}
+        stickyHeaderIndices={stickyHeaderIndices}
+        scrollEventThrottle={400}
+        onScroll={({ nativeEvent }) => {
+          const { layoutMeasurement, contentOffset, contentSize } = nativeEvent;
+          if (
+            contentSize.height - layoutMeasurement.height - contentOffset.y < 240 &&
+            notifications.hasNextPage &&
+            !notifications.isFetchingNextPage
+          ) {
+            void notifications.fetchNextPage();
+          }
+        }}
         refreshControl={
           <RefreshControl
             refreshing={notifications.isRefetching}
@@ -105,59 +157,6 @@ function NotificationsContent() {
           showNotifications={false}
         />
 
-        <Card style={styles.overview}>
-          <View
-            style={[
-              styles.overviewIcon,
-              { backgroundColor: theme.backgroundSelected },
-            ]}
-          >
-            <Ionicons
-              name={unreadCount > 0 ? "notifications" : "checkmark-done"}
-              size={24}
-              color={theme.primary}
-            />
-          </View>
-          <View style={styles.overviewCopy}>
-            <AppText size="heading" weight="semibold">
-              {unreadCount > 0
-                ? `${unreadCount} unread ${unreadCount === 1 ? "update" : "updates"}`
-                : "You’re all caught up"}
-            </AppText>
-            <AppText size="small" tone="secondary">
-              Farm activity, reminders, and important updates all in one place.
-            </AppText>
-          </View>
-          {unreadCount > 0 ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Mark all notifications as read"
-              accessibilityState={{ disabled: markAll.isPending }}
-              disabled={markAll.isPending}
-              onPress={() => markAll.mutate()}
-              style={({ pressed }) => [
-                styles.markAllButton,
-                {
-                  backgroundColor: pressed
-                    ? theme.backgroundSelected
-                    : theme.backgroundElement,
-                  borderColor: theme.border,
-                },
-              ]}
-            >
-              {markAll.isPending ? (
-                <ActivityIndicator size="small" color={theme.primary} />
-              ) : (
-                <Ionicons
-                  name="checkmark-done-outline"
-                  size={19}
-                  color={theme.primary}
-                />
-              )}
-            </Pressable>
-          ) : null}
-        </Card>
-
         <View
           accessibilityRole="tablist"
           style={[
@@ -170,7 +169,7 @@ function NotificationsContent() {
         >
           <FilterButton
             label="All"
-            count={items.length}
+            count={deduplicatedItems.length}
             selected={filter === "all"}
             onPress={() => setFilter("all")}
           />
@@ -182,29 +181,41 @@ function NotificationsContent() {
           />
         </View>
 
+        {unreadCount > 0 ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Mark all notifications as read"
+            accessibilityState={{ disabled: markAll.isPending }}
+            disabled={markAll.isPending}
+            onPress={() => markAll.mutate()}
+            style={({ pressed }) => [
+              styles.markAllAction,
+              { backgroundColor: pressed ? theme.backgroundSelected : "transparent" },
+            ]}
+          >
+            {markAll.isPending ? (
+              <ActivityIndicator size="small" color={theme.primary} />
+            ) : (
+              <Ionicons name="checkmark-done-outline" size={18} color={theme.primary} />
+            )}
+            <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
+              Mark all as read
+            </AppText>
+          </Pressable>
+        ) : null}
+
+        {showCategoryFilters ? (
+        <View style={styles.categoryFilterWrap}>
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.categoryFilters}
           accessibilityLabel="Filter notifications by category"
         >
-          {(
-            [
-              ["all", "All categories"],
-              ["transaction", "Transactions"],
-              ["reminder", "Reminders"],
-              ["farm", "Farm"],
-              ["alerts", "Alerts & security"],
-            ] as const
-          ).map(([value, label]) => {
+          {categoryOptions.map(([value, label]) => {
             const selected = categoryFilter === value;
-            const count = items.filter((item) => {
-              if (value === "all") return true;
-              if (value === "alerts") {
-                return item.category === "alert" || item.category === "security";
-              }
-              return item.category === value;
-            }).length;
+            const count = notificationCategoryCount(deduplicatedItems, value);
+            if (count === 0) return null;
             return (
               <Pressable
                 key={value}
@@ -215,7 +226,7 @@ function NotificationsContent() {
                   styles.categoryChip,
                   {
                     backgroundColor: selected
-                      ? theme.backgroundSelected
+                      ? theme.primary
                       : theme.backgroundElement,
                     borderColor: selected ? theme.primary : theme.border,
                   },
@@ -224,20 +235,46 @@ function NotificationsContent() {
                 <AppText
                   size="small"
                   weight={selected ? "semibold" : "regular"}
-                  style={{ color: selected ? theme.primary : theme.textSecondary }}
+                  style={{
+                    color: selected ? theme.onPrimary : theme.text,
+                  }}
                 >
                   {label}
                 </AppText>
-                <AppText
-                  size="small"
-                  style={{ color: selected ? theme.primary : theme.textSecondary }}
+                <View
+                  style={[
+                    styles.categoryCount,
+                    {
+                      backgroundColor: selected
+                        ? `${theme.onPrimary}24`
+                        : theme.backgroundSelected,
+                    },
+                  ]}
                 >
-                  {count}
-                </AppText>
+                  <AppText
+                    size="small"
+                    weight="semibold"
+                    style={{
+                      color: selected ? theme.onPrimary                       : theme.text,
+                      fontSize: 11,
+                      lineHeight: 15,
+                    }}
+                  >
+                    {count}
+                  </AppText>
+                </View>
               </Pressable>
             );
           })}
         </ScrollView>
+        <Ionicons
+          name="chevron-forward"
+          size={16}
+          color={theme.textSecondary}
+          style={[styles.categoryScrollCue, { backgroundColor: theme.background }]}
+        />
+        </View>
+        ) : null}
 
         {actionError ? (
           <Card
@@ -258,9 +295,23 @@ function NotificationsContent() {
         ) : null}
 
         {notifications.isLoading ? (
-          <View style={styles.loadingState}>
-            <ActivityIndicator size="large" color={theme.primary} />
-            <AppText tone="secondary">Loading your updates…</AppText>
+          <View style={styles.skeletonList}>
+            {[0, 1, 2].map((key) => (
+              <View
+                key={key}
+                style={[
+                  styles.skeletonCard,
+                  { backgroundColor: theme.backgroundElement, borderColor: theme.border },
+                ]}
+              >
+                <View style={[styles.skeletonIcon, { backgroundColor: theme.backgroundSelected }]} />
+                <View style={styles.skeletonCopy}>
+                  <View style={[styles.skeletonLineShort, { backgroundColor: theme.backgroundSelected }]} />
+                  <View style={[styles.skeletonLineTitle, { backgroundColor: theme.backgroundSelected }]} />
+                  <View style={[styles.skeletonLine, { backgroundColor: theme.backgroundSelected }]} />
+                </View>
+              </View>
+            ))}
           </View>
         ) : null}
 
@@ -275,11 +326,11 @@ function NotificationsContent() {
               <Ionicons
                 name="cloud-offline-outline"
                 size={24}
-                color={theme.primary}
+                color={theme.text}
               />
             </View>
             <AppText weight="semibold">Couldn’t load notifications</AppText>
-            <AppText tone="secondary">
+            <AppText style={{ color: theme.text }}>
               {normalizeApiError(notifications.error).message}
             </AppText>
             <Button
@@ -303,20 +354,24 @@ function NotificationsContent() {
               <Ionicons
                 name={filter === "unread" ? "mail-open-outline" : "leaf-outline"}
                 size={25}
-                color={theme.primary}
+                color={theme.text}
               />
             </View>
             <AppText weight="semibold">
-              {filter === "unread"
-                ? "No unread notifications match these filters"
+              {filter === "unread" && unreadCount === 0
+                ? "You’re all caught up"
+                : filter === "unread"
+                  ? "No unread notifications match these filters"
                 : "No notifications match this category"}
             </AppText>
-            <AppText tone="secondary" style={styles.centeredText}>
-              {filter === "unread"
+            <AppText style={[styles.centeredText, { color: theme.text }]}>
+              {filter === "unread" && unreadCount === 0
+                ? "New farm updates will appear here."
+                : filter === "unread"
                 ? "Try another category or switch to All to see your notification history."
                 : "Choose a different category to see more updates."}
             </AppText>
-            <Pressable
+            {categoryFilter !== "all" ? <Pressable
               accessibilityRole="button"
               onPress={() => {
                 setFilter("all");
@@ -330,57 +385,81 @@ function NotificationsContent() {
               <AppText weight="semibold" style={{ color: theme.primary }}>
                 Clear filters
               </AppText>
-            </Pressable>
+            </Pressable> : null}
           </Card>
         ) : null}
 
-        {visibleItems.map((item) => (
-          <NotificationCard
-            key={item.id}
-            item={item}
-            onMarkRead={() => markRead.mutate(item.id)}
-            onOpenDetails={() => {
-              if (!item.entity_id) return;
-              if (!item.read_at) markRead.mutate(item.id);
-              if (item.type === "purchase.recorded") {
-                router.push({
-                  pathname: "/purchases/[purchaseId]",
-                  params: { purchaseId: item.entity_id },
-                });
-              } else if (item.type === "sale.recorded") {
-                router.push({
-                  pathname: "/sales/[saleId]",
-                  params: { saleId: item.entity_id },
-                });
-              } else if (item.type === "reminder.due") {
-                router.push({
-                  pathname: "/reminders/[reminderId]",
-                  params: { reminderId: item.entity_id },
-                });
-              }
-            }}
-            markingRead={markRead.isPending}
-          />
-        ))}
-        {notifications.hasNextPage ? (
-          <Button
-            label={
-              notifications.isFetchingNextPage
-                ? "Loading more…"
-                : "Load older notifications"
-            }
-            variant="secondary"
-            loading={notifications.isFetchingNextPage}
-            disabled={notifications.isFetchingNextPage}
-            onPress={() => void notifications.fetchNextPage()}
-          />
-        ) : items.length > 0 ? (
-          <AppText size="small" tone="secondary" style={styles.listEnd}>
+        {groupedItems.flatMap((group) => [
+          <View
+            key={`date-${group.label}`}
+            style={[styles.dateHeading, { backgroundColor: theme.background }]}
+          >
+            <AppText size="small" weight="semibold" style={{ color: theme.text }}>
+              {group.label}
+            </AppText>
+          </View>,
+          ...group.items.map((item) => (
+            <NotificationCard
+              key={item.id}
+              item={item}
+              onMarkRead={() => markRead.mutate(item.id)}
+              onArchive={() => archive.mutate(item.id)}
+              onOpenDetails={() => {
+                if (!item.read_at) markRead.mutate(item.id);
+                const transactionType =
+                  item.type === "purchase.recorded"
+                    ? "purchase"
+                    : item.type === "sale.recorded"
+                      ? "sale"
+                      : item.type === "payment.recorded"
+                        ? String(item.payload?.transaction_type ?? "")
+                        : null;
+                if (!item.entity_id) return;
+                if (transactionType === "purchase") {
+                  router.push({
+                    pathname: "/purchases/[purchaseId]",
+                    params: { purchaseId: item.entity_id },
+                  });
+                } else if (transactionType === "sale") {
+                  router.push({
+                    pathname: "/sales/[saleId]",
+                    params: { saleId: item.entity_id },
+                  });
+                } else if (item.type === "reminder.due") {
+                  router.push({
+                    pathname: "/reminders/[reminderId]",
+                    params: { reminderId: item.entity_id },
+                  });
+                } else if (
+                  item.type === "chicken_return.recorded" &&
+                  typeof item.payload?.transaction_id === "string"
+                ) {
+                  router.push({
+                    pathname: "/transactions/[transactionId]/returns",
+                    params: { transactionId: item.payload.transaction_id },
+                  });
+                } else if (item.type === "chicken_movement.recorded") {
+                  router.push("/flock");
+                }
+              }}
+              markingRead={markRead.isPending}
+            />
+          )),
+        ])}
+        {notifications.isFetchingNextPage ? (
+          <View style={styles.loadingState}>
+            <ActivityIndicator size="small" color={theme.primary} />
+            <AppText size="small" style={{ color: theme.text }}>Loading older notifications…</AppText>
+          </View>
+        ) : null}
+        {!notifications.hasNextPage && items.length > 0 ? (
+          <AppText size="small" style={[styles.listEnd, { color: theme.text }]}>
             You’re viewing all notifications.
           </AppText>
         ) : null}
       </ScrollView>
     </SafeAreaView>
+    </GestureHandlerRootView>
   );
 }
 
@@ -409,7 +488,7 @@ function FilterButton({
       <AppText
         size="small"
         weight="semibold"
-        style={{ color: selected ? theme.onPrimary : theme.textSecondary }}
+        style={{ color: selected ? theme.onPrimary : theme.text }}
       >
         {label}
       </AppText>
@@ -427,7 +506,7 @@ function FilterButton({
           size="small"
           weight="semibold"
           style={{
-            color: selected ? theme.primary : theme.textSecondary,
+            color: selected ? theme.primary : theme.text,
             fontSize: 11,
             lineHeight: 15,
           }}
@@ -442,11 +521,13 @@ function FilterButton({
 function NotificationCard({
   item,
   onMarkRead,
+  onArchive,
   onOpenDetails,
   markingRead,
 }: {
   item: FarmNotification;
   onMarkRead: () => void;
+  onArchive: () => void;
   onOpenDetails: () => void;
   markingRead: boolean;
 }) {
@@ -464,57 +545,68 @@ function NotificationCard({
     label: "Update",
     icon: "notifications-outline" as const,
   };
+  const transactionType =
+    item.type === "purchase.recorded"
+      ? "purchase"
+      : item.type === "sale.recorded"
+        ? "sale"
+        : item.type === "payment.recorded"
+          ? String(item.payload?.transaction_type ?? "")
+          : "";
   const opensPurchase =
-    item.type === "purchase.recorded" &&
+    transactionType === "purchase" &&
     item.entity_type === "transaction" &&
     Boolean(item.entity_id);
   const opensSale =
-    item.type === "sale.recorded" &&
+    transactionType === "sale" &&
     item.entity_type === "transaction" &&
     Boolean(item.entity_id);
   const opensReminder =
     item.type === "reminder.due" &&
     item.entity_type === "reminder" &&
     Boolean(item.entity_id);
-  const opensDetails = opensPurchase || opensSale || opensReminder;
+  const opensReturn =
+    item.type === "chicken_return.recorded" &&
+    typeof item.payload?.transaction_id === "string";
+  const opensMovement =
+    item.type === "chicken_movement.recorded" && Boolean(item.entity_id);
+  const opensDetails =
+    opensPurchase || opensSale || opensReminder || opensReturn || opensMovement;
+  const amount = notificationAmount(item);
+  const supportingText = notificationSupportingText(item);
 
   const card = (
-    <Card
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${item.title}${amount ? `, ${amount.label}` : ""}${unread ? ", unread" : ""}`}
+      accessibilityHint={opensDetails ? "Open the related record" : "Mark this notification as read"}
+      onPress={opensDetails ? onOpenDetails : onMarkRead}
       style={[
         styles.notificationCard,
         {
+          borderColor: unread ? `${theme.primary}55` : theme.border,
           borderLeftColor: unread ? categoryColor : theme.border,
-          backgroundColor: unread
-            ? `${categoryColor}0C`
-            : theme.backgroundElement,
+          backgroundColor: unread ? theme.backgroundSelected : theme.backgroundElement,
         },
       ]}
     >
-      <View
-        style={[
-          styles.notificationIcon,
-          { backgroundColor: `${categoryColor}16` },
-        ]}
-      >
-        <Ionicons name={details.icon} size={21} color={categoryColor} />
+      <View style={[styles.notificationIcon, { backgroundColor: `${categoryColor}20` }]}>
+        <Ionicons name={details.icon} size={20} color={categoryColor} />
       </View>
       <View style={styles.notificationBody}>
         <View style={styles.notificationMeta}>
-          <AppText
-            size="small"
-            weight="semibold"
-            style={{ color: categoryColor }}
-          >
-            {details.label}
-          </AppText>
-          <AppText size="small" tone="secondary">
-            {formatRelativeDateTime(item.created_at)}
+          <AppText size="small" style={{ color: theme.text }}>
+            {formatNotificationTime(item.created_at)}
           </AppText>
           {unread ? (
             <View
               accessibilityLabel="Unread"
               style={[styles.unreadDot, { backgroundColor: theme.primary }]}
             />
+          ) : null}
+          <View style={styles.metaSpacer} />
+          {opensDetails ? (
+            <Ionicons name="chevron-forward" size={17} color={theme.textSecondary} />
           ) : null}
         </View>
         {item.priority === "high" || item.priority === "critical" ? (
@@ -542,44 +634,48 @@ function NotificationCard({
             </AppText>
           </View>
         ) : null}
-        <AppText weight="semibold" numberOfLines={2} style={styles.notificationText}>
-          {item.title}
-        </AppText>
+        <View style={styles.titleAmountRow}>
+          <AppText
+            weight="semibold"
+            numberOfLines={2}
+            style={[
+              styles.notificationText,
+              styles.titleFlex,
+              { color: unread ? theme.primary : theme.text },
+            ]}
+          >
+            {item.title}
+          </AppText>
+          {amount ? (
+            <AppText
+              weight="semibold"
+              numberOfLines={1}
+              style={[
+                styles.amount,
+                { color: amount.incoming ? theme.success : theme.danger },
+              ]}
+            >
+              {amount.label}
+            </AppText>
+          ) : null}
+        </View>
         <AppText
           size="small"
-          tone="secondary"
-          numberOfLines={4}
-          style={styles.message}
+          numberOfLines={2}
+          style={[styles.message, { color: theme.text }]}
         >
-          {item.message}
+          {supportingText}
         </AppText>
-        {opensDetails ? (
-          <View style={styles.openPurchaseHint}>
-            <AppText
-              size="small"
-              weight="semibold"
-              style={{ color: theme.primary }}
-            >
-              {opensPurchase
-                ? "View purchase details"
-                : opensSale
-                  ? "View sale details"
-                  : "View reminder details"}
-            </AppText>
-            <Ionicons
-              name="chevron-forward"
-              size={16}
-              color={theme.primary}
-            />
-          </View>
-        ) : null}
         {unread && !opensDetails ? (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`Mark ${item.title} as read`}
             accessibilityState={{ disabled: markingRead }}
             disabled={markingRead}
-            onPress={onMarkRead}
+            onPress={(event) => {
+              event.stopPropagation();
+              onMarkRead();
+            }}
             style={({ pressed }) => [
               styles.markReadButton,
               {
@@ -594,16 +690,8 @@ function NotificationCard({
               <ActivityIndicator size="small" color={theme.primary} />
             ) : (
               <>
-                <Ionicons
-                  name="checkmark-circle-outline"
-                  size={17}
-                  color={theme.primary}
-                />
-                <AppText
-                  size="small"
-                  weight="semibold"
-                  style={{ color: theme.primary }}
-                >
+                <Ionicons name="checkmark-circle-outline" size={17} color={theme.primary} />
+                <AppText size="small" weight="semibold" style={{ color: theme.primary }}>
                   Mark as read
                 </AppText>
               </>
@@ -611,63 +699,187 @@ function NotificationCard({
           </Pressable>
         ) : null}
       </View>
-    </Card>
+    </Pressable>
   );
-  return opensDetails ? (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`${item.title}. Open ${opensPurchase ? "purchase" : opensSale ? "sale" : "reminder"} details.`}
-      onPress={onOpenDetails}
+  return (
+    <Swipeable
+      renderLeftActions={() =>
+        unread ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Mark ${item.title} as read`}
+            onPress={onMarkRead}
+            style={[styles.swipeAction, { backgroundColor: theme.primary }]}
+          >
+            <Ionicons name="checkmark-done-outline" size={21} color={theme.onPrimary} />
+            <AppText size="small" weight="semibold" style={{ color: theme.onPrimary }}>
+              Read
+            </AppText>
+          </Pressable>
+        ) : null
+      }
+      renderRightActions={() => (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Archive ${item.title}`}
+          onPress={onArchive}
+          style={[styles.swipeAction, { backgroundColor: theme.danger }]}
+        >
+          <Ionicons name="archive-outline" size={21} color="#FFFFFF" />
+          <AppText size="small" weight="semibold" style={{ color: "#FFFFFF" }}>
+            Archive
+          </AppText>
+        </Pressable>
+      )}
+      overshootLeft={false}
+      overshootRight={false}
     >
       {card}
-    </Pressable>
-  ) : (
-    card
+    </Swipeable>
   );
 }
 
+function deduplicateInitialPayments(items: FarmNotification[]): FarmNotification[] {
+  const transactions = new Map(
+    items
+      .filter(
+        (item) =>
+          (item.type === "purchase.recorded" || item.type === "sale.recorded") &&
+          item.entity_id,
+      )
+      .map((item) => [item.entity_id!, item]),
+  );
+  return items.filter((item) => {
+    if (item.type !== "payment.recorded" || !item.entity_id) return true;
+    const transaction = transactions.get(item.entity_id);
+    if (!transaction) return true;
+    const timeDifference = Math.abs(
+      new Date(item.created_at).getTime() -
+        new Date(transaction.created_at).getTime(),
+    );
+    return timeDifference > 30 * 1000;
+  });
+}
+
+function notificationCategoryCount(
+  items: FarmNotification[],
+  category: Exclude<CategoryFilter, "all">,
+): number {
+  return items.filter((item) =>
+    category === "alerts"
+      ? item.category === "alert" || item.category === "security"
+      : item.category === category,
+  ).length;
+}
+
+function groupNotificationsByDate(items: FarmNotification[]) {
+  const groups = new Map<string, FarmNotification[]>();
+  for (const item of items) {
+    const label = notificationDateGroup(item.created_at);
+    groups.set(label, [...(groups.get(label) ?? []), item]);
+  }
+  return Array.from(groups, ([label, groupedItems]) => ({
+    label,
+    items: groupedItems,
+  }));
+}
+
+function notificationDateGroup(value: string): string {
+  const date = new Date(value);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const dateDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const dayDifference = Math.round(
+    (today.getTime() - dateDay.getTime()) / 86_400_000,
+  );
+  if (dayDifference === 0) return "Today";
+  if (dayDifference === 1) return "Yesterday";
+  return "Earlier";
+}
+
+function formatNotificationTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function notificationAmount(
+  item: FarmNotification,
+): { label: string; incoming: boolean } | null {
+  const amountValue =
+    item.type === "payment.recorded"
+      ? item.payload?.payment_amount
+      : item.payload?.transaction_total;
+  const amount = Number(amountValue);
+  if (!Number.isFinite(amount)) return null;
+  const currency =
+    typeof item.payload?.currency === "string" ? item.payload.currency : "";
+  const label = `${currency ? `${currency} ` : ""}${new Intl.NumberFormat(
+    undefined,
+    { minimumFractionDigits: 2, maximumFractionDigits: 2 },
+  ).format(amount)}`;
+  const incoming =
+    item.type === "sale.recorded" ||
+    (item.type === "payment.recorded" &&
+      item.payload?.transaction_type === "sale");
+  return { label, incoming };
+}
+
+function notificationSupportingText(item: FarmNotification): string {
+  const reference =
+    typeof item.payload?.reference_number === "string"
+      ? item.payload.reference_number
+      : "";
+  const contact =
+    typeof item.payload?.contact_name === "string"
+      ? item.payload.contact_name
+      : "";
+  if (contact || reference) return [contact, reference].filter(Boolean).join(" · ");
+  return item.message;
+}
+
 const styles = StyleSheet.create({
+  gestureRoot: { flex: 1 },
   screen: { flex: 1 },
   content: {
     width: "100%",
     maxWidth: 760,
     alignSelf: "center",
-    padding: 20,
-    paddingBottom: 36,
-    gap: 14,
+    padding: 16,
+    paddingBottom: 28,
+    gap: 11,
   },
-  categoryFilters: { gap: 8, paddingVertical: 2 },
+  categoryFilters: { gap: 7, paddingVertical: 2, paddingRight: 28 },
+  categoryFilterWrap: { position: "relative", justifyContent: "center" },
+  categoryScrollCue: { position: "absolute", right: 0 },
   categoryChip: {
-    minHeight: 36,
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderRadius: 9,
+  },
+  categoryCount: {
+    minWidth: 20,
+    height: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+    borderRadius: 7,
+  },
+  markAllAction: {
+    minHeight: 44,
+    alignSelf: "flex-end",
     flexDirection: "row",
     alignItems: "center",
     gap: 7,
-    paddingHorizontal: 12,
-    borderWidth: 1,
-    borderRadius: 18,
-  },
-  overview: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 13,
-    padding: 18,
-    borderRadius: 12,
-  },
-  overviewIcon: {
-    width: 48,
-    height: 48,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 14,
-  },
-  overviewCopy: { flex: 1, gap: 3 },
-  markAllButton: {
-    width: 42,
-    height: 42,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderRadius: 12,
+    paddingHorizontal: 10,
+    borderRadius: 9,
   },
   filterBar: {
     flexDirection: "row",
@@ -678,7 +890,7 @@ const styles = StyleSheet.create({
   },
   filterButton: {
     flex: 1,
-    minHeight: 42,
+    minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -701,8 +913,23 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 11,
   },
-  loadingState: { alignItems: "center", gap: 12, padding: 34 },
-  stateCard: { alignItems: "center", gap: 10, paddingVertical: 26 },
+  loadingState: { alignItems: "center", gap: 10, padding: 26 },
+  skeletonList: { gap: 9 },
+  skeletonCard: {
+    minHeight: 92,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderRadius: 12,
+  },
+  skeletonIcon: { width: 36, height: 36, borderRadius: 11 },
+  skeletonCopy: { flex: 1, gap: 8, paddingTop: 3 },
+  skeletonLineShort: { width: "28%", height: 10, borderRadius: 5 },
+  skeletonLineTitle: { width: "64%", height: 13, borderRadius: 6 },
+  skeletonLine: { width: "84%", height: 10, borderRadius: 5 },
+  stateCard: { alignItems: "center", gap: 8, paddingVertical: 20 },
   emptyState: {
     alignItems: "center",
     gap: 9,
@@ -710,46 +937,56 @@ const styles = StyleSheet.create({
     paddingVertical: 32,
   },
   stateIcon: {
-    width: 52,
-    height: 52,
+    width: 44,
+    height: 44,
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 2,
-    borderRadius: 18,
+    borderRadius: 14,
   },
   centeredText: { textAlign: "center" },
   emptyAction: {
-    minHeight: 42,
+    minHeight: 38,
     justifyContent: "center",
     marginTop: 6,
-    paddingHorizontal: 16,
-    borderRadius: 10,
+    paddingHorizontal: 13,
+    borderRadius: 9,
   },
   listEnd: { textAlign: "center", paddingVertical: 8 },
   notificationCard: {
+    minHeight: 92,
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 13,
-    padding: 15,
+    gap: 12,
+    padding: 14,
     borderRadius: 12,
-    borderLeftWidth: 4,
+    borderLeftWidth: 3,
+    borderWidth: 1,
   },
   notificationIcon: {
-    width: 42,
-    height: 42,
+    width: 36,
+    height: 36,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: 13,
+    borderRadius: 11,
   },
-  notificationBody: { flex: 1, minWidth: 0, gap: 5 },
-  notificationText: { flexShrink: 1 },
-  notificationMeta: {
-    minHeight: 21,
+  notificationBody: { flex: 1, minWidth: 0, gap: 5, paddingRight: 2 },
+  notificationText: { flexShrink: 1, fontSize: 15 },
+  titleAmountRow: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    alignItems: "center",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
     gap: 8,
   },
+  titleFlex: { flex: 1 },
+  amount: { maxWidth: "48%", fontSize: 14, textAlign: "right" },
+  notificationMeta: {
+    minHeight: 22,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+  },
+  metaSpacer: { flex: 1 },
   priorityBadge: {
     flexDirection: "row",
     alignSelf: "flex-start",
@@ -757,13 +994,13 @@ const styles = StyleSheet.create({
     gap: 5,
     marginTop: 2,
     paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingVertical: 3,
     borderRadius: 12,
   },
-  unreadDot: { width: 8, height: 8, marginLeft: "auto", borderRadius: 4 },
-  message: { flexShrink: 1, lineHeight: 19 },
+  unreadDot: { width: 9, height: 9, borderRadius: 5 },
+  message: { flexShrink: 1, lineHeight: 19, fontSize: 13 },
   markReadButton: {
-    minHeight: 34,
+    minHeight: 40,
     alignSelf: "flex-start",
     flexDirection: "row",
     alignItems: "center",
@@ -771,12 +1008,16 @@ const styles = StyleSheet.create({
     marginTop: 5,
     paddingHorizontal: 10,
     borderWidth: 1,
-    borderRadius: 9,
+    borderRadius: 8,
   },
-  openPurchaseHint: {
-    flexDirection: "row",
+  swipeAction: {
+    width: 82,
+    minHeight: 92,
     alignItems: "center",
-    gap: 3,
-    marginTop: 6,
+    justifyContent: "center",
+    gap: 5,
+    borderRadius: 12,
+    marginBottom: 1,
   },
+  dateHeading: { paddingVertical: 5, zIndex: 1 },
 });
